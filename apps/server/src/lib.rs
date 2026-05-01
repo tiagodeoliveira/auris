@@ -5,3 +5,6 @@
 pub mod contract;
 pub mod mock;
 pub mod state;
+pub mod ws;
+
+pub use ws::run_server;

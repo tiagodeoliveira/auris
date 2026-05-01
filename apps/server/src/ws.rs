@@ -1,0 +1,133 @@
+//! WebSocket server. See `docs/specs/server.md` §2.1, §6.3, §7.
+
+use anyhow::Result;
+use futures_util::SinkExt;
+use std::net::SocketAddr;
+use std::sync::Arc;
+use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::{broadcast, oneshot, Mutex};
+use tokio_tungstenite::tungstenite::handshake::server::{Request, Response};
+use tokio_tungstenite::tungstenite::http::Uri;
+use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
+use tokio_tungstenite::tungstenite::protocol::CloseFrame;
+use tokio_tungstenite::tungstenite::Message;
+use tracing::{info, warn};
+
+use crate::contract::Event;
+use crate::state::ServerState;
+
+#[derive(Clone)]
+pub struct ServerHandle {
+    pub state: Arc<Mutex<ServerState>>,
+    pub events_tx: broadcast::Sender<Event>,
+    pub token: Arc<String>,
+}
+
+pub async fn run_server(addr: SocketAddr, token: String, shutdown_rx: oneshot::Receiver<()>) -> Result<()> {
+    let listener = TcpListener::bind(addr).await?;
+    let actual = listener.local_addr()?;
+    info!(addr = ?actual, "listening");
+    run_server_with_listener(listener, token, shutdown_rx).await
+}
+
+pub async fn run_server_with_listener(
+    listener: TcpListener,
+    token: String,
+    mut shutdown_rx: oneshot::Receiver<()>,
+) -> Result<()> {
+    let (events_tx, _) = broadcast::channel::<Event>(64);
+    let handle = ServerHandle {
+        state: Arc::new(Mutex::new(ServerState::new())),
+        events_tx,
+        token: Arc::new(token),
+    };
+
+    loop {
+        tokio::select! {
+            accept = listener.accept() => {
+                match accept {
+                    Ok((stream, peer)) => {
+                        let h = handle.clone();
+                        tokio::spawn(async move {
+                            if let Err(e) = handle_connection(stream, peer, h).await {
+                                warn!(?peer, error = %e, "connection ended with error");
+                            }
+                        });
+                    }
+                    Err(e) => warn!(error = %e, "accept error"),
+                }
+            }
+            _ = &mut shutdown_rx => {
+                info!("shutdown received");
+                break;
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn handle_connection(
+    stream: TcpStream,
+    peer: SocketAddr,
+    handle: ServerHandle,
+) -> Result<()> {
+    let token_cell = Arc::new(std::sync::Mutex::new(None::<String>));
+    let cell_clone = Arc::clone(&token_cell);
+
+    #[allow(clippy::result_large_err)]
+    let ws = tokio_tungstenite::accept_hdr_async(stream, |req: &Request, response: Response| {
+        let raw_path = req.uri().to_string();
+        let token = parse_token_from_uri(&raw_path);
+        *cell_clone.lock().unwrap() = token;
+        Ok(response)
+    })
+    .await?;
+
+    let provided = token_cell.lock().unwrap().clone();
+    let valid = match provided.as_deref() {
+        Some(t) => constant_time_eq(t.as_bytes(), handle.token.as_bytes()),
+        None => false,
+    };
+
+    if !valid {
+        warn!(?peer, reason = if provided.is_some() { "mismatch" } else { "missing" }, "auth failure");
+        let mut ws = ws;
+        let _ = ws
+            .send(Message::Close(Some(CloseFrame {
+                code: CloseCode::Policy,
+                reason: "invalid token".into(),
+            })))
+            .await;
+        return Ok(());
+    }
+
+    info!(?peer, "connection accepted");
+    // Per-connection loop (snapshot + dispatch + broadcast forward) lands in Task 11.
+    // For now: send a placeholder snapshot and exit.
+    let snapshot = {
+        let s = handle.state.lock().await;
+        s.snapshot()
+    };
+    let mut ws = ws;
+    ws.send(Message::Text(serde_json::to_string(&snapshot)?)).await?;
+    ws.close(None).await.ok();
+    info!(?peer, "connection closed");
+    Ok(())
+}
+
+fn parse_token_from_uri(raw: &str) -> Option<String> {
+    let uri: Uri = raw.parse().ok()?;
+    let q = uri.query()?;
+    for pair in q.split('&') {
+        let (k, v) = pair.split_once('=')?;
+        if k == "token" {
+            return Some(v.to_string());
+        }
+    }
+    None
+}
+
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    use subtle::ConstantTimeEq;
+    a.ct_eq(b).into()
+}
