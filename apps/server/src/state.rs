@@ -253,6 +253,41 @@ impl ServerState {
         outcome.events.push(Event::ItemsUpdate { items: payload });
     }
 
+    /// Append a new item to the current mode's list and return the broadcast payload
+    /// shaped per the current mode's update strategy.
+    /// Caps the replace-strategy list at 10 (FIFO).
+    pub fn push_mock_item(&mut self, item: Item) -> Vec<Item> {
+        let mode_id = self.current_mode.clone();
+        let strategy = self
+            .available_modes
+            .iter()
+            .find(|m| m.id == mode_id)
+            .map(|m| m.update_strategy)
+            .expect("invariant: current_mode in available_modes");
+        let items = self.items_per_mode.get_mut(&mode_id).expect("invariant: items_per_mode entry exists");
+        items.push(item.clone());
+
+        let payload = match strategy {
+            UpdateStrategy::Replace => {
+                while items.len() > 10 {
+                    items.remove(0);
+                }
+                items.clone()
+            }
+            UpdateStrategy::Append => vec![item],
+        };
+        self.assert_invariants();
+        payload
+    }
+
+    pub fn current_mode_id(&self) -> &str {
+        &self.current_mode
+    }
+
+    pub fn meeting_started_at(&self) -> Option<Instant> {
+        self.meeting_started_at
+    }
+
     pub(crate) fn assert_invariants(&self) {
         debug_assert!(
             self.available_modes.iter().any(|m| m.id == self.current_mode),
@@ -614,5 +649,55 @@ mod tests {
             }
             _ => panic!(),
         }
+    }
+
+    #[test]
+    fn push_mock_item_replace_caps_at_10() {
+        let mut s = ServerState::new();
+        s.apply_intent(Intent::StartMeeting { description: None, metadata: None });
+        // current_mode = highlights = replace strategy
+        for i in 0..15 {
+            let item = Item {
+                id: format!("h{}", i),
+                text: format!("item {}", i),
+                detail: None,
+                t: i as u64,
+                meta: None,
+            };
+            let payload = s.push_mock_item(item);
+            assert!(payload.len() <= 10);
+        }
+        let final_items = &s.items_per_mode["highlights"];
+        assert_eq!(final_items.len(), 10);
+        assert_eq!(final_items[0].id, "h5");   // FIFO drop kept items 5..15
+        assert_eq!(final_items[9].id, "h14");
+    }
+
+    #[test]
+    fn push_mock_item_append_returns_single_item() {
+        let mut s = ServerState::new();
+        s.apply_intent(Intent::StartMeeting { description: None, metadata: None });
+        s.apply_intent(Intent::SetMode { mode: "transcript".into() });
+        let item = Item {
+            id: "t1".into(),
+            text: "hi".into(),
+            detail: None,
+            t: 0,
+            meta: None,
+        };
+        let payload = s.push_mock_item(item.clone());
+        assert_eq!(payload.len(), 1);
+        assert_eq!(payload[0].id, "t1");
+        // But items_per_mode keeps growing
+        for i in 0..5 {
+            s.push_mock_item(Item {
+                id: format!("t{}", i + 2),
+                text: format!("hi{}", i + 2),
+                detail: None,
+                t: i as u64,
+                meta: None,
+            });
+        }
+        assert_eq!(s.items_per_mode["transcript"].len(), 6);
     }
 }
