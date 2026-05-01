@@ -26,6 +26,15 @@ pub fn default_modes() -> Vec<ModeOption> {
 
 pub const DEFAULT_MODE_ID: &str = "highlights";
 
+fn synthesize_detail(text: &str) -> String {
+    format!(
+        "Detail for '{}': lorem ipsum dolor sit amet, consectetur adipiscing elit. \
+         Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. \
+         Ut enim ad minim veniam.",
+        text
+    )
+}
+
 /// Result of applying an intent. `events` are broadcast in order.
 /// `error` is sent only to the originating client (None unless protocol error).
 #[derive(Debug, Default)]
@@ -103,9 +112,8 @@ impl ServerState {
             }
             Intent::SetMode { mode } => self.handle_set_mode(mode, &mut outcome),
             Intent::SetMetadata { key, value } => self.handle_set_metadata(key, value, &mut outcome),
-            _ => {
-                tracing::warn!("intent not yet implemented");
-            }
+            Intent::MarkMoment { t, note } => self.handle_mark_moment(t, note, &mut outcome),
+            Intent::ExpandItem { item_id } => self.handle_expand_item(item_id, &mut outcome),
         }
         self.assert_invariants();
         outcome
@@ -201,6 +209,50 @@ impl ServerState {
         outcome.events.push(Event::MetadataChanged { metadata: self.metadata.clone() });
     }
 
+    fn handle_mark_moment(&mut self, t: u64, note: Option<String>, outcome: &mut IntentOutcome) {
+        if !matches!(self.meeting_state, MeetingState::Active) {
+            tracing::warn!(state = ?self.meeting_state, "mark_moment in invalid state");
+            return;
+        }
+        tracing::info!(t, ?note, "mark_moment");
+        outcome.events.push(Event::Status {
+            status: Status {
+                listening: true,
+                paused: false,
+                error: None,
+            },
+        });
+    }
+
+    fn handle_expand_item(&mut self, item_id: String, outcome: &mut IntentOutcome) {
+        let mode_id = self.current_mode.clone();
+        let strategy = self
+            .available_modes
+            .iter()
+            .find(|m| m.id == mode_id)
+            .map(|m| m.update_strategy)
+            .expect("invariant: current_mode in available_modes");
+
+        let items = self.items_per_mode.get_mut(&mode_id).expect("invariant: items_per_mode entry exists");
+        let Some(idx) = items.iter().position(|i| i.id == item_id) else {
+            outcome.error = Some(Event::Error {
+                code: "unknown_item".into(),
+                message: format!("item '{}' not found in current mode", item_id),
+                intent_ref: Some(item_id),
+            });
+            return;
+        };
+
+        let detail = synthesize_detail(&items[idx].text);
+        items[idx].detail = Some(detail);
+
+        let payload = match strategy {
+            UpdateStrategy::Replace => items.clone(),
+            UpdateStrategy::Append => vec![items[idx].clone()],
+        };
+        outcome.events.push(Event::ItemsUpdate { items: payload });
+    }
+
     pub(crate) fn assert_invariants(&self) {
         debug_assert!(
             self.available_modes.iter().any(|m| m.id == self.current_mode),
@@ -253,6 +305,16 @@ impl Default for ServerState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn push_item(s: &mut ServerState, mode: &str, id: &str, text: &str) {
+        s.items_per_mode.get_mut(mode).unwrap().push(Item {
+            id: id.into(),
+            text: text.into(),
+            detail: None,
+            t: 0,
+            meta: None,
+        });
+    }
 
     #[test]
     fn new_has_idle_state() {
@@ -477,6 +539,79 @@ mod tests {
         assert!(s.metadata.is_empty());
         match &out.events[..] {
             [Event::MetadataChanged { metadata }] => assert!(metadata.is_empty()),
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn mark_moment_active_emits_status() {
+        let mut s = ServerState::new();
+        s.apply_intent(Intent::StartMeeting { description: None, metadata: None });
+        let out = s.apply_intent(Intent::MarkMoment { t: 1234, note: None });
+        match &out.events[..] {
+            [Event::Status { status }] => {
+                assert!(status.listening);
+                assert!(!status.paused);
+            }
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn mark_moment_idle_is_noop() {
+        let mut s = ServerState::new();
+        let out = s.apply_intent(Intent::MarkMoment { t: 0, note: None });
+        assert!(out.events.is_empty());
+    }
+
+    #[test]
+    fn expand_item_append_strategy_returns_single_item() {
+        let mut s = ServerState::new();
+        s.apply_intent(Intent::StartMeeting { description: None, metadata: None });
+        s.apply_intent(Intent::SetMode { mode: "transcript".into() });
+        push_item(&mut s, "transcript", "i1", "first");
+        push_item(&mut s, "transcript", "i2", "second");
+
+        let out = s.apply_intent(Intent::ExpandItem { item_id: "i2".into() });
+        match &out.events[..] {
+            [Event::ItemsUpdate { items }] => {
+                assert_eq!(items.len(), 1);
+                assert_eq!(items[0].id, "i2");
+                assert!(items[0].detail.is_some());
+            }
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn expand_item_replace_strategy_returns_full_list() {
+        let mut s = ServerState::new();
+        s.apply_intent(Intent::StartMeeting { description: None, metadata: None });
+        push_item(&mut s, "highlights", "h1", "first");
+        push_item(&mut s, "highlights", "h2", "second");
+
+        let out = s.apply_intent(Intent::ExpandItem { item_id: "h1".into() });
+        match &out.events[..] {
+            [Event::ItemsUpdate { items }] => {
+                assert_eq!(items.len(), 2);
+                assert!(items[0].detail.is_some());
+                assert!(items[1].detail.is_none());
+            }
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn expand_item_unknown_emits_error() {
+        let mut s = ServerState::new();
+        s.apply_intent(Intent::StartMeeting { description: None, metadata: None });
+        let out = s.apply_intent(Intent::ExpandItem { item_id: "nope".into() });
+        assert!(out.events.is_empty());
+        match out.error {
+            Some(Event::Error { code, intent_ref, .. }) => {
+                assert_eq!(code, "unknown_item");
+                assert_eq!(intent_ref.as_deref(), Some("nope"));
+            }
             _ => panic!(),
         }
     }
