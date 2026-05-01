@@ -90,6 +90,17 @@ impl ServerState {
                 m.id
             );
         }
+        for (mode_id, items) in &self.items_per_mode {
+            let mut seen = std::collections::HashSet::new();
+            for item in items {
+                debug_assert!(
+                    seen.insert(&item.id),
+                    "duplicate item.id '{}' in mode '{}'",
+                    item.id,
+                    mode_id
+                );
+            }
+        }
         match self.meeting_state {
             MeetingState::Idle => {
                 debug_assert!(self.metadata.is_empty(), "metadata must be empty when idle");
