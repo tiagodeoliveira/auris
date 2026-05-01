@@ -1,7 +1,7 @@
 //! WebSocket server. See `docs/specs/server.md` §2.1, §6.3, §7.
 
 use anyhow::Result;
-use futures_util::SinkExt;
+use futures_util::{SinkExt, StreamExt};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream};
@@ -13,7 +13,7 @@ use tokio_tungstenite::tungstenite::protocol::CloseFrame;
 use tokio_tungstenite::tungstenite::Message;
 use tracing::{info, warn};
 
-use crate::contract::Event;
+use crate::contract::{Event, Intent};
 use crate::state::ServerState;
 
 #[derive(Clone)]
@@ -102,15 +102,53 @@ async fn handle_connection(
     }
 
     info!(?peer, "connection accepted");
-    // Per-connection loop (snapshot + dispatch + broadcast forward) lands in Task 11.
-    // For now: send a placeholder snapshot and exit.
+
+    let mut events_rx = handle.events_tx.subscribe();
     let snapshot = {
         let s = handle.state.lock().await;
         s.snapshot()
     };
-    let mut ws = ws;
-    ws.send(Message::Text(serde_json::to_string(&snapshot)?)).await?;
-    ws.close(None).await.ok();
+
+    let (mut sink, mut stream) = ws.split();
+    sink.send(Message::Text(serde_json::to_string(&snapshot)?)).await?;
+
+    loop {
+        tokio::select! {
+            evt = events_rx.recv() => {
+                match evt {
+                    Ok(event) => {
+                        let json = serde_json::to_string(&event)?;
+                        if sink.send(Message::Text(json)).await.is_err() {
+                            break;
+                        }
+                    }
+                    Err(broadcast::error::RecvError::Lagged(n)) => {
+                        warn!(?peer, lagged = n, "client lagging — disconnecting");
+                        let _ = sink.send(Message::Close(Some(CloseFrame {
+                            code: CloseCode::Error,
+                            reason: "client lagging".into(),
+                        }))).await;
+                        break;
+                    }
+                    Err(broadcast::error::RecvError::Closed) => break,
+                }
+            }
+            msg = stream.next() => {
+                match msg {
+                    Some(Ok(Message::Text(t))) => {
+                        dispatch_intent(&t, &handle, &mut sink, &peer).await?;
+                    }
+                    Some(Ok(Message::Close(_))) | None => break,
+                    Some(Ok(_)) => {}    // ignore binary, ping, pong
+                    Some(Err(e)) => {
+                        warn!(?peer, error = %e, "ws read error");
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
     info!(?peer, "connection closed");
     Ok(())
 }
@@ -130,4 +168,38 @@ fn parse_token_from_uri(raw: &str) -> Option<String> {
 fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     use subtle::ConstantTimeEq;
     a.ct_eq(b).into()
+}
+
+async fn dispatch_intent(
+    text: &str,
+    handle: &ServerHandle,
+    sink: &mut futures_util::stream::SplitSink<
+        tokio_tungstenite::WebSocketStream<TcpStream>,
+        Message,
+    >,
+    peer: &SocketAddr,
+) -> Result<()> {
+    let intent: Intent = match serde_json::from_str(text) {
+        Ok(i) => i,
+        Err(_) => {
+            // Protocol-error handling lands in Task 12.
+            warn!(?peer, "bad inbound JSON; will be handled in Task 12");
+            return Ok(());
+        }
+    };
+
+    let outcome = {
+        let mut s = handle.state.lock().await;
+        s.apply_intent(intent)
+    };
+
+    if let Some(err_event) = outcome.error {
+        let json = serde_json::to_string(&err_event)?;
+        sink.send(Message::Text(json)).await.ok();
+    }
+    for event in outcome.events {
+        let _ = handle.events_tx.send(event);
+    }
+    // Background task signals (started_meeting/stopped_meeting/etc.) handled in later tasks.
+    Ok(())
 }
