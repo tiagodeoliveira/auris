@@ -136,7 +136,7 @@ async fn handle_connection(
             msg = stream.next() => {
                 match msg {
                     Some(Ok(Message::Text(t))) => {
-                        dispatch_intent(&t, &handle, &mut sink, &peer).await?;
+                        dispatch_intent(&t, &handle, &mut sink).await?;
                     }
                     Some(Ok(Message::Close(_))) | None => break,
                     Some(Ok(_)) => {}    // ignore binary, ping, pong
@@ -177,13 +177,35 @@ async fn dispatch_intent(
         tokio_tungstenite::WebSocketStream<TcpStream>,
         Message,
     >,
-    peer: &SocketAddr,
 ) -> Result<()> {
-    let intent: Intent = match serde_json::from_str(text) {
+    // 1. Parse as raw JSON object first to distinguish bad_json vs unknown_intent vs bad_payload.
+    let raw: serde_json::Value = match serde_json::from_str::<serde_json::Value>(text) {
+        Ok(v) if v.is_object() => v,
+        _ => {
+            send_protocol_error(sink, "bad_json", "frame is not a valid JSON object", None).await?;
+            return Ok(());
+        }
+    };
+
+    let ty: Option<String> = raw.get("type").and_then(|v| v.as_str()).map(|s| s.to_owned());
+    let known_intents = [
+        "start_meeting", "stop_meeting", "pause", "resume",
+        "set_mode", "set_metadata", "mark_moment", "expand_item",
+    ];
+    let Some(ty) = ty else {
+        send_protocol_error(sink, "unknown_intent", "missing 'type' field", None).await?;
+        return Ok(());
+    };
+    if !known_intents.contains(&ty.as_str()) {
+        send_protocol_error(sink, "unknown_intent", &format!("unknown intent type '{}'", ty), Some(&ty)).await?;
+        return Ok(());
+    }
+
+    // 2. Parse as Intent strictly. Failure here = bad_payload.
+    let intent: Intent = match serde_json::from_value(raw) {
         Ok(i) => i,
-        Err(_) => {
-            // Protocol-error handling lands in Task 12.
-            warn!(?peer, "bad inbound JSON; will be handled in Task 12");
+        Err(e) => {
+            send_protocol_error(sink, "bad_payload", &format!("{}", e), Some(&ty)).await?;
             return Ok(());
         }
     };
@@ -200,6 +222,24 @@ async fn dispatch_intent(
     for event in outcome.events {
         let _ = handle.events_tx.send(event);
     }
-    // Background task signals (started_meeting/stopped_meeting/etc.) handled in later tasks.
+    Ok(())
+}
+
+async fn send_protocol_error(
+    sink: &mut futures_util::stream::SplitSink<
+        tokio_tungstenite::WebSocketStream<TcpStream>,
+        Message,
+    >,
+    code: &str,
+    message: &str,
+    intent_ref: Option<&str>,
+) -> Result<()> {
+    let evt = Event::Error {
+        code: code.into(),
+        message: message.into(),
+        intent_ref: intent_ref.map(|s| s.into()),
+    };
+    let json = serde_json::to_string(&evt)?;
+    sink.send(Message::Text(json)).await.ok();
     Ok(())
 }

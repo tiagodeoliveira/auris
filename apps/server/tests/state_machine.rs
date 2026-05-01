@@ -173,3 +173,36 @@ async fn mark_moment_idle_no_event() {
     let res = tokio::time::timeout(Duration::from_millis(500), futures_util::StreamExt::next(&mut ws)).await;
     assert!(res.is_err());
 }
+
+#[tokio::test]
+async fn bad_json() {
+    let server = spawn_test_server().await;
+    let mut ws = connect(server.addr, "test-token").await;
+    drain_snapshot(&mut ws).await;
+    use tokio_tungstenite::tungstenite::Message;
+    use futures_util::SinkExt;
+    ws.send(Message::Text("not json at all".into())).await.unwrap();
+    let err = next_event(&mut ws, T).await;
+    assert_eq!(err["type"], "error");
+    assert_eq!(err["code"], "bad_json");
+}
+
+#[tokio::test]
+async fn unknown_intent() {
+    let server = spawn_test_server().await;
+    let mut ws = connect(server.addr, "test-token").await;
+    drain_snapshot(&mut ws).await;
+    send_intent(&mut ws, json!({"type":"fly_to_moon"})).await;
+    let err = next_event(&mut ws, T).await;
+    assert_eq!(err["code"], "unknown_intent");
+}
+
+#[tokio::test]
+async fn bad_payload() {
+    let server = spawn_test_server().await;
+    let mut ws = connect(server.addr, "test-token").await;
+    drain_snapshot(&mut ws).await;
+    send_intent(&mut ws, json!({"type":"set_mode"})).await;   // missing 'mode'
+    let err = next_event(&mut ws, T).await;
+    assert_eq!(err["code"], "bad_payload");
+}
