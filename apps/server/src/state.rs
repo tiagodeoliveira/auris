@@ -101,7 +101,8 @@ impl ServerState {
             Intent::Resume => {
                 self.handle_resume(&mut outcome);
             }
-            // Other intents land in Tasks 7 and 8.
+            Intent::SetMode { mode } => self.handle_set_mode(mode, &mut outcome),
+            Intent::SetMetadata { key, value } => self.handle_set_metadata(key, value, &mut outcome),
             _ => {
                 tracing::warn!("intent not yet implemented");
             }
@@ -175,6 +176,31 @@ impl ServerState {
         outcome.resumed_meeting = true;
     }
 
+    fn handle_set_mode(&mut self, mode: String, outcome: &mut IntentOutcome) {
+        if !self.available_modes.iter().any(|m| m.id == mode) {
+            outcome.error = Some(Event::Error {
+                code: "unknown_mode".into(),
+                message: format!("mode '{}' not in catalog", mode),
+                intent_ref: Some(mode),
+            });
+            return;
+        }
+        self.current_mode = mode.clone();
+        outcome.events.push(Event::ModeChanged {
+            mode,
+            display_tag: None,
+            items: self.items_per_mode[&self.current_mode].clone(),
+        });
+    }
+
+    fn handle_set_metadata(&mut self, key: String, value: Option<String>, outcome: &mut IntentOutcome) {
+        match value {
+            Some(v) => { self.metadata.insert(key, v); }
+            None => { self.metadata.remove(&key); }
+        }
+        outcome.events.push(Event::MetadataChanged { metadata: self.metadata.clone() });
+    }
+
     pub(crate) fn assert_invariants(&self) {
         debug_assert!(
             self.available_modes.iter().any(|m| m.id == self.current_mode),
@@ -205,7 +231,6 @@ impl ServerState {
         }
         match self.meeting_state {
             MeetingState::Idle => {
-                debug_assert!(self.metadata.is_empty(), "metadata must be empty when idle");
                 debug_assert!(
                     self.items_per_mode.values().all(|v| v.is_empty()),
                     "items must be empty when idle"
@@ -386,5 +411,73 @@ mod tests {
         s.apply_intent(Intent::StartMeeting { description: None, metadata: None });
         let out2 = s.apply_intent(Intent::Resume);
         assert!(out2.events.is_empty());
+    }
+
+    #[test]
+    fn set_mode_valid() {
+        let mut s = ServerState::new();
+        let out = s.apply_intent(Intent::SetMode { mode: "transcript".into() });
+        assert_eq!(s.current_mode, "transcript");
+        assert!(out.error.is_none());
+        match &out.events[..] {
+            [Event::ModeChanged { mode, items, display_tag }] => {
+                assert_eq!(mode, "transcript");
+                assert!(items.is_empty());
+                assert!(display_tag.is_none());
+            }
+            other => panic!("unexpected events: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn set_mode_unknown_emits_error() {
+        let mut s = ServerState::new();
+        let out = s.apply_intent(Intent::SetMode { mode: "bogus".into() });
+        assert_eq!(s.current_mode, "highlights");
+        assert!(out.events.is_empty());
+        match out.error {
+            Some(Event::Error { code, intent_ref, .. }) => {
+                assert_eq!(code, "unknown_mode");
+                assert_eq!(intent_ref.as_deref(), Some("bogus"));
+            }
+            _ => panic!("expected unknown_mode error"),
+        }
+    }
+
+    #[test]
+    fn set_mode_in_idle_is_allowed() {
+        let mut s = ServerState::new();
+        let out = s.apply_intent(Intent::SetMode { mode: "actions".into() });
+        assert_eq!(s.current_mode, "actions");
+        assert_eq!(out.events.len(), 1);
+    }
+
+    #[test]
+    fn set_metadata_insert() {
+        let mut s = ServerState::new();
+        let out = s.apply_intent(Intent::SetMetadata {
+            key: "project".into(),
+            value: Some("helix".into()),
+        });
+        assert_eq!(s.metadata.get("project"), Some(&"helix".into()));
+        match &out.events[..] {
+            [Event::MetadataChanged { metadata }] => {
+                assert_eq!(metadata.len(), 1);
+                assert_eq!(metadata["project"], "helix");
+            }
+            _ => panic!(),
+        }
+    }
+
+    #[test]
+    fn set_metadata_delete() {
+        let mut s = ServerState::new();
+        s.apply_intent(Intent::SetMetadata { key: "k".into(), value: Some("v".into()) });
+        let out = s.apply_intent(Intent::SetMetadata { key: "k".into(), value: None });
+        assert!(s.metadata.is_empty());
+        match &out.events[..] {
+            [Event::MetadataChanged { metadata }] => assert!(metadata.is_empty()),
+            _ => panic!(),
+        }
     }
 }
