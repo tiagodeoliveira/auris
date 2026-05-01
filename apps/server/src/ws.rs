@@ -4,6 +4,8 @@ use anyhow::Result;
 use futures_util::{SinkExt, StreamExt};
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::sync::Mutex as StdMutex;
+use std::time::Duration;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{broadcast, oneshot, Mutex};
 use tokio_tungstenite::tungstenite::handshake::server::{Request, Response};
@@ -11,9 +13,11 @@ use tokio_tungstenite::tungstenite::http::Uri;
 use tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode;
 use tokio_tungstenite::tungstenite::protocol::CloseFrame;
 use tokio_tungstenite::tungstenite::Message;
+use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
 use crate::contract::{Event, Intent};
+use crate::mock::make_item;
 use crate::state::ServerState;
 
 #[derive(Clone)]
@@ -21,6 +25,7 @@ pub struct ServerHandle {
     pub state: Arc<Mutex<ServerState>>,
     pub events_tx: broadcast::Sender<Event>,
     pub token: Arc<String>,
+    pub meeting_cancel: Arc<StdMutex<Option<CancellationToken>>>,
 }
 
 pub async fn run_server(addr: SocketAddr, token: String, shutdown_rx: oneshot::Receiver<()>) -> Result<()> {
@@ -40,6 +45,7 @@ pub async fn run_server_with_listener(
         state: Arc::new(Mutex::new(ServerState::new())),
         events_tx,
         token: Arc::new(token),
+        meeting_cancel: Arc::new(StdMutex::new(None)),
     };
 
     loop {
@@ -222,6 +228,23 @@ async fn dispatch_intent(
     for event in outcome.events {
         let _ = handle.events_tx.send(event);
     }
+    if outcome.started_meeting || outcome.resumed_meeting {
+        let token = CancellationToken::new();
+        {
+            let mut slot = handle.meeting_cancel.lock().unwrap();
+            if let Some(prev) = slot.take() {
+                prev.cancel();
+            }
+            *slot = Some(token.clone());
+        }
+        spawn_mock_generator(handle.clone(), token);
+    }
+    if outcome.stopped_meeting || outcome.paused_meeting {
+        let prev = handle.meeting_cancel.lock().unwrap().take();
+        if let Some(t) = prev {
+            t.cancel();
+        }
+    }
     Ok(())
 }
 
@@ -242,4 +265,34 @@ async fn send_protocol_error(
     let json = serde_json::to_string(&evt)?;
     sink.send(Message::Text(json)).await.ok();
     Ok(())
+}
+
+const MOCK_INTERVAL: Duration = Duration::from_secs(3);
+
+pub fn spawn_mock_generator(handle: ServerHandle, cancel: CancellationToken) {
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(MOCK_INTERVAL);
+        interval.tick().await;   // discard the immediate tick
+        let mut idx: usize = 0;
+        loop {
+            tokio::select! {
+                _ = interval.tick() => {
+                    let event = {
+                        let mut s = handle.state.lock().await;
+                        let started_at = match s.meeting_started_at() {
+                            Some(t) => t,
+                            None => break,
+                        };
+                        let mode_id = s.current_mode_id().to_string();
+                        let item = make_item(&mode_id, idx, started_at);
+                        let payload = s.push_mock_item(item);
+                        Event::ItemsUpdate { items: payload }
+                    };
+                    let _ = handle.events_tx.send(event);
+                    idx += 1;
+                }
+                _ = cancel.cancelled() => break,
+            }
+        }
+    });
 }
