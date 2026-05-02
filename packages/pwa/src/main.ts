@@ -8,6 +8,7 @@ import { handleLifecycleEvent } from "./input/lifecycle";
 import { ReconnectingSocket } from "./ws";
 import { handleServerEvent } from "./ws-handlers";
 import { mountUI } from "./ui";
+import type { CtaActions } from "./ui/cta-region";
 
 async function start() {
   const bridge = await waitForEvenAppBridge();
@@ -39,8 +40,32 @@ async function start() {
 
   createGlassesRenderer(bridge as unknown as Parameters<typeof createGlassesRenderer>[0], store);
 
+  const actions: CtaActions = {
+    describeMeeting: () =>
+      store.update({ glassesView: "listening", listeningStartedAt: Date.now() }),
+    // Soniox + audio wiring lands in Task 18.
+    startMeeting: () =>
+      sock.send({ type: "start_meeting", metadata: store.get().settings.lastMetadata }),
+    pauseMeeting: () => sock.send({ type: "pause" }),
+    resumeMeeting: () => sock.send({ type: "resume" }),
+    stopMeeting: () => sock.send({ type: "stop_meeting" }),
+    commitListening: () =>
+      sock.send({
+        type: "start_meeting",
+        description: store.get().listeningTranscript,
+        metadata: store.get().settings.lastMetadata,
+      }),
+    cancelListening: () =>
+      store.update({
+        glassesView: "idle",
+        listeningTranscript: "",
+        listeningInterim: "",
+        listeningStartedAt: null,
+      }),
+  };
+
   const app = document.querySelector<HTMLDivElement>("#app");
-  if (app) mountUI(app, { store, send: (i) => sock.send(i) });
+  if (app) mountUI(app, { store, send: (i) => sock.send(i), actions });
 }
 
 start().catch((err) => {

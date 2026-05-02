@@ -54,3 +54,8 @@ button.cta {
 button.cta.secondary { background: var(--bg-elev); color: var(--fg); }
 button.cta.danger { background: var(--error); }
 button.cta:disabled { opacity: 0.5; cursor: not-allowed; }
+
+@keyframes pulse {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.03); }
+}
