@@ -19,12 +19,21 @@ async function start() {
     env: import.meta.env,
   });
 
-  const sock = new ReconnectingSocket({
-    url: store.get().settings.serverUrl,
-    token: store.get().settings.serverToken,
-    onEvent: (event) => handleServerEvent(event, store),
-    onStatus: (status) => store.update({ wsStatus: status }),
-  });
+  function makeSocket() {
+    return new ReconnectingSocket({
+      url: store.get().settings.serverUrl,
+      token: store.get().settings.serverToken,
+      onEvent: (event) => handleServerEvent(event, store),
+      onStatus: (status) => store.update({ wsStatus: status }),
+    });
+  }
+
+  let sock = makeSocket();
+
+  const reconnect = () => {
+    sock.close();
+    sock = makeSocket();
+  };
 
   bridge.onEvenHubEvent((e: unknown) => {
     const event = e as Record<string, unknown>;
@@ -64,8 +73,14 @@ async function start() {
       }),
   };
 
+  const bridgeForUi = bridge as unknown as {
+    setLocalStorage(k: string, v: string): Promise<boolean>;
+    getLocalStorage(k: string): Promise<string>;
+  };
+
   const app = document.querySelector<HTMLDivElement>("#app");
-  if (app) mountUI(app, { store, send: (i) => sock.send(i), actions });
+  if (app)
+    mountUI(app, { store, send: (i) => sock.send(i), actions, bridge: bridgeForUi, reconnect });
 }
 
 start().catch((err) => {

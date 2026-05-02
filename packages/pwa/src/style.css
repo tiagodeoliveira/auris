@@ -59,3 +59,20 @@ button.cta:disabled { opacity: 0.5; cursor: not-allowed; }
   0%, 100% { transform: scale(1); }
   50% { transform: scale(1.03); }
 }
+
+.modal-overlay {
+  display: none;
+  position: fixed; inset: 0;
+  background: rgba(0,0,0,0.7);
+  align-items: center; justify-content: center;
+  z-index: 150;
+  padding: 16px;
+}
+.modal {
+  background: var(--bg);
+  border: 1px solid #25252a;
+  border-radius: var(--radius);
+  padding: 24px;
+  width: 100%; max-width: 480px;
+  max-height: 90vh; overflow-y: auto;
+}
