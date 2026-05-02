@@ -1,6 +1,8 @@
 //! ServerState — owns all meeting state. See `docs/specs/server.md` §3.
 
-use crate::contract::{Event, Intent, Item, MeetingState, ModeOption, Status, UpdateStrategy, PROTOCOL_VERSION};
+use crate::contract::{
+    Event, Intent, Item, MeetingState, ModeOption, Status, UpdateStrategy, PROTOCOL_VERSION,
+};
 use std::collections::HashMap;
 use std::time::Instant;
 
@@ -98,7 +100,10 @@ impl ServerState {
     pub fn apply_intent(&mut self, intent: Intent) -> IntentOutcome {
         let mut outcome = IntentOutcome::default();
         match intent {
-            Intent::StartMeeting { description, metadata } => {
+            Intent::StartMeeting {
+                description,
+                metadata,
+            } => {
                 self.handle_start_meeting(description, metadata, &mut outcome);
             }
             Intent::StopMeeting => {
@@ -111,7 +116,9 @@ impl ServerState {
                 self.handle_resume(&mut outcome);
             }
             Intent::SetMode { mode } => self.handle_set_mode(mode, &mut outcome),
-            Intent::SetMetadata { key, value } => self.handle_set_metadata(key, value, &mut outcome),
+            Intent::SetMetadata { key, value } => {
+                self.handle_set_metadata(key, value, &mut outcome)
+            }
             Intent::MarkMoment { t, note } => self.handle_mark_moment(t, note, &mut outcome),
             Intent::ExpandItem { item_id } => self.handle_expand_item(item_id, &mut outcome),
         }
@@ -134,8 +141,12 @@ impl ServerState {
         self.metadata = metadata.unwrap_or_default();
         self.current_mode = DEFAULT_MODE_ID.to_string();
 
-        outcome.events.push(Event::MeetingStateChanged { meeting_state: MeetingState::Active });
-        outcome.events.push(Event::MetadataChanged { metadata: self.metadata.clone() });
+        outcome.events.push(Event::MeetingStateChanged {
+            meeting_state: MeetingState::Active,
+        });
+        outcome.events.push(Event::MetadataChanged {
+            metadata: self.metadata.clone(),
+        });
         outcome.events.push(Event::ModeChanged {
             mode: self.current_mode.clone(),
             display_tag: None,
@@ -160,7 +171,9 @@ impl ServerState {
         self.meeting_started_at = None;
         self.current_mode = DEFAULT_MODE_ID.to_string();
 
-        outcome.events.push(Event::MeetingStateChanged { meeting_state: MeetingState::Idle });
+        outcome.events.push(Event::MeetingStateChanged {
+            meeting_state: MeetingState::Idle,
+        });
         outcome.stopped_meeting = true;
     }
 
@@ -170,7 +183,9 @@ impl ServerState {
             return;
         }
         self.meeting_state = MeetingState::Paused;
-        outcome.events.push(Event::MeetingStateChanged { meeting_state: MeetingState::Paused });
+        outcome.events.push(Event::MeetingStateChanged {
+            meeting_state: MeetingState::Paused,
+        });
         outcome.paused_meeting = true;
     }
 
@@ -180,7 +195,9 @@ impl ServerState {
             return;
         }
         self.meeting_state = MeetingState::Active;
-        outcome.events.push(Event::MeetingStateChanged { meeting_state: MeetingState::Active });
+        outcome.events.push(Event::MeetingStateChanged {
+            meeting_state: MeetingState::Active,
+        });
         outcome.resumed_meeting = true;
     }
 
@@ -201,12 +218,23 @@ impl ServerState {
         });
     }
 
-    fn handle_set_metadata(&mut self, key: String, value: Option<String>, outcome: &mut IntentOutcome) {
+    fn handle_set_metadata(
+        &mut self,
+        key: String,
+        value: Option<String>,
+        outcome: &mut IntentOutcome,
+    ) {
         match value {
-            Some(v) => { self.metadata.insert(key, v); }
-            None => { self.metadata.remove(&key); }
+            Some(v) => {
+                self.metadata.insert(key, v);
+            }
+            None => {
+                self.metadata.remove(&key);
+            }
         }
-        outcome.events.push(Event::MetadataChanged { metadata: self.metadata.clone() });
+        outcome.events.push(Event::MetadataChanged {
+            metadata: self.metadata.clone(),
+        });
     }
 
     fn handle_mark_moment(&mut self, t: u64, note: Option<String>, outcome: &mut IntentOutcome) {
@@ -233,7 +261,10 @@ impl ServerState {
             .map(|m| m.update_strategy)
             .expect("invariant: current_mode in available_modes");
 
-        let items = self.items_per_mode.get_mut(&mode_id).expect("invariant: items_per_mode entry exists");
+        let items = self
+            .items_per_mode
+            .get_mut(&mode_id)
+            .expect("invariant: items_per_mode entry exists");
         let Some(idx) = items.iter().position(|i| i.id == item_id) else {
             outcome.error = Some(Event::Error {
                 code: "unknown_item".into(),
@@ -264,7 +295,10 @@ impl ServerState {
             .find(|m| m.id == mode_id)
             .map(|m| m.update_strategy)
             .expect("invariant: current_mode in available_modes");
-        let items = self.items_per_mode.get_mut(&mode_id).expect("invariant: items_per_mode entry exists");
+        let items = self
+            .items_per_mode
+            .get_mut(&mode_id)
+            .expect("invariant: items_per_mode entry exists");
         items.push(item.clone());
 
         let payload = match strategy {
@@ -306,7 +340,9 @@ impl ServerState {
 
     pub(crate) fn assert_invariants(&self) {
         debug_assert!(
-            self.available_modes.iter().any(|m| m.id == self.current_mode),
+            self.available_modes
+                .iter()
+                .any(|m| m.id == self.current_mode),
             "current_mode not in available_modes"
         );
         debug_assert_eq!(
@@ -338,10 +374,16 @@ impl ServerState {
                     self.items_per_mode.values().all(|v| v.is_empty()),
                     "items must be empty when idle"
                 );
-                debug_assert!(self.meeting_started_at.is_none(), "meeting_started_at must be None when idle");
+                debug_assert!(
+                    self.meeting_started_at.is_none(),
+                    "meeting_started_at must be None when idle"
+                );
             }
             MeetingState::Active | MeetingState::Paused => {
-                debug_assert!(self.meeting_started_at.is_some(), "meeting_started_at must be Some when not idle");
+                debug_assert!(
+                    self.meeting_started_at.is_some(),
+                    "meeting_started_at must be Some when not idle"
+                );
             }
         }
     }
@@ -435,7 +477,12 @@ mod tests {
         assert!(matches!(s.meeting_state, MeetingState::Active));
         assert_eq!(s.metadata.get("project"), Some(&"helix".into()));
         assert_eq!(out.events.len(), 3);
-        assert!(matches!(out.events[0], Event::MeetingStateChanged { meeting_state: MeetingState::Active }));
+        assert!(matches!(
+            out.events[0],
+            Event::MeetingStateChanged {
+                meeting_state: MeetingState::Active
+            }
+        ));
         assert!(matches!(out.events[1], Event::MetadataChanged { .. }));
         assert!(matches!(out.events[2], Event::ModeChanged { .. }));
         assert!(out.started_meeting);
@@ -449,14 +496,23 @@ mod tests {
             description: Some("Q1 budget review".into()),
             metadata: None,
         });
-        assert_eq!(out.start_extraction_for.as_deref(), Some("Q1 budget review"));
+        assert_eq!(
+            out.start_extraction_for.as_deref(),
+            Some("Q1 budget review")
+        );
     }
 
     #[test]
     fn start_meeting_when_active_is_noop() {
         let mut s = ServerState::new();
-        s.apply_intent(Intent::StartMeeting { description: None, metadata: None });
-        let out = s.apply_intent(Intent::StartMeeting { description: None, metadata: None });
+        s.apply_intent(Intent::StartMeeting {
+            description: None,
+            metadata: None,
+        });
+        let out = s.apply_intent(Intent::StartMeeting {
+            description: None,
+            metadata: None,
+        });
         assert!(out.events.is_empty());
         assert!(!out.started_meeting);
         assert!(matches!(s.meeting_state, MeetingState::Active));
@@ -465,7 +521,10 @@ mod tests {
     #[test]
     fn stop_meeting_from_active() {
         let mut s = ServerState::new();
-        s.apply_intent(Intent::StartMeeting { description: None, metadata: Some(HashMap::from([("k".into(), "v".into())])) });
+        s.apply_intent(Intent::StartMeeting {
+            description: None,
+            metadata: Some(HashMap::from([("k".into(), "v".into())])),
+        });
         let out = s.apply_intent(Intent::StopMeeting);
         assert!(matches!(s.meeting_state, MeetingState::Idle));
         assert!(s.metadata.is_empty());
@@ -486,7 +545,10 @@ mod tests {
     #[test]
     fn pause_from_active() {
         let mut s = ServerState::new();
-        s.apply_intent(Intent::StartMeeting { description: None, metadata: None });
+        s.apply_intent(Intent::StartMeeting {
+            description: None,
+            metadata: None,
+        });
         let out = s.apply_intent(Intent::Pause);
         assert!(matches!(s.meeting_state, MeetingState::Paused));
         assert_eq!(out.events.len(), 1);
@@ -499,7 +561,10 @@ mod tests {
         let out = s.apply_intent(Intent::Pause);
         assert!(out.events.is_empty());
 
-        s.apply_intent(Intent::StartMeeting { description: None, metadata: None });
+        s.apply_intent(Intent::StartMeeting {
+            description: None,
+            metadata: None,
+        });
         s.apply_intent(Intent::Pause);
         let out2 = s.apply_intent(Intent::Pause);
         assert!(out2.events.is_empty());
@@ -508,7 +573,10 @@ mod tests {
     #[test]
     fn resume_from_paused() {
         let mut s = ServerState::new();
-        s.apply_intent(Intent::StartMeeting { description: None, metadata: None });
+        s.apply_intent(Intent::StartMeeting {
+            description: None,
+            metadata: None,
+        });
         s.apply_intent(Intent::Pause);
         let out = s.apply_intent(Intent::Resume);
         assert!(matches!(s.meeting_state, MeetingState::Active));
@@ -521,7 +589,10 @@ mod tests {
         let out = s.apply_intent(Intent::Resume);
         assert!(out.events.is_empty());
 
-        s.apply_intent(Intent::StartMeeting { description: None, metadata: None });
+        s.apply_intent(Intent::StartMeeting {
+            description: None,
+            metadata: None,
+        });
         let out2 = s.apply_intent(Intent::Resume);
         assert!(out2.events.is_empty());
     }
@@ -529,11 +600,17 @@ mod tests {
     #[test]
     fn set_mode_valid() {
         let mut s = ServerState::new();
-        let out = s.apply_intent(Intent::SetMode { mode: "transcript".into() });
+        let out = s.apply_intent(Intent::SetMode {
+            mode: "transcript".into(),
+        });
         assert_eq!(s.current_mode, "transcript");
         assert!(out.error.is_none());
         match &out.events[..] {
-            [Event::ModeChanged { mode, items, display_tag }] => {
+            [Event::ModeChanged {
+                mode,
+                items,
+                display_tag,
+            }] => {
                 assert_eq!(mode, "transcript");
                 assert!(items.is_empty());
                 assert!(display_tag.is_none());
@@ -545,11 +622,15 @@ mod tests {
     #[test]
     fn set_mode_unknown_emits_error() {
         let mut s = ServerState::new();
-        let out = s.apply_intent(Intent::SetMode { mode: "bogus".into() });
+        let out = s.apply_intent(Intent::SetMode {
+            mode: "bogus".into(),
+        });
         assert_eq!(s.current_mode, "highlights");
         assert!(out.events.is_empty());
         match out.error {
-            Some(Event::Error { code, intent_ref, .. }) => {
+            Some(Event::Error {
+                code, intent_ref, ..
+            }) => {
                 assert_eq!(code, "unknown_mode");
                 assert_eq!(intent_ref.as_deref(), Some("bogus"));
             }
@@ -560,7 +641,9 @@ mod tests {
     #[test]
     fn set_mode_in_idle_is_allowed() {
         let mut s = ServerState::new();
-        let out = s.apply_intent(Intent::SetMode { mode: "actions".into() });
+        let out = s.apply_intent(Intent::SetMode {
+            mode: "actions".into(),
+        });
         assert_eq!(s.current_mode, "actions");
         assert_eq!(out.events.len(), 1);
     }
@@ -585,8 +668,14 @@ mod tests {
     #[test]
     fn set_metadata_delete() {
         let mut s = ServerState::new();
-        s.apply_intent(Intent::SetMetadata { key: "k".into(), value: Some("v".into()) });
-        let out = s.apply_intent(Intent::SetMetadata { key: "k".into(), value: None });
+        s.apply_intent(Intent::SetMetadata {
+            key: "k".into(),
+            value: Some("v".into()),
+        });
+        let out = s.apply_intent(Intent::SetMetadata {
+            key: "k".into(),
+            value: None,
+        });
         assert!(s.metadata.is_empty());
         match &out.events[..] {
             [Event::MetadataChanged { metadata }] => assert!(metadata.is_empty()),
@@ -597,8 +686,14 @@ mod tests {
     #[test]
     fn mark_moment_active_emits_status() {
         let mut s = ServerState::new();
-        s.apply_intent(Intent::StartMeeting { description: None, metadata: None });
-        let out = s.apply_intent(Intent::MarkMoment { t: 1234, note: None });
+        s.apply_intent(Intent::StartMeeting {
+            description: None,
+            metadata: None,
+        });
+        let out = s.apply_intent(Intent::MarkMoment {
+            t: 1234,
+            note: None,
+        });
         match &out.events[..] {
             [Event::Status { status }] => {
                 assert!(status.listening);
@@ -618,12 +713,19 @@ mod tests {
     #[test]
     fn expand_item_append_strategy_returns_single_item() {
         let mut s = ServerState::new();
-        s.apply_intent(Intent::StartMeeting { description: None, metadata: None });
-        s.apply_intent(Intent::SetMode { mode: "transcript".into() });
+        s.apply_intent(Intent::StartMeeting {
+            description: None,
+            metadata: None,
+        });
+        s.apply_intent(Intent::SetMode {
+            mode: "transcript".into(),
+        });
         push_item(&mut s, "transcript", "i1", "first");
         push_item(&mut s, "transcript", "i2", "second");
 
-        let out = s.apply_intent(Intent::ExpandItem { item_id: "i2".into() });
+        let out = s.apply_intent(Intent::ExpandItem {
+            item_id: "i2".into(),
+        });
         match &out.events[..] {
             [Event::ItemsUpdate { items }] => {
                 assert_eq!(items.len(), 1);
@@ -637,11 +739,16 @@ mod tests {
     #[test]
     fn expand_item_replace_strategy_returns_full_list() {
         let mut s = ServerState::new();
-        s.apply_intent(Intent::StartMeeting { description: None, metadata: None });
+        s.apply_intent(Intent::StartMeeting {
+            description: None,
+            metadata: None,
+        });
         push_item(&mut s, "highlights", "h1", "first");
         push_item(&mut s, "highlights", "h2", "second");
 
-        let out = s.apply_intent(Intent::ExpandItem { item_id: "h1".into() });
+        let out = s.apply_intent(Intent::ExpandItem {
+            item_id: "h1".into(),
+        });
         match &out.events[..] {
             [Event::ItemsUpdate { items }] => {
                 assert_eq!(items.len(), 2);
@@ -655,11 +762,18 @@ mod tests {
     #[test]
     fn expand_item_unknown_emits_error() {
         let mut s = ServerState::new();
-        s.apply_intent(Intent::StartMeeting { description: None, metadata: None });
-        let out = s.apply_intent(Intent::ExpandItem { item_id: "nope".into() });
+        s.apply_intent(Intent::StartMeeting {
+            description: None,
+            metadata: None,
+        });
+        let out = s.apply_intent(Intent::ExpandItem {
+            item_id: "nope".into(),
+        });
         assert!(out.events.is_empty());
         match out.error {
-            Some(Event::Error { code, intent_ref, .. }) => {
+            Some(Event::Error {
+                code, intent_ref, ..
+            }) => {
                 assert_eq!(code, "unknown_item");
                 assert_eq!(intent_ref.as_deref(), Some("nope"));
             }
@@ -670,7 +784,10 @@ mod tests {
     #[test]
     fn push_mock_item_replace_caps_at_10() {
         let mut s = ServerState::new();
-        s.apply_intent(Intent::StartMeeting { description: None, metadata: None });
+        s.apply_intent(Intent::StartMeeting {
+            description: None,
+            metadata: None,
+        });
         // current_mode = highlights = replace strategy
         for i in 0..15 {
             let item = Item {
@@ -685,15 +802,20 @@ mod tests {
         }
         let final_items = &s.items_per_mode["highlights"];
         assert_eq!(final_items.len(), 10);
-        assert_eq!(final_items[0].id, "h5");   // FIFO drop kept items 5..15
+        assert_eq!(final_items[0].id, "h5"); // FIFO drop kept items 5..15
         assert_eq!(final_items[9].id, "h14");
     }
 
     #[test]
     fn push_mock_item_append_returns_single_item() {
         let mut s = ServerState::new();
-        s.apply_intent(Intent::StartMeeting { description: None, metadata: None });
-        s.apply_intent(Intent::SetMode { mode: "transcript".into() });
+        s.apply_intent(Intent::StartMeeting {
+            description: None,
+            metadata: None,
+        });
+        s.apply_intent(Intent::SetMode {
+            mode: "transcript".into(),
+        });
         let item = Item {
             id: "t1".into(),
             text: "hi".into(),

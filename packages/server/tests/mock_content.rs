@@ -6,10 +6,14 @@ use std::time::Duration;
 
 const T: Duration = Duration::from_secs(5);
 
-async fn drain_snapshot(ws: &mut Ws) { let _ = next_event(ws, T).await; }
+async fn drain_snapshot(ws: &mut Ws) {
+    let _ = next_event(ws, T).await;
+}
 
 async fn drain_n(ws: &mut Ws, n: usize) {
-    for _ in 0..n { let _ = next_event(ws, T).await; }
+    for _ in 0..n {
+        let _ = next_event(ws, T).await;
+    }
 }
 
 #[tokio::test]
@@ -49,8 +53,8 @@ async fn mock_stops_on_pause() {
     drain_n(&mut ws, 3).await;
     let _first = next_event(&mut ws, Duration::from_secs(5)).await; // wait for at least one items_update
     send_intent(&mut ws, json!({"type":"pause"})).await;
-    let _ = next_event(&mut ws, T).await;   // meeting_state_changed
-    // Now wait 5s and confirm no items_update arrives.
+    let _ = next_event(&mut ws, T).await; // meeting_state_changed
+                                          // Now wait 5s and confirm no items_update arrives.
     let res = tokio::time::timeout(Duration::from_secs(5), async {
         loop {
             let evt = next_event(&mut ws, Duration::from_secs(10)).await;
@@ -58,7 +62,8 @@ async fn mock_stops_on_pause() {
                 return evt;
             }
         }
-    }).await;
+    })
+    .await;
     assert!(res.is_err(), "items_update should not arrive while paused");
 }
 
@@ -79,7 +84,8 @@ async fn mock_stops_on_stop() {
                 return evt;
             }
         }
-    }).await;
+    })
+    .await;
     assert!(res.is_err(), "items_update should not arrive after stop");
 }
 

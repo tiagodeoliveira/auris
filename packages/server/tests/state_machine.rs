@@ -38,7 +38,11 @@ async fn start_meeting_with_metadata() {
     let mut ws = connect(server.addr, "test-token").await;
     drain_snapshot(&mut ws).await;
 
-    send_intent(&mut ws, json!({"type":"start_meeting", "metadata": {"project": "helix"}})).await;
+    send_intent(
+        &mut ws,
+        json!({"type":"start_meeting", "metadata": {"project": "helix"}}),
+    )
+    .await;
     let _ = next_event(&mut ws, T).await; // meeting_state_changed
     let meta = next_event(&mut ws, T).await;
     assert_eq!(meta["type"], "metadata_changed");
@@ -51,7 +55,9 @@ async fn pause_resume_events() {
     let mut ws = connect(server.addr, "test-token").await;
     drain_snapshot(&mut ws).await;
     send_intent(&mut ws, json!({"type":"start_meeting"})).await;
-    for _ in 0..3 { let _ = next_event(&mut ws, T).await; }
+    for _ in 0..3 {
+        let _ = next_event(&mut ws, T).await;
+    }
     send_intent(&mut ws, json!({"type":"pause"})).await;
     let p = next_event(&mut ws, T).await;
     assert_eq!(p["meeting_state"], "paused");
@@ -66,7 +72,9 @@ async fn set_mode_valid() {
     let mut ws = connect(server.addr, "test-token").await;
     drain_snapshot(&mut ws).await;
     send_intent(&mut ws, json!({"type":"start_meeting"})).await;
-    for _ in 0..3 { let _ = next_event(&mut ws, T).await; }
+    for _ in 0..3 {
+        let _ = next_event(&mut ws, T).await;
+    }
     send_intent(&mut ws, json!({"type":"set_mode", "mode": "transcript"})).await;
     let m = next_event(&mut ws, T).await;
     assert_eq!(m["type"], "mode_changed");
@@ -88,7 +96,11 @@ async fn set_mode_unknown_returns_error_to_originator_only() {
     assert_eq!(err["intent_ref"], "bogus");
 
     // B should see nothing within 500ms.
-    let res = tokio::time::timeout(Duration::from_millis(500), futures_util::StreamExt::next(&mut b)).await;
+    let res = tokio::time::timeout(
+        Duration::from_millis(500),
+        futures_util::StreamExt::next(&mut b),
+    )
+    .await;
     assert!(res.is_err(), "B should not have received an event");
 }
 
@@ -108,7 +120,11 @@ async fn set_metadata_basic() {
     let server = spawn_test_server().await;
     let mut ws = connect(server.addr, "test-token").await;
     drain_snapshot(&mut ws).await;
-    send_intent(&mut ws, json!({"type":"set_metadata", "key": "foo", "value": "bar"})).await;
+    send_intent(
+        &mut ws,
+        json!({"type":"set_metadata", "key": "foo", "value": "bar"}),
+    )
+    .await;
     let m = next_event(&mut ws, T).await;
     assert_eq!(m["metadata"]["foo"], "bar");
 }
@@ -118,9 +134,17 @@ async fn set_metadata_delete() {
     let server = spawn_test_server().await;
     let mut ws = connect(server.addr, "test-token").await;
     drain_snapshot(&mut ws).await;
-    send_intent(&mut ws, json!({"type":"set_metadata", "key": "foo", "value": "bar"})).await;
+    send_intent(
+        &mut ws,
+        json!({"type":"set_metadata", "key": "foo", "value": "bar"}),
+    )
+    .await;
     let _ = next_event(&mut ws, T).await;
-    send_intent(&mut ws, json!({"type":"set_metadata", "key": "foo", "value": null})).await;
+    send_intent(
+        &mut ws,
+        json!({"type":"set_metadata", "key": "foo", "value": null}),
+    )
+    .await;
     let m = next_event(&mut ws, T).await;
     assert!(m["metadata"].as_object().unwrap().is_empty());
 }
@@ -144,7 +168,9 @@ async fn expand_item_unknown() {
     let mut ws = connect(server.addr, "test-token").await;
     drain_snapshot(&mut ws).await;
     send_intent(&mut ws, json!({"type":"start_meeting"})).await;
-    for _ in 0..3 { let _ = next_event(&mut ws, T).await; }
+    for _ in 0..3 {
+        let _ = next_event(&mut ws, T).await;
+    }
     send_intent(&mut ws, json!({"type":"expand_item", "item_id": "nope"})).await;
     let err = next_event(&mut ws, T).await;
     assert_eq!(err["type"], "error");
@@ -157,7 +183,9 @@ async fn mark_moment_active() {
     let mut ws = connect(server.addr, "test-token").await;
     drain_snapshot(&mut ws).await;
     send_intent(&mut ws, json!({"type":"start_meeting"})).await;
-    for _ in 0..3 { let _ = next_event(&mut ws, T).await; }
+    for _ in 0..3 {
+        let _ = next_event(&mut ws, T).await;
+    }
     send_intent(&mut ws, json!({"type":"mark_moment", "t": 1234})).await;
     let s = next_event(&mut ws, T).await;
     assert_eq!(s["type"], "status");
@@ -170,7 +198,11 @@ async fn mark_moment_idle_no_event() {
     let mut ws = connect(server.addr, "test-token").await;
     drain_snapshot(&mut ws).await;
     send_intent(&mut ws, json!({"type":"mark_moment", "t": 0})).await;
-    let res = tokio::time::timeout(Duration::from_millis(500), futures_util::StreamExt::next(&mut ws)).await;
+    let res = tokio::time::timeout(
+        Duration::from_millis(500),
+        futures_util::StreamExt::next(&mut ws),
+    )
+    .await;
     assert!(res.is_err());
 }
 
@@ -179,9 +211,11 @@ async fn bad_json() {
     let server = spawn_test_server().await;
     let mut ws = connect(server.addr, "test-token").await;
     drain_snapshot(&mut ws).await;
-    use tokio_tungstenite::tungstenite::Message;
     use futures_util::SinkExt;
-    ws.send(Message::Text("not json at all".into())).await.unwrap();
+    use tokio_tungstenite::tungstenite::Message;
+    ws.send(Message::Text("not json at all".into()))
+        .await
+        .unwrap();
     let err = next_event(&mut ws, T).await;
     assert_eq!(err["type"], "error");
     assert_eq!(err["code"], "bad_json");
@@ -202,7 +236,7 @@ async fn bad_payload() {
     let server = spawn_test_server().await;
     let mut ws = connect(server.addr, "test-token").await;
     drain_snapshot(&mut ws).await;
-    send_intent(&mut ws, json!({"type":"set_mode"})).await;   // missing 'mode'
+    send_intent(&mut ws, json!({"type":"set_mode"})).await; // missing 'mode'
     let err = next_event(&mut ws, T).await;
     assert_eq!(err["code"], "bad_payload");
 }

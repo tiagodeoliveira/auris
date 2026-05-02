@@ -7,12 +7,17 @@ use tokio_tungstenite::tungstenite::Error;
 #[tokio::test]
 async fn handshake_token_match() {
     let server = spawn_test_server().await;
-    let (mut ws, _) = connect_async(ws_url(server.addr, "test-token")).await.expect("connect");
-    let msg = tokio::time::timeout(std::time::Duration::from_secs(1), futures_util::StreamExt::next(&mut ws))
+    let (mut ws, _) = connect_async(ws_url(server.addr, "test-token"))
         .await
-        .expect("timeout")
-        .expect("frame")
-        .expect("msg");
+        .expect("connect");
+    let msg = tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        futures_util::StreamExt::next(&mut ws),
+    )
+    .await
+    .expect("timeout")
+    .expect("frame")
+    .expect("msg");
     assert!(msg.is_text(), "expected text frame, got {:?}", msg);
     let json: serde_json::Value = serde_json::from_str(msg.to_text().unwrap()).unwrap();
     assert_eq!(json["type"], "snapshot");

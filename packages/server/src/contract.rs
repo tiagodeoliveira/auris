@@ -59,14 +59,21 @@ pub enum Intent {
     StopMeeting,
     Pause,
     Resume,
-    SetMode { mode: String },
-    SetMetadata { key: String, value: Option<String> },
+    SetMode {
+        mode: String,
+    },
+    SetMetadata {
+        key: String,
+        value: Option<String>,
+    },
     MarkMoment {
         t: u64,
         #[serde(skip_serializing_if = "Option::is_none", default)]
         note: Option<String>,
     },
-    ExpandItem { item_id: String },
+    ExpandItem {
+        item_id: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -83,8 +90,12 @@ pub enum Event {
         items: Vec<Item>,
         status: Status,
     },
-    MeetingStateChanged { meeting_state: MeetingState },
-    AvailableModesChanged { available_modes: Vec<ModeOption> },
+    MeetingStateChanged {
+        meeting_state: MeetingState,
+    },
+    AvailableModesChanged {
+        available_modes: Vec<ModeOption>,
+    },
     ModeChanged {
         mode: String,
         #[serde(skip_serializing_if = "Option::is_none", default)]
@@ -95,9 +106,15 @@ pub enum Event {
         #[serde(skip_serializing_if = "Option::is_none", default)]
         tag: Option<String>,
     },
-    MetadataChanged { metadata: HashMap<String, String> },
-    ItemsUpdate { items: Vec<Item> },
-    Status { status: Status },
+    MetadataChanged {
+        metadata: HashMap<String, String>,
+    },
+    ItemsUpdate {
+        items: Vec<Item>,
+    },
+    Status {
+        status: Status,
+    },
     Error {
         code: String,
         message: String,
@@ -129,7 +146,10 @@ mod tests {
 
     #[test]
     fn intent_start_meeting_minimal() {
-        let i = Intent::StartMeeting { description: None, metadata: None };
+        let i = Intent::StartMeeting {
+            description: None,
+            metadata: None,
+        };
         let json = serde_json::to_string(&i).unwrap();
         assert!(!json.contains("description"));
         assert!(!json.contains("metadata"));
@@ -145,14 +165,22 @@ mod tests {
 
     #[test]
     fn intent_set_mode() {
-        let i = Intent::SetMode { mode: "highlights".into() };
+        let i = Intent::SetMode {
+            mode: "highlights".into(),
+        };
         assert_eq!(round_trip(&i), i);
     }
 
     #[test]
     fn intent_set_metadata_set_and_delete() {
-        let set = Intent::SetMetadata { key: "project".into(), value: Some("helix".into()) };
-        let del = Intent::SetMetadata { key: "project".into(), value: None };
+        let set = Intent::SetMetadata {
+            key: "project".into(),
+            value: Some("helix".into()),
+        };
+        let del = Intent::SetMetadata {
+            key: "project".into(),
+            value: None,
+        };
         assert_eq!(round_trip(&set), set);
         assert_eq!(round_trip(&del), del);
         // value: null must round-trip as Some(None) → None — the field is present.
@@ -162,13 +190,18 @@ mod tests {
 
     #[test]
     fn intent_mark_moment() {
-        let i = Intent::MarkMoment { t: 1234, note: Some("nice".into()) };
+        let i = Intent::MarkMoment {
+            t: 1234,
+            note: Some("nice".into()),
+        };
         assert_eq!(round_trip(&i), i);
     }
 
     #[test]
     fn intent_expand_item() {
-        let i = Intent::ExpandItem { item_id: "abc".into() };
+        let i = Intent::ExpandItem {
+            item_id: "abc".into(),
+        };
         assert_eq!(round_trip(&i), i);
     }
 
@@ -186,14 +219,20 @@ mod tests {
             display_tag: None,
             metadata: HashMap::new(),
             items: vec![],
-            status: Status { listening: false, paused: false, error: None },
+            status: Status {
+                listening: false,
+                paused: false,
+                error: None,
+            },
         };
         assert_eq!(round_trip(&e), e);
     }
 
     #[test]
     fn event_meeting_state_changed() {
-        let e = Event::MeetingStateChanged { meeting_state: MeetingState::Active };
+        let e = Event::MeetingStateChanged {
+            meeting_state: MeetingState::Active,
+        };
         assert_eq!(round_trip(&e), e);
     }
 
@@ -230,7 +269,11 @@ mod tests {
     #[test]
     fn event_status() {
         let e = Event::Status {
-            status: Status { listening: true, paused: false, error: None },
+            status: Status {
+                listening: true,
+                paused: false,
+                error: None,
+            },
         };
         assert_eq!(round_trip(&e), e);
     }
@@ -247,14 +290,19 @@ mod tests {
 
     #[test]
     fn intent_type_discriminator_snake_case() {
-        let i = Intent::StartMeeting { description: None, metadata: None };
+        let i = Intent::StartMeeting {
+            description: None,
+            metadata: None,
+        };
         let json = serde_json::to_string(&i).unwrap();
         assert!(json.contains("\"type\":\"start_meeting\""));
     }
 
     #[test]
     fn event_type_discriminator_snake_case() {
-        let e = Event::MeetingStateChanged { meeting_state: MeetingState::Idle };
+        let e = Event::MeetingStateChanged {
+            meeting_state: MeetingState::Idle,
+        };
         let json = serde_json::to_string(&e).unwrap();
         assert!(json.contains("\"type\":\"meeting_state_changed\""));
         assert!(json.contains("\"meeting_state\":\"idle\""));

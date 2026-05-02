@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# 1. Prettier on staged JS/TS/JSON/MD/YAML files (auto-fix + re-stage).
+pnpm exec lint-staged
+
+# 2. Verify Rust formatting (manual fix: `cargo fmt --all`). Only run if .rs files are staged.
+if git diff --cached --name-only --diff-filter=ACMR | grep -qE '\.rs$'; then
+  cargo fmt --all -- --check
+fi

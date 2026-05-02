@@ -17,7 +17,10 @@ async fn graceful_shutdown_sends_close() {
     let mut got_close = false;
     while std::time::Instant::now() < deadline {
         match tokio::time::timeout(Duration::from_millis(500), ws.next()).await {
-            Ok(Some(Ok(msg))) if matches!(msg, Message::Close(_)) => { got_close = true; break; }
+            Ok(Some(Ok(msg))) if matches!(msg, Message::Close(_)) => {
+                got_close = true;
+                break;
+            }
             Ok(Some(Ok(_))) => continue,
             Ok(Some(Err(_))) | Ok(None) => break,
             Err(_) => continue,

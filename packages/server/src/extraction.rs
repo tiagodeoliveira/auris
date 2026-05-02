@@ -3,7 +3,11 @@
 use std::collections::HashMap;
 
 pub fn extract_metadata(description: &str) -> HashMap<String, String> {
-    let title = description.split_whitespace().take(8).collect::<Vec<_>>().join(" ");
+    let title = description
+        .split_whitespace()
+        .take(8)
+        .collect::<Vec<_>>()
+        .join(" ");
     HashMap::from([
         ("title".to_string(), title),
         ("project".to_string(), "sim-extracted".to_string()),
@@ -11,7 +15,10 @@ pub fn extract_metadata(description: &str) -> HashMap<String, String> {
 }
 
 /// Manual values win on conflict (architecture-stated rule).
-pub fn merge_manual_wins(extracted: HashMap<String, String>, manual: &HashMap<String, String>) -> HashMap<String, String> {
+pub fn merge_manual_wins(
+    extracted: HashMap<String, String>,
+    manual: &HashMap<String, String>,
+) -> HashMap<String, String> {
     let mut out = extracted;
     for (k, v) in manual {
         out.insert(k.clone(), v.clone());

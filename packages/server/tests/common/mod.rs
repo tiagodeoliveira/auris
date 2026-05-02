@@ -40,12 +40,17 @@ pub async fn spawn_test_server_with_token(token: &str) -> TestServer {
     tokio::spawn(async move {
         let _ = meeting_companion_server::ws::run_server_with_listener(listener, token, rx).await;
     });
-    TestServer { addr, shutdown: Some(tx) }
+    TestServer {
+        addr,
+        shutdown: Some(tx),
+    }
 }
 
 pub async fn connect(addr: SocketAddr, token: &str) -> Ws {
     let req = ws_url(addr, token);
-    let (ws, _) = tokio_tungstenite::connect_async(req).await.expect("connect");
+    let (ws, _) = tokio_tungstenite::connect_async(req)
+        .await
+        .expect("connect");
     ws
 }
 
@@ -60,7 +65,9 @@ pub async fn next_event(ws: &mut Ws, timeout: Duration) -> Value {
 }
 
 pub async fn send_intent(ws: &mut Ws, intent: Value) {
-    ws.send(Message::Text(intent.to_string())).await.expect("send");
+    ws.send(Message::Text(intent.to_string()))
+        .await
+        .expect("send");
 }
 
 pub fn ws_url(addr: SocketAddr, token: &str) -> Request {

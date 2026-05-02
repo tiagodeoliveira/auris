@@ -6,7 +6,9 @@ use std::time::Duration;
 
 const T: Duration = Duration::from_secs(2);
 
-async fn drain_snapshot(ws: &mut Ws) { let _ = next_event(ws, T).await; }
+async fn drain_snapshot(ws: &mut Ws) {
+    let _ = next_event(ws, T).await;
+}
 
 async fn next_status(ws: &mut Ws) -> serde_json::Value {
     let deadline = std::time::Instant::now() + Duration::from_secs(2);
@@ -37,7 +39,9 @@ async fn heartbeat_active() {
     let mut ws = connect(server.addr, "test-token").await;
     drain_snapshot(&mut ws).await;
     send_intent(&mut ws, json!({"type":"start_meeting"})).await;
-    for _ in 0..3 { let _ = next_event(&mut ws, T).await; }
+    for _ in 0..3 {
+        let _ = next_event(&mut ws, T).await;
+    }
     let s = next_status(&mut ws).await;
     assert_eq!(s["status"]["listening"], true);
     assert_eq!(s["status"]["paused"], false);

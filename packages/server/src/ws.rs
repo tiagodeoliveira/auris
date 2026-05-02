@@ -30,7 +30,11 @@ pub struct ServerHandle {
     pub shutdown: CancellationToken,
 }
 
-pub async fn run_server(addr: SocketAddr, token: String, shutdown_rx: oneshot::Receiver<()>) -> Result<()> {
+pub async fn run_server(
+    addr: SocketAddr,
+    token: String,
+    shutdown_rx: oneshot::Receiver<()>,
+) -> Result<()> {
     let listener = TcpListener::bind(addr).await?;
     let actual = listener.local_addr()?;
     info!(addr = ?actual, "listening");
@@ -60,12 +64,20 @@ pub async fn run_server_with_listener(
         interval.tick().await; // skip first immediate tick
         loop {
             interval.tick().await;
-            if hb_shutdown_clone.load(std::sync::atomic::Ordering::Relaxed) { break; }
+            if hb_shutdown_clone.load(std::sync::atomic::Ordering::Relaxed) {
+                break;
+            }
             let status = {
                 let s = hb_handle.state.lock().await;
                 crate::contract::Status {
-                    listening: matches!(s.snapshot_meeting_state(), crate::contract::MeetingState::Active),
-                    paused: matches!(s.snapshot_meeting_state(), crate::contract::MeetingState::Paused),
+                    listening: matches!(
+                        s.snapshot_meeting_state(),
+                        crate::contract::MeetingState::Active
+                    ),
+                    paused: matches!(
+                        s.snapshot_meeting_state(),
+                        crate::contract::MeetingState::Paused
+                    ),
                     error: None,
                 }
             };
@@ -94,9 +106,9 @@ pub async fn run_server_with_listener(
             }
         }
     }
-    shutdown.cancel();   // signal all per-connection tasks to close
+    shutdown.cancel(); // signal all per-connection tasks to close
     hb_shutdown.store(true, std::sync::atomic::Ordering::Relaxed);
-    tokio::time::sleep(Duration::from_secs(2)).await;   // give connections 2s to drain
+    tokio::time::sleep(Duration::from_secs(2)).await; // give connections 2s to drain
     Ok(())
 }
 
@@ -124,7 +136,15 @@ async fn handle_connection(
     };
 
     if !valid {
-        warn!(?peer, reason = if provided.is_some() { "mismatch" } else { "missing" }, "auth failure");
+        warn!(
+            ?peer,
+            reason = if provided.is_some() {
+                "mismatch"
+            } else {
+                "missing"
+            },
+            "auth failure"
+        );
         let mut ws = ws;
         let _ = ws
             .send(Message::Close(Some(CloseFrame {
@@ -144,7 +164,8 @@ async fn handle_connection(
     };
 
     let (mut sink, mut stream) = ws.split();
-    sink.send(Message::Text(serde_json::to_string(&snapshot)?)).await?;
+    sink.send(Message::Text(serde_json::to_string(&snapshot)?))
+        .await?;
 
     loop {
         tokio::select! {
@@ -228,17 +249,32 @@ async fn dispatch_intent(
         }
     };
 
-    let ty: Option<String> = raw.get("type").and_then(|v| v.as_str()).map(|s| s.to_owned());
+    let ty: Option<String> = raw
+        .get("type")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_owned());
     let known_intents = [
-        "start_meeting", "stop_meeting", "pause", "resume",
-        "set_mode", "set_metadata", "mark_moment", "expand_item",
+        "start_meeting",
+        "stop_meeting",
+        "pause",
+        "resume",
+        "set_mode",
+        "set_metadata",
+        "mark_moment",
+        "expand_item",
     ];
     let Some(ty) = ty else {
         send_protocol_error(sink, "unknown_intent", "missing 'type' field", None).await?;
         return Ok(());
     };
     if !known_intents.contains(&ty.as_str()) {
-        send_protocol_error(sink, "unknown_intent", &format!("unknown intent type '{}'", ty), Some(&ty)).await?;
+        send_protocol_error(
+            sink,
+            "unknown_intent",
+            &format!("unknown intent type '{}'", ty),
+            Some(&ty),
+        )
+        .await?;
         return Ok(());
     }
 
@@ -350,7 +386,7 @@ fn spawn_extraction(handle: ServerHandle, description: String, cancel: Cancellat
 pub fn spawn_mock_generator(handle: ServerHandle, cancel: CancellationToken) {
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(MOCK_INTERVAL);
-        interval.tick().await;   // discard the immediate tick
+        interval.tick().await; // discard the immediate tick
         let mut idx: usize = 0;
         loop {
             tokio::select! {

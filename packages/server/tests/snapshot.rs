@@ -27,7 +27,9 @@ async fn reconnect_snapshot_active() {
     let _ = next_event(&mut ws1, Duration::from_secs(1)).await; // snapshot
     send_intent(&mut ws1, json!({"type":"start_meeting"})).await;
     // Drain 3 events from the start-meeting sequence.
-    for _ in 0..3 { let _ = next_event(&mut ws1, Duration::from_secs(1)).await; }
+    for _ in 0..3 {
+        let _ = next_event(&mut ws1, Duration::from_secs(1)).await;
+    }
     drop(ws1);
     tokio::time::sleep(Duration::from_millis(100)).await;
 
