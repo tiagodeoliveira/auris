@@ -5,10 +5,10 @@ spec and `docs/specs/` for component specs.
 
 ## Structure
 
-- `apps/server/` — Rust WebSocket server (state owner)
-- `apps/pwa/` — TypeScript PWA (forthcoming)
+- `packages/server/` — Rust WebSocket server (state owner)
+- `packages/pwa/` — TypeScript PWA (forthcoming)
 - `packages/contract/` — shared TS contract types
 
 ## Running
 
-See `apps/server/README.md` once the server crate is in place.
+See `packages/server/README.md`.
