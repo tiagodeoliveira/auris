@@ -3,6 +3,7 @@ import type { GlassesView } from "../types";
 import { buildIdleRebuild } from "./layout-idle";
 import { buildActiveListLayout, buildBodyUpgrade, buildHeaderUpgrade } from "./layout-active-list";
 import { buildActiveDetailLayout, buildDetailBodyUpgrade } from "./layout-active-detail";
+import { buildListeningLayout, buildListeningBodyUpgrade } from "./layout-listening";
 
 interface BridgeLike {
   rebuildPageContainer(container: unknown): Promise<boolean>;
@@ -27,7 +28,8 @@ export function createGlassesRenderer(bridge: BridgeLike, store: Store): Glasses
         await bridge.rebuildPageContainer(buildActiveListLayout(store.get()));
         return;
       case "listening":
-        return; // Task 10
+        await bridge.rebuildPageContainer(buildListeningLayout(store.get()));
+        return;
       case "active_detail":
         await bridge.rebuildPageContainer(buildActiveDetailLayout(store.get()));
         return;
@@ -85,6 +87,15 @@ export function createGlassesRenderer(bridge: BridgeLike, store: Store): Glasses
     () => {
       if (lastView === "active_detail")
         void bridge.textContainerUpgrade(buildDetailBodyUpgrade(store.get()));
+    },
+  );
+
+  // listening body subscription — fires when transcript or interim text changes.
+  store.subscribe(
+    (s) => s.listeningTranscript + s.listeningInterim,
+    () => {
+      if (lastView === "listening")
+        void bridge.textContainerUpgrade(buildListeningBodyUpgrade(store.get()));
     },
   );
 
