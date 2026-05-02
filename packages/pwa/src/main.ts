@@ -6,6 +6,7 @@ import { createGlassesRenderer } from "./glasses/render";
 import { handleBridgeEvent } from "./input/gesture-router";
 import { handleLifecycleEvent } from "./input/lifecycle";
 import { ReconnectingSocket } from "./ws";
+import { handleServerEvent } from "./ws-handlers";
 
 async function start() {
   const bridge = await waitForEvenAppBridge();
@@ -19,9 +20,7 @@ async function start() {
   const sock = new ReconnectingSocket({
     url: store.get().settings.serverUrl,
     token: store.get().settings.serverToken,
-    onEvent: (_event) => {
-      /* event handlers in Task 13 */
-    },
+    onEvent: (event) => handleServerEvent(event, store),
     onStatus: (status) => store.update({ wsStatus: status }),
   });
 
