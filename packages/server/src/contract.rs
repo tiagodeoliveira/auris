@@ -1,4 +1,4 @@
-//! WebSocket message contract. Mirrors `packages/contract/src/index.ts`.
+//! WebSocket message contract. Mirrors `packages/pwa/src/contract.ts`.
 //! See `docs/specs/server.md` §2.6.
 
 use serde::{Deserialize, Serialize};
