@@ -40,7 +40,7 @@ async function start() {
   createGlassesRenderer(bridge as unknown as Parameters<typeof createGlassesRenderer>[0], store);
 
   const app = document.querySelector<HTMLDivElement>("#app");
-  if (app) mountUI(app, store);
+  if (app) mountUI(app, { store, send: (i) => sock.send(i) });
 }
 
 start().catch((err) => {
