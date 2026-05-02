@@ -2,6 +2,7 @@ import type { Store } from "../store";
 import type { GlassesView } from "../types";
 import { buildIdleRebuild } from "./layout-idle";
 import { buildActiveListLayout, buildBodyUpgrade, buildHeaderUpgrade } from "./layout-active-list";
+import { buildActiveDetailLayout, buildDetailBodyUpgrade } from "./layout-active-detail";
 
 interface BridgeLike {
   rebuildPageContainer(container: unknown): Promise<boolean>;
@@ -28,7 +29,8 @@ export function createGlassesRenderer(bridge: BridgeLike, store: Store): Glasses
       case "listening":
         return; // Task 10
       case "active_detail":
-        return; // Task 9
+        await bridge.rebuildPageContainer(buildActiveDetailLayout(store.get()));
+        return;
     }
   }
 
@@ -74,6 +76,15 @@ export function createGlassesRenderer(bridge: BridgeLike, store: Store): Glasses
     () => {
       if (lastView === "active_list")
         void bridge.textContainerUpgrade(buildHeaderUpgrade(store.get()));
+    },
+  );
+
+  // active_detail body subscription — fires when the detail item or its content changes.
+  store.subscribe(
+    (s) => (s.detailItemId ? s.items.find((i) => i.id === s.detailItemId) : null),
+    () => {
+      if (lastView === "active_detail")
+        void bridge.textContainerUpgrade(buildDetailBodyUpgrade(store.get()));
     },
   );
 
