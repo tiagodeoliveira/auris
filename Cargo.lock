@@ -1363,6 +1363,7 @@ dependencies = [
  "anyhow",
  "aws-config",
  "aws-sdk-bedrockruntime",
+ "aws-smithy-types",
  "clap",
  "futures-util",
  "serde",
