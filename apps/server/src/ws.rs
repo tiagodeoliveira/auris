@@ -17,6 +17,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
 use crate::contract::{Event, Intent};
+use crate::extraction;
 use crate::mock::make_item;
 use crate::state::ServerState;
 
@@ -239,6 +240,17 @@ async fn dispatch_intent(
         }
         spawn_mock_generator(handle.clone(), token);
     }
+    if let Some(description) = outcome.start_extraction_for {
+        let token = handle
+            .meeting_cancel
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|t| t.child_token());
+        if let Some(t) = token {
+            spawn_extraction(handle.clone(), description, t);
+        }
+    }
     if outcome.stopped_meeting || outcome.paused_meeting {
         let prev = handle.meeting_cancel.lock().unwrap().take();
         if let Some(t) = prev {
@@ -268,6 +280,29 @@ async fn send_protocol_error(
 }
 
 const MOCK_INTERVAL: Duration = Duration::from_secs(3);
+const EXTRACTION_DELAY: Duration = Duration::from_millis(1500);
+
+fn spawn_extraction(handle: ServerHandle, description: String, cancel: CancellationToken) {
+    tokio::spawn(async move {
+        tokio::select! {
+            _ = tokio::time::sleep(EXTRACTION_DELAY) => {
+                let extracted = extraction::extract_metadata(&description);
+                let event = {
+                    let mut s = handle.state.lock().await;
+                    if !matches!(s.snapshot_meeting_state(), crate::contract::MeetingState::Active | crate::contract::MeetingState::Paused) {
+                        return;
+                    }
+                    let manual = s.metadata_clone();
+                    let merged = extraction::merge_manual_wins(extracted, &manual);
+                    s.set_metadata_full(merged.clone());
+                    Event::MetadataChanged { metadata: merged }
+                };
+                let _ = handle.events_tx.send(event);
+            }
+            _ = cancel.cancelled() => {}
+        }
+    });
+}
 
 pub fn spawn_mock_generator(handle: ServerHandle, cancel: CancellationToken) {
     tokio::spawn(async move {

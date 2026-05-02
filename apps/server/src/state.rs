@@ -288,6 +288,22 @@ impl ServerState {
         self.meeting_started_at
     }
 
+    pub fn snapshot_meeting_state(&self) -> MeetingState {
+        self.meeting_state
+    }
+
+    pub fn metadata_clone(&self) -> HashMap<String, String> {
+        self.metadata.clone()
+    }
+
+    pub fn set_metadata_full(&mut self, metadata: HashMap<String, String>) {
+        if matches!(self.meeting_state, MeetingState::Idle) {
+            // Don't apply extraction results to idle state — meeting was stopped mid-extraction.
+            return;
+        }
+        self.metadata = metadata;
+    }
+
     pub(crate) fn assert_invariants(&self) {
         debug_assert!(
             self.available_modes.iter().any(|m| m.id == self.current_mode),
