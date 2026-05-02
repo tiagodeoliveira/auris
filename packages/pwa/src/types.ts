@@ -60,3 +60,33 @@ export interface AppState {
 
 // Re-exported for convenience.
 export type { ServerEvent, Intent, Item, ModeOption, ServerStatus, MeetingState };
+
+export function defaultAppState(): AppState {
+  return {
+    settings: { serverUrl: "", serverToken: "", sonioxKey: "", lastMetadata: {} },
+    wsStatus: "closed",
+    wsLastEventAt: null,
+    protocolVersionMatched: false,
+    meetingState: "idle",
+    availableModes: [],
+    currentMode: "highlights",
+    displayTag: null,
+    metadata: {},
+    items: [],
+    status: { listening: false, paused: false },
+    glassesView: "idle",
+    highlightIndex: 0,
+    viewportStart: 0,
+    detailItemId: null,
+    listeningTranscript: "",
+    listeningInterim: "",
+    listeningStartedAt: null,
+    appForegrounded: true,
+    bleConnected: false,
+    batteryLevel: null,
+    wearing: false,
+    settingsModalOpen: false,
+    toasts: [],
+    errorOverlay: null,
+  };
+}
