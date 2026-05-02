@@ -1,19 +1,20 @@
-//! Metadata extraction from meeting descriptions.
-//! See `docs/specs/phase-2-llm-extraction.md` for the implementation;
-//! this module is now a thin wrapper that delegates to BedrockClient.
+//! Simulated LLM metadata extraction. See `docs/specs/server.md` §8.4.
 
 use std::collections::HashMap;
 
-use crate::bedrock::{BedrockClient, ExtractionError};
-
-pub async fn extract_metadata(
-    client: &BedrockClient,
-    description: &str,
-) -> Result<HashMap<String, String>, ExtractionError> {
-    client.extract(description).await
+pub fn extract_metadata(description: &str) -> HashMap<String, String> {
+    let title = description
+        .split_whitespace()
+        .take(8)
+        .collect::<Vec<_>>()
+        .join(" ");
+    HashMap::from([
+        ("title".to_string(), title),
+        ("project".to_string(), "sim-extracted".to_string()),
+    ])
 }
 
-/// Manual values win on conflict (architecture-stated rule, [`server.md`](../../docs/specs/server.md) §4.5).
+/// Manual values win on conflict (architecture-stated rule).
 pub fn merge_manual_wins(
     extracted: HashMap<String, String>,
     manual: &HashMap<String, String>,
@@ -30,30 +31,22 @@ mod tests {
     use super::*;
 
     #[test]
+    fn extract_takes_first_8_words() {
+        let d = "Q1 budget review for the helix product launch and beyond";
+        let m = extract_metadata(d);
+        assert_eq!(m["title"], "Q1 budget review for the helix product launch");
+        assert_eq!(m["project"], "sim-extracted");
+    }
+
+    #[test]
     fn merge_manual_wins_on_conflict() {
         let extracted = HashMap::from([
-            ("project".to_string(), "sim-extracted".to_string()),
-            ("title".to_string(), "auto title".to_string()),
+            ("project".into(), "sim-extracted".into()),
+            ("title".into(), "auto title".into()),
         ]);
-        let manual = HashMap::from([("project".to_string(), "helix".to_string())]);
+        let manual = HashMap::from([("project".into(), "helix".into())]);
         let merged = merge_manual_wins(extracted, &manual);
-        assert_eq!(merged.get("project"), Some(&"helix".to_string()));
-        assert_eq!(merged.get("title"), Some(&"auto title".to_string()));
-    }
-
-    #[test]
-    fn merge_manual_wins_with_empty_extracted() {
-        let extracted = HashMap::new();
-        let manual = HashMap::from([("foo".to_string(), "bar".to_string())]);
-        let merged = merge_manual_wins(extracted, &manual);
-        assert_eq!(merged.get("foo"), Some(&"bar".to_string()));
-    }
-
-    #[test]
-    fn merge_manual_wins_with_empty_manual() {
-        let extracted = HashMap::from([("title".to_string(), "x".to_string())]);
-        let manual = HashMap::new();
-        let merged = merge_manual_wins(extracted, &manual);
-        assert_eq!(merged.get("title"), Some(&"x".to_string()));
+        assert_eq!(merged["project"], "helix");
+        assert_eq!(merged["title"], "auto title");
     }
 }

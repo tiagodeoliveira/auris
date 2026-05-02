@@ -3,7 +3,6 @@
 use futures_util::{SinkExt, StreamExt};
 use serde_json::Value;
 use std::net::SocketAddr;
-use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::TcpListener;
 use tokio::net::TcpStream;
@@ -34,27 +33,12 @@ pub async fn spawn_test_server() -> TestServer {
 }
 
 pub async fn spawn_test_server_with_token(token: &str) -> TestServer {
-    // Disable Bedrock in tests by default (see `MEETING_COMPANION_BEDROCK_DISABLED`).
-    std::env::set_var("MEETING_COMPANION_BEDROCK_DISABLED", "1");
-
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let addr = listener.local_addr().expect("addr");
     let (tx, rx) = oneshot::channel();
     let token = token.to_string();
-
-    // Construct a BedrockClient even in tests — the disable flag short-
-    // circuits actual API calls, so the client is never used. We need
-    // *something* to satisfy the type signature.
-    let bedrock = Arc::new(
-        meeting_companion_server::bedrock::BedrockClient::from_env()
-            .await
-            .expect("bedrock init in tests"),
-    );
-
     tokio::spawn(async move {
-        let _ =
-            meeting_companion_server::ws::run_server_with_listener(listener, token, bedrock, rx)
-                .await;
+        let _ = meeting_companion_server::ws::run_server_with_listener(listener, token, rx).await;
     });
     TestServer {
         addr,
