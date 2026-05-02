@@ -16,6 +16,7 @@ use tokio_tungstenite::tungstenite::Message;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
+use crate::bedrock::BedrockClient;
 use crate::contract::{Event, Intent};
 use crate::extraction;
 use crate::mock::make_item;
@@ -28,22 +29,25 @@ pub struct ServerHandle {
     pub token: Arc<String>,
     pub meeting_cancel: Arc<StdMutex<Option<CancellationToken>>>,
     pub shutdown: CancellationToken,
+    pub bedrock: Arc<BedrockClient>,
 }
 
 pub async fn run_server(
     addr: SocketAddr,
     token: String,
+    bedrock: Arc<BedrockClient>,
     shutdown_rx: oneshot::Receiver<()>,
 ) -> Result<()> {
     let listener = TcpListener::bind(addr).await?;
     let actual = listener.local_addr()?;
     info!(addr = ?actual, "listening");
-    run_server_with_listener(listener, token, shutdown_rx).await
+    run_server_with_listener(listener, token, bedrock, shutdown_rx).await
 }
 
 pub async fn run_server_with_listener(
     listener: TcpListener,
     token: String,
+    bedrock: Arc<BedrockClient>,
     mut shutdown_rx: oneshot::Receiver<()>,
 ) -> Result<()> {
     let (events_tx, _) = broadcast::channel::<Event>(64);
@@ -54,6 +58,7 @@ pub async fn run_server_with_listener(
         token: Arc::new(token),
         meeting_cancel: Arc::new(StdMutex::new(None)),
         shutdown: shutdown.clone(),
+        bedrock,
     };
 
     let hb_handle = handle.clone();
@@ -359,28 +364,67 @@ fn heartbeat_interval() -> Duration {
     }
     Duration::from_secs(10)
 }
-const EXTRACTION_DELAY: Duration = Duration::from_millis(1500);
 
 fn spawn_extraction(handle: ServerHandle, description: String, cancel: CancellationToken) {
     tokio::spawn(async move {
-        tokio::select! {
-            _ = tokio::time::sleep(EXTRACTION_DELAY) => {
-                let extracted = extraction::extract_metadata(&description);
-                let event = {
-                    let mut s = handle.state.lock().await;
-                    if !matches!(s.snapshot_meeting_state(), crate::contract::MeetingState::Active | crate::contract::MeetingState::Paused) {
-                        return;
-                    }
-                    let manual = s.metadata_clone();
-                    let merged = extraction::merge_manual_wins(extracted, &manual);
-                    s.set_metadata_full(merged.clone());
-                    Event::MetadataChanged { metadata: merged }
-                };
-                let _ = handle.events_tx.send(event);
-            }
-            _ = cancel.cancelled() => {}
+        // Dev escape hatch: skip extraction entirely.
+        if std::env::var("MEETING_COMPANION_BEDROCK_DISABLED").is_ok() {
+            tracing::debug!("extraction disabled by env var; skipping");
+            return;
         }
+
+        let extracted = tokio::select! {
+            result = handle.bedrock.extract(&description) => match result {
+                Ok(map) => map,
+                Err(e) => {
+                    tracing::warn!(error = %e, "metadata extraction failed");
+                    let status = crate::contract::Status {
+                        listening: matches!(
+                            handle.state.lock().await.snapshot_meeting_state(),
+                            crate::contract::MeetingState::Active,
+                        ),
+                        paused: matches!(
+                            handle.state.lock().await.snapshot_meeting_state(),
+                            crate::contract::MeetingState::Paused,
+                        ),
+                        error: Some(format!("Metadata extraction failed: {}", short_error(&e))),
+                    };
+                    let _ = handle.events_tx.send(Event::Status { status });
+                    return;
+                }
+            },
+            _ = cancel.cancelled() => {
+                tracing::debug!("extraction cancelled");
+                return;
+            }
+        };
+
+        // Re-acquire lock + check we're still in a meeting state that wants extraction.
+        let event = {
+            let mut s = handle.state.lock().await;
+            if !matches!(
+                s.snapshot_meeting_state(),
+                crate::contract::MeetingState::Active | crate::contract::MeetingState::Paused
+            ) {
+                return;
+            }
+            let manual = s.metadata_clone();
+            let merged = extraction::merge_manual_wins(extracted, &manual);
+            s.set_metadata_full(merged.clone());
+            Event::MetadataChanged { metadata: merged }
+        };
+        let _ = handle.events_tx.send(event);
     });
+}
+
+fn short_error(e: &crate::bedrock::ExtractionError) -> &'static str {
+    use crate::bedrock::ExtractionError::*;
+    match e {
+        Timeout(_) => "timeout",
+        MissingToolUse => "no tool response",
+        SchemaValidation(_) => "invalid output",
+        Sdk(_) => "service error",
+    }
 }
 
 pub fn spawn_mock_generator(handle: ServerHandle, cancel: CancellationToken) {
