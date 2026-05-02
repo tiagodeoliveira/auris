@@ -4,6 +4,45 @@ Personal project. Real-time meeting summarization on Even Realities G2 via a
 laptop-hosted summarizer (Rust), a phone-hosted PWA, and the glasses as a thin
 display. Iterates against the Even Hub simulator before touching real hardware.
 
+## 0. Status
+
+- **Phase 0 (simulator-first stub) — complete.** Both components end-to-end
+  testable against the EvenHub simulator. `packages/server/` (79 tests) and
+  `packages/pwa/` (64 unit tests + 2 simulator-gated integration tests) are
+  green. The `bridge.setLocalStorage` settings flow, the four glasses
+  layouts, the ReconnectingSocket reconciliation, the listening flow with
+  Soniox STT + VAD, and the phone-screen UI all work end-to-end against the
+  mock content the server produces every 3 seconds.
+- **Phase 1 (real hardware sideload) — pending.** See the manual checklist in
+  [`packages/pwa/README.md`](../packages/pwa/README.md). Notable open tasks:
+  - Discover the `EventSourceType` field path on bridge events (ADR-0001
+    follow-up).
+  - Confirm `bridge.setLocalStorage` persists across a full Even Realities
+    App restart (ADR-0003 follow-up).
+  - Recalibrate `LINES_PER_SCREEN` / `CHARS_PER_LINE` in `layout-active-list`
+    against the real LVGL font metrics.
+- **Phase 2 (real audio + extraction pipeline) — pending.** See §10 steps
+  15-18. Mock content generator + simulated extraction get replaced by
+  ScreenCaptureKit + STT/summarizer + LLM-based metadata extraction.
+
+The §6 wire contract is identical across phases — only internals evolve.
+
+The "SDK Reality Corrections" appendix (§11) supersedes parts of §4 / §5 / §10
+that were drafted before the Even Hub SDK was fully read; it is the binding
+text where it conflicts with the original sections.
+
+Major design decisions that aren't obvious from the code or that have real
+alternatives are recorded as ADRs under [`docs/adr/`](adr/):
+
+- [ADR-0001 — Gesture map](adr/0001-gesture-map.md): phone-only lifecycle
+  gestures for Phase 0; SDK has no long-press event.
+- [ADR-0002 — Active-list rendering](adr/0002-active-list-rendering.md):
+  TextContainer with formatted lines; `ListContainer` cannot be updated
+  in place.
+- [ADR-0003 — Persistence via bridge](adr/0003-persistence-via-bridge.md):
+  `bridge.setLocalStorage` only; browser `localStorage` is unreliable in the
+  Flutter WebView.
+
 ## 1. System Topology
 
 Three components, two transports.

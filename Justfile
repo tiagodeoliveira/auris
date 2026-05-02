@@ -1,16 +1,41 @@
 default:
     @just --list
 
-# Run the server with a development token
+# --- Run -------------------------------------------------------------------
+
+# Run the server with a development token (port 7331).
 server-run:
     MEETING_COMPANION_TOKEN=dev cargo run -p meeting-companion-server -- --port 7331
 
-# Run all tests (Rust + TS typecheck). --test-threads=1 because of heartbeat env-var seam.
+# Run the PWA dev server (port 5173).
+pwa-dev:
+    pnpm -F @meeting-companion/pwa dev
+
+# Run the PWA dev server + the EvenHub simulator pointed at it.
+pwa-sim:
+    pnpm -F @meeting-companion/pwa dev:sim
+
+# Print integrated-stack run instructions (three terminals).
+stack:
+    @echo "Open three terminals and run, in order:"
+    @echo "  Terminal 1:  just server-run"
+    @echo "  Terminal 2:  just pwa-dev"
+    @echo "  Terminal 3:  just pwa-sim    (this also starts the simulator)"
+    @echo ""
+    @echo "Or for terminals 2+3 combined:  just pwa-sim   (it runs vite + simulator concurrently)"
+    @echo "PWA settings modal opens on first run; enter ws://localhost:7331 + token 'dev' + your Soniox key."
+
+# --- Test ------------------------------------------------------------------
+
+# Run the full test suite (server + PWA).
 test:
     cargo test -p meeting-companion-server -- --test-threads=1
-    pnpm -F @meeting-companion/contract typecheck
+    pnpm -F @meeting-companion/pwa test
+    pnpm -F @meeting-companion/pwa typecheck
 
-# Print manual smoke instructions
+# --- Smoke -----------------------------------------------------------------
+
+# Print manual websocat smoke instructions for poking the server directly.
 smoke-instructions:
     @echo "Terminal 1: just server-run"
     @echo "Terminal 2:"
