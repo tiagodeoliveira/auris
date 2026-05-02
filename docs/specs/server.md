@@ -2,7 +2,7 @@
 
 > **Status:** Draft, pending review.
 > **Last updated:** 2026-05-01.
-> **Companion to:** [`meeting-companion-architecture.md`](../../meeting-companion-architecture.md) (system-level spec).
+> **Companion to:** [`ARCHITECTURE.md`](../ARCHITECTURE.md) (system-level spec).
 >
 > This document is the contract for `apps/server/` — the Rust binary that owns
 > meeting state and serves the WebSocket endpoint defined in architecture §6.

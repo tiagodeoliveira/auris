@@ -7,6 +7,6 @@ pnpm-lock.yaml
 *.tsbuildinfo
 
 # Heavily structured docs (ASCII art, hand-aligned tables) — keep as-authored.
-meeting-companion-architecture.md
+docs/ARCHITECTURE.md
 docs/superpowers/plans/
 docs/specs/

@@ -1,6 +1,6 @@
 # meeting-companion-server
 
-Phase 0 stub server. See `docs/specs/server.md` for the spec.
+Phase 0 stub server. See [`docs/specs/server.md`](../../docs/specs/server.md) for the spec.
 
 ## Run
 
@@ -55,4 +55,4 @@ Paste intents to interact:
 | `--port`                         | `7331`     | TCP port.                                |
 | `--bind`                         | `0.0.0.0`  | Bind address.                            |
 
-See `docs/specs/server.md` for the full protocol.
+See [`docs/specs/server.md`](../../docs/specs/server.md) for the full protocol.
