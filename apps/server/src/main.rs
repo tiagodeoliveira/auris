@@ -32,7 +32,12 @@ async fn main() -> Result<()> {
 
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
     tokio::spawn(async move {
-        let _ = tokio::signal::ctrl_c().await;
+        use tokio::signal::unix::{signal, SignalKind};
+        let mut sigterm = signal(SignalKind::terminate()).expect("sigterm");
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {}
+            _ = sigterm.recv() => {}
+        }
         let _ = shutdown_tx.send(());
     });
 

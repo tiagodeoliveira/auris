@@ -27,6 +27,7 @@ pub struct ServerHandle {
     pub events_tx: broadcast::Sender<Event>,
     pub token: Arc<String>,
     pub meeting_cancel: Arc<StdMutex<Option<CancellationToken>>>,
+    pub shutdown: CancellationToken,
 }
 
 pub async fn run_server(addr: SocketAddr, token: String, shutdown_rx: oneshot::Receiver<()>) -> Result<()> {
@@ -42,11 +43,13 @@ pub async fn run_server_with_listener(
     mut shutdown_rx: oneshot::Receiver<()>,
 ) -> Result<()> {
     let (events_tx, _) = broadcast::channel::<Event>(64);
+    let shutdown = CancellationToken::new();
     let handle = ServerHandle {
         state: Arc::new(Mutex::new(ServerState::new())),
         events_tx,
         token: Arc::new(token),
         meeting_cancel: Arc::new(StdMutex::new(None)),
+        shutdown: shutdown.clone(),
     };
 
     let hb_handle = handle.clone();
@@ -91,7 +94,9 @@ pub async fn run_server_with_listener(
             }
         }
     }
+    shutdown.cancel();   // signal all per-connection tasks to close
     hb_shutdown.store(true, std::sync::atomic::Ordering::Relaxed);
+    tokio::time::sleep(Duration::from_secs(2)).await;   // give connections 2s to drain
     Ok(())
 }
 
@@ -143,6 +148,13 @@ async fn handle_connection(
 
     loop {
         tokio::select! {
+            _ = handle.shutdown.cancelled() => {
+                let _ = sink.send(Message::Close(Some(CloseFrame {
+                    code: CloseCode::Away,
+                    reason: "going away".into(),
+                }))).await;
+                break;
+            }
             evt = events_rx.recv() => {
                 match evt {
                     Ok(event) => {
