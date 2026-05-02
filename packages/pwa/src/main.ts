@@ -9,6 +9,7 @@ import { ReconnectingSocket } from "./ws";
 import { handleServerEvent } from "./ws-handlers";
 import { mountUI } from "./ui";
 import type { CtaActions } from "./ui/cta-region";
+import { ListeningSession } from "./listening";
 
 async function start() {
   const bridge = await waitForEvenAppBridge();
@@ -35,8 +36,13 @@ async function start() {
     sock = makeSocket();
   };
 
+  const listening = new ListeningSession(bridge as any, store, (i) => sock.send(i));
+
   bridge.onEvenHubEvent((e: unknown) => {
-    const event = e as Record<string, unknown>;
+    const event = e as Record<string, unknown> & { audioEvent?: { audioPcm?: Uint8Array } };
+    if (event?.audioEvent?.audioPcm && store.get().glassesView === "listening") {
+      listening.feedAudio(event.audioEvent.audioPcm);
+    }
     handleBridgeEvent(event as Parameters<typeof handleBridgeEvent>[0], store, (intent) =>
       sock.send(intent),
     );
@@ -50,27 +56,17 @@ async function start() {
   createGlassesRenderer(bridge as unknown as Parameters<typeof createGlassesRenderer>[0], store);
 
   const actions: CtaActions = {
-    describeMeeting: () =>
-      store.update({ glassesView: "listening", listeningStartedAt: Date.now() }),
-    // Soniox + audio wiring lands in Task 18.
+    describeMeeting: () => {
+      store.update({ glassesView: "listening" });
+      void listening.start();
+    },
     startMeeting: () =>
       sock.send({ type: "start_meeting", metadata: store.get().settings.lastMetadata }),
     pauseMeeting: () => sock.send({ type: "pause" }),
     resumeMeeting: () => sock.send({ type: "resume" }),
     stopMeeting: () => sock.send({ type: "stop_meeting" }),
-    commitListening: () =>
-      sock.send({
-        type: "start_meeting",
-        description: store.get().listeningTranscript,
-        metadata: store.get().settings.lastMetadata,
-      }),
-    cancelListening: () =>
-      store.update({
-        glassesView: "idle",
-        listeningTranscript: "",
-        listeningInterim: "",
-        listeningStartedAt: null,
-      }),
+    commitListening: () => void listening.commit(),
+    cancelListening: () => void listening.cancel(),
   };
 
   const bridgeForUi = bridge as unknown as {
