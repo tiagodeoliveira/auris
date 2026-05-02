@@ -1,5 +1,6 @@
 import { loadSettings } from "./storage";
 import type { Store } from "./store";
+import { buildIdleLayout } from "./glasses/layout-idle";
 
 interface BridgeLike {
   setLocalStorage(key: string, value: string): Promise<boolean>;
@@ -35,7 +36,7 @@ export async function boot({ bridge, store, env }: BootOptions): Promise<void> {
 
   // 3. Create startup page container with placeholder Layout A content.
   // (Real Layout A renders in Task 7.)
-  const result = await bridge.createStartUpPageContainer(buildPlaceholderLayoutA());
+  const result = await bridge.createStartUpPageContainer(buildIdleLayout());
   if (result !== 0) {
     store.update({
       errorOverlay: {
@@ -59,10 +60,4 @@ export async function boot({ bridge, store, env }: BootOptions): Promise<void> {
   if (!settings.serverUrl) {
     store.update({ settingsModalOpen: true });
   }
-}
-
-function buildPlaceholderLayoutA(): unknown {
-  // Placeholder; Task 7 (layout-idle) replaces this with the proper
-  // CreateStartUpPageContainer + TextContainerProperty objects.
-  return { containerTotalNum: 1, textObject: [] };
 }
