@@ -1,17 +1,56 @@
 :root {
   --bg: #0a0a0c;
+  --bg-elev: #15151a;
   --fg: #e8e8ea;
+  --fg-dim: #8a8a90;
+  --accent: #4ea1ff;
+  --success: #4ec76e;
+  --warn: #f0a020;
+  --error: #f04747;
+  --radius: 8px;
 }
+
+* { box-sizing: border-box; }
 html, body, #app {
-  margin: 0;
-  padding: 0;
-  height: 100%;
-  background: var(--bg);
-  color: var(--fg);
+  margin: 0; padding: 0; height: 100%;
+  background: var(--bg); color: var(--fg);
   font-family: system-ui, -apple-system, sans-serif;
+  font-size: 16px;
 }
 #app {
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  display: flex; flex-direction: column; height: 100vh;
 }
+
+.status-bar {
+  display: flex; align-items: center; gap: 12px;
+  padding: 12px 16px;
+  background: var(--bg-elev);
+  border-bottom: 1px solid #25252a;
+  height: 40px;
+}
+.status-bar .dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--fg-dim);
+}
+.status-bar .dot.green { background: var(--success); }
+.status-bar .dot.yellow { background: var(--warn); }
+.status-bar .dot.red { background: var(--error); }
+.status-bar .pill {
+  font-size: 12px; padding: 2px 8px; border-radius: 12px;
+  background: #25252a; color: var(--fg);
+}
+.status-bar .gear {
+  margin-left: auto; cursor: pointer; padding: 4px 8px;
+  background: none; border: none; color: var(--fg); font-size: 18px;
+}
+
+button.cta {
+  padding: 14px 16px;
+  font-size: 16px;
+  border: none; border-radius: var(--radius);
+  background: var(--accent); color: white;
+  cursor: pointer;
+}
+button.cta.secondary { background: var(--bg-elev); color: var(--fg); }
+button.cta.danger { background: var(--error); }
+button.cta:disabled { opacity: 0.5; cursor: not-allowed; }

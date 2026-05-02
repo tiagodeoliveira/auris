@@ -7,6 +7,7 @@ import { handleBridgeEvent } from "./input/gesture-router";
 import { handleLifecycleEvent } from "./input/lifecycle";
 import { ReconnectingSocket } from "./ws";
 import { handleServerEvent } from "./ws-handlers";
+import { mountUI } from "./ui";
 
 async function start() {
   const bridge = await waitForEvenAppBridge();
@@ -38,11 +39,8 @@ async function start() {
 
   createGlassesRenderer(bridge as unknown as Parameters<typeof createGlassesRenderer>[0], store);
 
-  // Mount placeholder UI (proper UI lands in Tasks 14-17).
   const app = document.querySelector<HTMLDivElement>("#app");
-  if (app) {
-    app.textContent = "Meeting Companion (booted)";
-  }
+  if (app) mountUI(app, store);
 }
 
 start().catch((err) => {
