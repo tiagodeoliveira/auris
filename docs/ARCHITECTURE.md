@@ -705,3 +705,160 @@ Phase 2 — real audio + extraction pipeline.
 
 Each phase is independently testable. Stub server stays in the repo
 permanently. Don't move forward until the previous phase's contract is solid.
+
+## 11. SDK Reality Corrections (appendix)
+
+The PWA-related sections of this document (§4 Phone PWA, §5 Glasses
+Display, §10 build order steps tied to gestures) were drafted before
+the Even Hub SDK surface had been fully read. Subsequent investigation
+of the [Even Hub developer docs](https://hub.evenrealities.com/docs/)
+and the `@evenrealities/even_hub_sdk` TypeScript definitions surfaced
+hard constraints that contradict parts of the original design. This
+appendix supersedes those bits where it conflicts; the rest of the
+document stands.
+
+The full implications and the alternatives we considered are recorded
+as Architecture Decision Records under [`docs/adr/`](adr/).
+
+### 11.1 No long-press event in the SDK
+
+The [Input & Events guide](https://hub.evenrealities.com/docs/guides/input-events)
+enumerates exactly four input event types from both the G2 temple
+touchpads and the R1 ring: `CLICK_EVENT (0)`, `DOUBLE_CLICK_EVENT (3)`,
+`SCROLL_TOP_EVENT (1)`, `SCROLL_BOTTOM_EVENT (2)`. **There is no
+long-press event.**
+
+§4 (Gesture map) and §1 (Input-surface convention) therefore cannot be
+implemented as written. Resolution per
+[ADR-0001](adr/0001-gesture-map.md): for Phase 0, **lifecycle gestures
+move entirely to the phone screen**. Glasses-side gestures are reserved
+for in-flow controls (scroll, expand, mark moment, mode cycle via
+swipe). Promotion of `DOUBLE_CLICK_EVENT` to a lifecycle role is left
+open until real hardware is available and a long-form usability check
+can be done.
+
+The G2-vs-R1 source distinction is described as "now possible" in the
+guide but the field on the event payload is undocumented; this will be
+discovered empirically in Phase 0 by logging raw events.
+
+### 11.2 ListContainer cannot be updated in place
+
+The [Display & UI System guide](https://hub.evenrealities.com/docs/guides/display)
+makes clear that `textContainerUpgrade` is the only flicker-free update
+path on hardware, and it operates **only on `TextContainer`**. List
+containers cannot be updated incrementally — any change to the items
+requires a full `rebuildPageContainer`, which the same guide flags as
+causing brief flicker.
+
+§5 Layout B describes the active-list body as a `ListContainer` updated
+via `textContainerUpgrade`, which is not a valid SDK call combination.
+Resolution per [ADR-0002](adr/0002-active-list-rendering.md): **render
+the active-list body as a single `TextContainer`** with formatted
+multi-line content (one item per line, plus a cursor glyph for the
+highlighted entry). The PWA tracks the highlight cursor locally and
+re-emits the formatted text via `textContainerUpgrade` on every items
+update or scroll. This trades native firmware-level scroll for
+flicker-free updates at the cadence the meeting summarizer produces
+items.
+
+### 11.3 Container limits
+
+§5 says "Max 4 containers per page; exactly one with `isEventCapture: 1`."
+The actual limit per the Display & UI guide is **4 image containers
+plus 8 other (text/list) containers per page**, with exactly one
+container holding `isEventCapture: 1`. The "exactly one event capture"
+half is correct as written; the cap should read 4 + 8.
+
+### 11.4 Persistence: bridge storage, not browser storage
+
+§4 doesn't specify where PWA-side state (server URL, token, Soniox
+credentials, last-used metadata) is persisted. The
+`@evenrealities/even_hub_sdk` reference is unambiguous on this point:
+**browser `localStorage` and `IndexedDB` are not reliably persistent
+across app restarts** in the Flutter WebView the Even Realities App
+provides. Only `bridge.setLocalStorage` / `bridge.getLocalStorage`
+survive restart cycles.
+
+Resolution per
+[ADR-0003](adr/0003-persistence-via-bridge.md): all PWA-side persistent
+state goes through `bridge.setLocalStorage` / `bridge.getLocalStorage`.
+Vite `import.meta.env.VITE_*` variables seed first-run defaults so
+developers can avoid retyping credentials on a fresh install.
+
+### 11.5 Permissions and `app.json`
+
+§4 doesn't address how the PWA declares its capabilities to the host.
+Every Even Hub plugin ships an `app.json` manifest with a
+`permissions` array. Two permissions matter for this app:
+
+- `g2-microphone` — required for `bridge.audioControl(true)` to capture
+  the spoken meeting description from the G2 mic array. We deliberately
+  do **not** request `phone-microphone`; the phone mic is never used.
+- `network` — required to reach the laptop server, with a per-origin
+  `whitelist` (full origins, no wildcards). For LAN dev:
+  `http://localhost:7331` plus the developer's LAN address. For
+  production: a TLS-terminated address (Tailscale Funnel, cloudflared,
+  etc.) since the WebView origin is `https://` and would otherwise hit
+  mixed-content blocks.
+
+The simulator skips the whitelist gate; real glasses enforce it. CORS
+headers must be set correctly on the server for both surfaces (see the
+[Networking guide](https://hub.evenrealities.com/docs/guides/networking)).
+
+### 11.6 PWA hosting and build pipeline
+
+§4 says the PWA is "hosted as a PWA, opened inside the Even Realities
+App via the Hub PWA route." The concrete shape of this is:
+
+- Built with **Vite + TypeScript** using the `vanilla-ts` template.
+  Runtime dep `@evenrealities/even_hub_sdk`; dev deps
+  `@evenrealities/evenhub-cli` and `@evenrealities/evenhub-simulator`.
+- Dev loop: `vite dev` on `:5173`; `evenhub-simulator http://localhost:5173`
+  to render the glasses view in a desktop window.
+- Sideloading to real glasses: `evenhub qr --url http://<lan-ip>:5173`,
+  scan the QR in the Even Realities companion app.
+- Production: `vite build` then `evenhub pack app.json dist -o
+  meeting-companion.ehpk`. The `.ehpk` is uploaded via the Even Hub
+  developer portal.
+
+`min_sdk_version: "0.0.10"`, `edition: "202601"`, `package_id` lowercase
+no-hyphens reverse-domain (e.g. `com.tiago.meetingcompanion`).
+
+### 11.7 Property-name typo
+
+§5 notes "`borderRdaius` is the correct (typo'd) property name." The
+TypeScript SDK exposes the correctly-spelled `borderRadius` field on
+container property classes; the typo is preserved only in the wire-level
+protobuf, which the SDK shields callers from. Use `borderRadius` in
+PWA code.
+
+### 11.8 PWA-local lifecycle
+
+The Even App reports `FOREGROUND_ENTER_EVENT (4)`,
+`FOREGROUND_EXIT_EVENT (5)`, and `ABNORMAL_EXIT_EVENT (6)` to the PWA
+when the user backgrounds, restores, or loses the app. §4 doesn't
+discuss these. The PWA must:
+
+- On `FOREGROUND_EXIT_EVENT`: pause local timers (highlight scroll,
+  optimistic UI animations); stop `audioControl(true)` if active.
+- On `FOREGROUND_ENTER_EVENT`: re-validate WS connection (reconnect if
+  needed; the snapshot reconciles state); resume timers.
+- On `ABNORMAL_EXIT_EVENT`: surface a dismissable "BLE disconnected"
+  status; PWA state still mirrors what the server sent on its last
+  snapshot.
+
+### 11.9 Net effect on §10 build order
+
+The simulator-first phases in §10 still hold, but the gesture-bound
+items shift:
+
+- §10 step 6 (listening flow) and step 11 (mode cycling via ring
+  long-press) are reframed as **phone-driven** in Phase 0 per ADR-0001.
+  The simulator's input control plane only emits Press / Double Press /
+  Swipe / Scroll, so the lifecycle gestures couldn't have been
+  validated end-to-end against the simulator anyway.
+- §10 step 9 (stop confirmation) is also phone-driven (Cancel / Confirm
+  buttons in the PWA UI; no glasses-side temple long-press).
+- §10 step 13 (real hardware) gains an explicit task: **discover the
+  G2-vs-R1 input source field** and decide whether to promote
+  double-press to a lifecycle gesture (deferred ADR-0001 follow-up).
