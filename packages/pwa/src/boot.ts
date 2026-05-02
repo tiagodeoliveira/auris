@@ -49,9 +49,7 @@ export async function boot({ bridge, store, env }: BootOptions): Promise<void> {
   }
 
   // 4. Subscribe to bridge events.
-  bridge.onEvenHubEvent((_event) => {
-    // Routing lands in later tasks (input + lifecycle).
-  });
+  // Real event routing is wired in main.ts via handleBridgeEvent + handleLifecycleEvent.
   bridge.onDeviceStatusChanged((_status) => {
     // Status reflection lands in later tasks.
   });

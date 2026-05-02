@@ -22,11 +22,11 @@ describe("boot", () => {
     expect(bridge.createStartUpPageContainer).toHaveBeenCalledOnce();
   });
 
-  test("subscribes to even hub events", async () => {
+  test("subscribes to device status changed", async () => {
     const bridge = createMockBridge();
     const store = createStore(defaultAppState());
     await boot({ bridge, store, env: {} });
-    expect(bridge.onEvenHubEvent).toHaveBeenCalledOnce();
+    // onEvenHubEvent is wired in main.ts (not boot); boot only registers device status.
     expect(bridge.onDeviceStatusChanged).toHaveBeenCalledOnce();
   });
 
