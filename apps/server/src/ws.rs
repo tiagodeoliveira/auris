@@ -49,6 +49,27 @@ pub async fn run_server_with_listener(
         meeting_cancel: Arc::new(StdMutex::new(None)),
     };
 
+    let hb_handle = handle.clone();
+    let hb_shutdown = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let hb_shutdown_clone = hb_shutdown.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(heartbeat_interval());
+        interval.tick().await; // skip first immediate tick
+        loop {
+            interval.tick().await;
+            if hb_shutdown_clone.load(std::sync::atomic::Ordering::Relaxed) { break; }
+            let status = {
+                let s = hb_handle.state.lock().await;
+                crate::contract::Status {
+                    listening: matches!(s.snapshot_meeting_state(), crate::contract::MeetingState::Active),
+                    paused: matches!(s.snapshot_meeting_state(), crate::contract::MeetingState::Paused),
+                    error: None,
+                }
+            };
+            let _ = hb_handle.events_tx.send(Event::Status { status });
+        }
+    });
+
     loop {
         tokio::select! {
             accept = listener.accept() => {
@@ -70,6 +91,7 @@ pub async fn run_server_with_listener(
             }
         }
     }
+    hb_shutdown.store(true, std::sync::atomic::Ordering::Relaxed);
     Ok(())
 }
 
@@ -280,6 +302,15 @@ async fn send_protocol_error(
 }
 
 const MOCK_INTERVAL: Duration = Duration::from_secs(3);
+
+fn heartbeat_interval() -> Duration {
+    if let Ok(s) = std::env::var("MEETING_COMPANION_HEARTBEAT_MS") {
+        if let Ok(ms) = s.parse::<u64>() {
+            return Duration::from_millis(ms);
+        }
+    }
+    Duration::from_secs(10)
+}
 const EXTRACTION_DELAY: Duration = Duration::from_millis(1500);
 
 fn spawn_extraction(handle: ServerHandle, description: String, cancel: CancellationToken) {

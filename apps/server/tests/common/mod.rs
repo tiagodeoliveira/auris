@@ -67,3 +67,9 @@ pub fn ws_url(addr: SocketAddr, token: &str) -> Request {
     let url = format!("ws://{}/?token={}", addr, token);
     url.into_client_request().expect("client request")
 }
+
+pub async fn spawn_test_server_fast_heartbeat() -> TestServer {
+    std::env::set_var("MEETING_COMPANION_HEARTBEAT_MS", "300");
+    let s = spawn_test_server().await;
+    s
+}
