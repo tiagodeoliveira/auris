@@ -44,3 +44,13 @@ smoke-instructions:
     @echo "  {\"type\":\"start_meeting\"}"
     @echo "  {\"type\":\"set_mode\",\"mode\":\"transcript\"}"
     @echo "  {\"type\":\"stop_meeting\"}"
+
+# --- LLM -------------------------------------------------------------------
+
+# Smoke-test the LLM extraction with a sample description.
+llm-smoke description="Q1 budget review for helix product launch":
+    cargo run -p meeting-companion-server --example llm_smoke -- "{{description}}"
+
+# Run the env-gated LLM integration test (requires real AWS creds + Sonnet 4.7 in Bedrock).
+llm-integration:
+    RUN_LLM_INTEGRATION=1 cargo test -p meeting-companion-server --test llm_integration -- --nocapture
