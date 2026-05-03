@@ -5,7 +5,7 @@ const STOP_CONFIRM_WINDOW_MS = 3000;
 
 export interface CtaActions {
   describeMeeting(): void;
-  startMeeting(): void;
+  startMeeting(description: string): void;
   pauseMeeting(): void;
   resumeMeeting(): void;
   stopMeeting(): void;
@@ -48,8 +48,17 @@ export function mountCtaRegion(
     }
 
     if (s.meetingState === "idle") {
+      const descInput = document.createElement("input");
+      descInput.type = "text";
+      descInput.placeholder = "Describe this meeting (optional)";
+      descInput.style.cssText =
+        "width:100%;box-sizing:border-box;background:var(--bg-elev);color:var(--fg);border:1px solid #25252a;padding:10px;border-radius:6px;font-size:14px;";
+      wrap.appendChild(descInput);
+
       wrap.appendChild(button("Describe meeting", "secondary", actions.describeMeeting));
-      wrap.appendChild(button("Start meeting", "", actions.startMeeting));
+      wrap.appendChild(
+        button("Start meeting", "", () => actions.startMeeting(descInput.value.trim())),
+      );
       return;
     }
 

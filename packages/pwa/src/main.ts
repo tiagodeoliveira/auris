@@ -60,8 +60,12 @@ async function start() {
       store.update({ glassesView: "listening" });
       void listening.start();
     },
-    startMeeting: () =>
-      sock.send({ type: "start_meeting", metadata: store.get().settings.lastMetadata }),
+    startMeeting: (description: string) =>
+      sock.send({
+        type: "start_meeting",
+        description: description || undefined,
+        metadata: store.get().settings.lastMetadata,
+      }),
     pauseMeeting: () => sock.send({ type: "pause" }),
     resumeMeeting: () => sock.send({ type: "resume" }),
     stopMeeting: () => sock.send({ type: "stop_meeting" }),
