@@ -18,6 +18,10 @@ type BedrockModel = rig_bedrock::completion::CompletionModel;
 type OpenAIModel = rig::providers::openai::responses_api::ResponsesCompletionModel;
 type AnthropicModel = rig::providers::anthropic::completion::CompletionModel;
 
+// ─── Type aliases for raw client types ───────────────────────────────────────
+type OpenAIClientWrapper = rig::providers::openai::Client;
+type AnthropicClientWrapper = rig::providers::anthropic::Client;
+
 // ─── Constants ────────────────────────────────────────────────────────────────
 pub const DEFAULT_BEDROCK_REGION: &str = "us-west-2";
 pub const DEFAULT_BEDROCK_MODEL_ID: &str = "us.anthropic.claude-sonnet-4-7-20251015-v1:0";
@@ -59,6 +63,47 @@ impl Clone for LlmExtractor {
             Self::Bedrock(e) => Self::Bedrock(Arc::clone(e)),
             Self::OpenAI(e) => Self::OpenAI(Arc::clone(e)),
             Self::Anthropic(e) => Self::Anthropic(Arc::clone(e)),
+        }
+    }
+}
+
+// ─── Backend enum (raw clients for ad-hoc extraction) ────────────────────────
+
+/// Stores the raw rig clients and model IDs for building ad-hoc extractors.
+///
+/// All three client types are `Clone` (they wrap `Arc` internally), so this
+/// enum can be cheaply cloned alongside `LlmClient`.
+#[allow(clippy::large_enum_variant)]
+pub(crate) enum LlmBackend {
+    Bedrock {
+        client: BedrockClient,
+        model_id: String,
+    },
+    OpenAI {
+        client: Arc<OpenAIClientWrapper>,
+        model_id: String,
+    },
+    Anthropic {
+        client: Arc<AnthropicClientWrapper>,
+        model_id: String,
+    },
+}
+
+impl Clone for LlmBackend {
+    fn clone(&self) -> Self {
+        match self {
+            Self::Bedrock { client, model_id } => Self::Bedrock {
+                client: client.clone(),
+                model_id: model_id.clone(),
+            },
+            Self::OpenAI { client, model_id } => Self::OpenAI {
+                client: Arc::clone(client),
+                model_id: model_id.clone(),
+            },
+            Self::Anthropic { client, model_id } => Self::Anthropic {
+                client: Arc::clone(client),
+                model_id: model_id.clone(),
+            },
         }
     }
 }
@@ -116,9 +161,13 @@ fn parse_provider(s: &str) -> Result<Provider, LlmInitError> {
 ///
 /// The inner extractor is wrapped in an `Arc` (inside `LlmExtractor`) to allow
 /// cheap cloning of `LlmClient` across tasks.
+///
+/// The `backend` field stores the raw rig clients for building ad-hoc
+/// extractors (used by summarizers via `extract_with_prompt`).
 #[derive(Clone)]
 pub struct LlmClient {
     extractor: LlmExtractor,
+    backend: LlmBackend,
     provider: Provider,
 }
 
@@ -140,7 +189,7 @@ impl LlmClient {
             .unwrap_or_else(|_| "bedrock".to_string());
         let provider = parse_provider(&provider_str)?;
 
-        let extractor = match provider {
+        let (extractor, backend) = match provider {
             Provider::Bedrock => {
                 let region = std::env::var("MEETING_COMPANION_LLM_REGION")
                     .unwrap_or_else(|_| DEFAULT_BEDROCK_REGION.to_string());
@@ -158,7 +207,11 @@ impl LlmClient {
                     .build();
 
                 info!(%region, %model_id, "LLM client initialised (rig + bedrock)");
-                LlmExtractor::Bedrock(Arc::new(extractor))
+                let backend = LlmBackend::Bedrock {
+                    client: bedrock_client.clone(),
+                    model_id,
+                };
+                (LlmExtractor::Bedrock(Arc::new(extractor)), backend)
             }
 
             Provider::OpenAI => {
@@ -180,7 +233,11 @@ impl LlmClient {
                     .build();
 
                 info!(%model_id, "LLM client initialised (rig + openai)");
-                LlmExtractor::OpenAI(Arc::new(extractor))
+                let backend = LlmBackend::OpenAI {
+                    client: Arc::new(openai_client),
+                    model_id,
+                };
+                (LlmExtractor::OpenAI(Arc::new(extractor)), backend)
             }
 
             Provider::Anthropic => {
@@ -202,12 +259,17 @@ impl LlmClient {
                     .build();
 
                 info!(%model_id, "LLM client initialised (rig + anthropic-direct)");
-                LlmExtractor::Anthropic(Arc::new(extractor))
+                let backend = LlmBackend::Anthropic {
+                    client: Arc::new(anthropic_client),
+                    model_id,
+                };
+                (LlmExtractor::Anthropic(Arc::new(extractor)), backend)
             }
         };
 
         Ok(Self {
             extractor,
+            backend,
             provider,
         })
     }
@@ -244,6 +306,54 @@ impl LlmClient {
         };
 
         Ok(into_map(typed))
+    }
+
+    /// Run an ad-hoc rig `Extractor` with an arbitrary system prompt and output
+    /// schema, building the extractor per call using the stored backend client.
+    ///
+    /// Used by summarizers (highlights, actions) that each need a different
+    /// prompt and a different `JsonSchema` target type.
+    pub async fn extract_with_prompt<T>(
+        &self,
+        system_prompt: &str,
+        user_input: &str,
+    ) -> Result<T, ExtractionError>
+    where
+        T: schemars::JsonSchema
+            + serde::de::DeserializeOwned
+            + serde::Serialize
+            + Send
+            + Sync
+            + 'static,
+    {
+        let extractor_call = async {
+            match &self.backend {
+                LlmBackend::Bedrock { client, model_id } => client
+                    .extractor::<T>(model_id.as_str())
+                    .preamble(system_prompt)
+                    .build()
+                    .extract(user_input)
+                    .await
+                    .map_err(|e| ExtractionError::Extract(e.to_string())),
+                LlmBackend::OpenAI { client, model_id } => client
+                    .extractor::<T>(model_id.as_str())
+                    .preamble(system_prompt)
+                    .build()
+                    .extract(user_input)
+                    .await
+                    .map_err(|e| ExtractionError::Extract(e.to_string())),
+                LlmBackend::Anthropic { client, model_id } => client
+                    .extractor::<T>(model_id.as_str())
+                    .preamble(system_prompt)
+                    .build()
+                    .extract(user_input)
+                    .await
+                    .map_err(|e| ExtractionError::Extract(e.to_string())),
+            }
+        };
+        tokio::time::timeout(EXTRACTION_TIMEOUT, extractor_call)
+            .await
+            .map_err(|_| ExtractionError::Timeout(EXTRACTION_TIMEOUT))?
     }
 }
 
