@@ -1,0 +1,17 @@
+# Cargo workspace config — see https://doc.rust-lang.org/cargo/reference/config.html
+#
+# macOS Swift runtime rpath for the `screencapturekit` crate's Swift bridge.
+# Without this, any binary that links against screencapturekit fails at runtime:
+#
+#   dyld: Library not loaded: @rpath/libswift_Concurrency.dylib
+#
+# The path below points at Apple's back-deployed Swift 5.5+ Concurrency runtime
+# shipped with Xcode Command Line Tools. CLT is a prerequisite for Rust on
+# macOS, so this path is reliably present on any developer machine that can
+# compile this project.
+
+[target.'cfg(target_os = "macos")']
+rustflags = [
+    "-C",
+    "link-arg=-Wl,-rpath,/Library/Developer/CommandLineTools/usr/lib/swift-5.5/macosx",
+]
