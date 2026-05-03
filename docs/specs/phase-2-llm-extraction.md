@@ -1,6 +1,6 @@
 # Meeting Companion — Phase 2 Step 16: LLM Metadata Extraction (v3 — multi-provider)
 
-> **Status:** v3 active (multi-provider). v1 (Bedrock-direct) reverted; v2 (rig + Bedrock-pinned) shipped first; v3 adds OpenAI as a second provider with runtime selection via env var.
+> **Status:** v3 active (multi-provider). v1 (Bedrock-direct) reverted; v2 (rig + Bedrock-pinned) shipped first; v3 adds OpenAI and Anthropic-direct as runtime-selectable second + third providers via env var.
 > **Last updated:** 2026-05-02.
 > **Companion to:**
 >
@@ -9,13 +9,16 @@
 >
 > **Replaces in code:** the deterministic stub `extract_metadata(description) -> HashMap<String, String>` in `packages/server/src/extraction.rs`.
 >
-> **Framework choice:** [rig](https://github.com/0xPlaygrounds/rig). 20+ provider support, agent abstractions (multi-turn / tool calling), built-in retries via the underlying provider crates, and a memory companion (`cortex-mem`) we'll wire to mnemo for Phase 2 step 18. v3 ships **Bedrock + OpenAI**; runtime selection via `MEETING_COMPANION_LLM_PROVIDER`. Adding more rig-supported providers (Anthropic-direct, Gemini, etc.) is a one-arm-on-the-enum change.
+> **Framework choice:** [rig](https://github.com/0xPlaygrounds/rig). 20+ provider support, agent abstractions (multi-turn / tool calling), built-in retries via the underlying provider crates, and a memory companion (`cortex-mem`) we'll wire to mnemo for Phase 2 step 18. v3 ships **Bedrock + OpenAI + Anthropic-direct**; runtime selection via `MEETING_COMPANION_LLM_PROVIDER`. Adding more rig-supported providers (Gemini, Cohere, etc.) is a one-arm-on-the-enum change.
 
 ## 1. Purpose & scope
 
 ### 1.1 What this component does
 
-- Calls a configurable LLM via rig's `Extractor` pattern. Provider chosen at boot via `MEETING_COMPANION_LLM_PROVIDER` env var. v3 supports `bedrock` (default — Anthropic Claude Sonnet 4.7 via `rig-bedrock`) and `openai` (gpt-4.1-mini by default via `rig-core`'s OpenAI provider).
+- Calls a configurable LLM via rig's `Extractor` pattern. Provider chosen at boot via `MEETING_COMPANION_LLM_PROVIDER` env var. v3 supports three providers:
+  - `bedrock` (default) — Anthropic Claude Sonnet 4.7 via `rig-bedrock` (AWS credential chain).
+  - `openai` — gpt-4.1-mini by default via `rig-core`'s OpenAI provider (`OPENAI_API_KEY`).
+  - `anthropic` — Anthropic-direct API via `rig-core`'s Anthropic provider (`ANTHROPIC_API_KEY`); Claude Sonnet 4.7 by default.
 - Uses rig's structured-extraction layer (Extractor), which generates a tool-use JSON schema from a Rust struct's `JsonSchema` derive and parses the model's response back into the struct. We never hand-roll tool schemas, hand-parse content blocks, or hand-code retries — rig's mature transport layer handles that.
 - Merges the extracted struct with manual metadata (manual wins on conflict — unchanged from Phase 0 [`server.md`](server.md) §4.2). The merge happens in `ws.rs::spawn_extraction`, which then broadcasts the follow-up `metadata_changed` event.
 - Surfaces failures via the existing `status { error }` event on the WebSocket so the PWA can toast them.
@@ -93,7 +96,7 @@ The PWA-facing wire contract is identical across v1, v2, and v3. PWA code requir
 
 - `LlmClient` — public wrapper holding the dispatch enum.
 - `LlmExtractor` — `pub(crate)` enum with one variant per supported provider, each carrying a typed `rig::extractor::Extractor<ProviderModel, ExtractedMetadata>`.
-- `Provider` — public enum reflecting the user's selection (`Bedrock`, `OpenAI`). Used by `from_env` parsing + diagnostics.
+- `Provider` — public enum reflecting the user's selection (`Bedrock`, `OpenAI`, `Anthropic`). Used by `from_env` parsing + diagnostics.
 - `ExtractedMetadata` — the typed extraction target (unchanged from v2).
 - `LlmInitError`, `ExtractionError` — error types.
 
@@ -126,16 +129,19 @@ use std::sync::Arc;
 use rig::extractor::Extractor;
 use rig_bedrock::completion::CompletionModel as BedrockModel;
 use rig::providers::openai::completion::CompletionModel as OpenAIModel;
+use rig::providers::anthropic::completion::CompletionModel as AnthropicModel;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Provider {
     Bedrock,
     OpenAI,
+    Anthropic,
 }
 
 pub(crate) enum LlmExtractor {
     Bedrock(Arc<Extractor<BedrockModel, ExtractedMetadata>>),
     OpenAI(Arc<Extractor<OpenAIModel, ExtractedMetadata>>),
+    Anthropic(Arc<Extractor<AnthropicModel, ExtractedMetadata>>),
 }
 
 #[derive(Clone)]
@@ -169,6 +175,7 @@ Adding a new provider is exactly:
 const DEFAULT_BEDROCK_REGION: &str = "us-west-2";
 const DEFAULT_BEDROCK_MODEL_ID: &str = "us.anthropic.claude-sonnet-4-7-20251015-v1:0";
 const DEFAULT_OPENAI_MODEL_ID: &str = "gpt-4.1-mini";
+const DEFAULT_ANTHROPIC_MODEL_ID: &str = "claude-sonnet-4-7-20251015";
 
 const SYSTEM_PROMPT: &str = "You are a meeting metadata extractor. \
 Given a short spoken description of a meeting (transcribed by an STT system, \
@@ -180,6 +187,7 @@ fn parse_provider(s: &str) -> Result<Provider, LlmInitError> {
     match s.to_ascii_lowercase().as_str() {
         "bedrock" => Ok(Provider::Bedrock),
         "openai" => Ok(Provider::OpenAI),
+        "anthropic" => Ok(Provider::Anthropic),
         other => Err(LlmInitError::UnknownProvider(other.to_string())),
     }
 }
@@ -228,6 +236,24 @@ impl LlmClient {
                 tracing::info!(provider = "openai", %model_id, "LLM client initialized");
                 LlmExtractor::OpenAI(Arc::new(inner))
             }
+            Provider::Anthropic => {
+                if std::env::var("ANTHROPIC_API_KEY").is_err() {
+                    return Err(LlmInitError::MissingProviderCredentials(
+                        "ANTHROPIC_API_KEY env var is required when LLM_PROVIDER=anthropic".to_string(),
+                    ));
+                }
+                let model_id = std::env::var("MEETING_COMPANION_LLM_MODEL_ID")
+                    .unwrap_or_else(|_| DEFAULT_ANTHROPIC_MODEL_ID.to_string());
+
+                let client = rig::providers::anthropic::Client::from_env();
+                let inner = client
+                    .extractor::<ExtractedMetadata>(&model_id)
+                    .preamble(SYSTEM_PROMPT)
+                    .build();
+
+                tracing::info!(provider = "anthropic", %model_id, "LLM client initialized");
+                LlmExtractor::Anthropic(Arc::new(inner))
+            }
         };
 
         Ok(Self { extractor, provider })
@@ -262,6 +288,12 @@ impl LlmClient {
                     .map_err(|_| ExtractionError::Timeout(EXTRACTION_TIMEOUT))?
                     .map_err(|err| ExtractionError::Extract(err.to_string()))?
             }
+            LlmExtractor::Anthropic(e) => {
+                tokio::time::timeout(EXTRACTION_TIMEOUT, e.extract(&prompt))
+                    .await
+                    .map_err(|_| ExtractionError::Timeout(EXTRACTION_TIMEOUT))?
+                    .map_err(|err| ExtractionError::Extract(err.to_string()))?
+            }
         };
 
         Ok(into_map(typed))
@@ -281,18 +313,21 @@ rig's provider crates handle retry/backoff internally. We don't write a retry lo
 
 ### 4.1 Environment variables
 
-| Variable                              | Required when                          | Default                                          | Purpose                                                    |
-| ------------------------------------- | -------------------------------------- | ------------------------------------------------ | ---------------------------------------------------------- |
-| `MEETING_COMPANION_LLM_PROVIDER`      | no                                     | `bedrock`                                        | One of `bedrock`, `openai`. Selects which provider to use. |
-| `MEETING_COMPANION_LLM_DISABLED`      | no                                     | unset                                            | Dev escape hatch — skip extraction entirely.                |
-| `MEETING_COMPANION_LLM_MODEL_ID`      | no                                     | provider-specific (see below)                    | Model id (provider-specific format).                       |
-| **Bedrock-only**                      |                                        |                                                  |                                                            |
-| AWS credentials (any standard chain)  | when `LLM_PROVIDER=bedrock`            | —                                                | Required by `rig-bedrock`                                  |
-| `MEETING_COMPANION_LLM_REGION`        | no                                     | `us-west-2`                                      | AWS region for Bedrock                                     |
-| (Bedrock model id default)            | —                                      | `us.anthropic.claude-sonnet-4-7-20251015-v1:0`   | Cross-region inference profile                             |
-| **OpenAI-only**                       |                                        |                                                  |                                                            |
-| `OPENAI_API_KEY`                      | when `LLM_PROVIDER=openai`             | —                                                | OpenAI API key                                             |
-| (OpenAI model id default)             | —                                      | `gpt-4.1-mini`                                   |                                                            |
+| Variable                              | Required when                          | Default                                          | Purpose                                                                |
+| ------------------------------------- | -------------------------------------- | ------------------------------------------------ | ---------------------------------------------------------------------- |
+| `MEETING_COMPANION_LLM_PROVIDER`      | no                                     | `bedrock`                                        | One of `bedrock`, `openai`, `anthropic`. Selects which provider to use. |
+| `MEETING_COMPANION_LLM_DISABLED`      | no                                     | unset                                            | Dev escape hatch — skip extraction entirely.                            |
+| `MEETING_COMPANION_LLM_MODEL_ID`      | no                                     | provider-specific (see below)                    | Model id (provider-specific format).                                    |
+| **Bedrock-only**                      |                                        |                                                  |                                                                        |
+| AWS credentials (any standard chain)  | when `LLM_PROVIDER=bedrock`            | —                                                | Required by `rig-bedrock`                                              |
+| `MEETING_COMPANION_LLM_REGION`        | no                                     | `us-west-2`                                      | AWS region for Bedrock                                                 |
+| (Bedrock model id default)            | —                                      | `us.anthropic.claude-sonnet-4-7-20251015-v1:0`   | Cross-region inference profile                                         |
+| **OpenAI-only**                       |                                        |                                                  |                                                                        |
+| `OPENAI_API_KEY`                      | when `LLM_PROVIDER=openai`             | —                                                | OpenAI API key                                                         |
+| (OpenAI model id default)             | —                                      | `gpt-4.1-mini`                                   |                                                                        |
+| **Anthropic-only**                    |                                        |                                                  |                                                                        |
+| `ANTHROPIC_API_KEY`                   | when `LLM_PROVIDER=anthropic`          | —                                                | Anthropic API key                                                      |
+| (Anthropic model id default)          | —                                      | `claude-sonnet-4-7-20251015`                     |                                                                        |
 
 `MEETING_COMPANION_LLM_DISABLED=1` skips extraction regardless of provider. Test infra sets it; useful for offline dev.
 
@@ -337,11 +372,13 @@ New v3 tests:
 
 - `parse_provider_accepts_bedrock` — `parse_provider("bedrock") == Ok(Provider::Bedrock)`.
 - `parse_provider_accepts_openai` — `parse_provider("openai") == Ok(Provider::OpenAI)`.
+- `parse_provider_accepts_anthropic` — `parse_provider("anthropic") == Ok(Provider::Anthropic)`.
 - `parse_provider_is_case_insensitive` — `parse_provider("OpenAI") == Ok(Provider::OpenAI)`.
 - `parse_provider_rejects_unknown` — `parse_provider("vertex") == Err(LlmInitError::UnknownProvider(_))`.
 - `default_openai_model_id_is_set` — `DEFAULT_OPENAI_MODEL_ID` is non-empty and starts with `gpt-`.
+- `default_anthropic_model_id_is_set` — `DEFAULT_ANTHROPIC_MODEL_ID` is non-empty and starts with `claude-`.
 
-Total v3 unit tests in `llm.rs`: 5 (v2) + 5 (v3) = 10.
+Total v3 unit tests in `llm.rs`: 5 (v2) + 7 (v3) = 12.
 
 ### 5.2 Unit tests in `extraction.rs`
 
@@ -452,11 +489,12 @@ If OpenAI provider is shipped in a separate crate (e.g. hypothetical `rig-openai
 - Multi-language description support — English only.
 - Caching extracted metadata.
 - Side-by-side provider comparison (manual: restart server with different `MEETING_COMPANION_LLM_PROVIDER`).
-- Anthropic-direct, Gemini, Cohere, etc. — adding any of these is the same template as the OpenAI work; not committing to specific ones in v3.
+- Gemini, Cohere, Mistral, etc. — adding any of these is the same template as the OpenAI / Anthropic work; not committing to specific ones in v3.
 
 ## 9. Open questions
 
 None at time of writing. Two implementation-time confirmations:
 
-1. Whether OpenAI lives in `rig-core` as a feature flag or as a separate `rig-openai` crate. The v3 implementer checks crates.io at start.
+1. ~~Whether OpenAI lives in `rig-core` as a feature flag or as a separate crate~~ — confirmed in implementation: `rig::providers::openai` is always available in `rig-core 0.36`, no feature flag needed.
 2. Whether the OpenAI default model id (`gpt-4.1-mini`) is current and available — OpenAI's model lineup churns; the implementer confirms or substitutes (e.g. with `gpt-4o-mini` if `gpt-4.1-mini` isn't released yet on the user's account).
+3. Whether the Anthropic-direct default model id (`claude-sonnet-4-7-20251015`) is current — Anthropic-direct uses the bare model name without the Bedrock cross-region inference profile prefix. Implementer confirms via Anthropic's Models endpoint or substitutes with whatever current Sonnet 4.7 / 4.6 release is exposed.

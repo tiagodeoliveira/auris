@@ -2,11 +2,11 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Add OpenAI as a runtime-selectable second LLM provider alongside Bedrock. Default is unchanged (Bedrock + Sonnet 4.7); users opt into OpenAI via `MEETING_COMPANION_LLM_PROVIDER=openai` plus `OPENAI_API_KEY`. PWA wire contract is unchanged.
+**Goal:** Add OpenAI and Anthropic-direct as runtime-selectable second + third LLM providers alongside Bedrock. Default is unchanged (Bedrock + Sonnet 4.7); users opt into OpenAI via `MEETING_COMPANION_LLM_PROVIDER=openai` plus `OPENAI_API_KEY`, or Anthropic-direct via `MEETING_COMPANION_LLM_PROVIDER=anthropic` plus `ANTHROPIC_API_KEY`. PWA wire contract is unchanged.
 
-**Architecture:** Refactor `LlmClient` from a Bedrock-only struct to a thin wrapper around a `LlmExtractor` enum with one variant per provider. `from_env` parses `MEETING_COMPANION_LLM_PROVIDER` (defaults to `bedrock`), constructs the appropriate rig provider client, builds the typed Extractor, and stores it. `extract` matches on the enum and delegates. Adding a third provider in the future is "+1 enum variant + 1 from_env arm + 1 extract arm" (~10 lines).
+**Architecture:** Refactor `LlmClient` from a Bedrock-only struct to a thin wrapper around a `LlmExtractor` enum with one variant per provider (3 in v3). `from_env` parses `MEETING_COMPANION_LLM_PROVIDER` (defaults to `bedrock`), constructs the appropriate rig provider client, builds the typed Extractor, and stores it. `extract` matches on the enum and delegates. Adding a fourth provider in the future is "+1 enum variant + 1 from_env arm + 1 extract arm" (~10 lines).
 
-**Tech Stack:** Same as v2, plus rig's OpenAI provider — either via `rig-core`'s `openai` feature flag, or via a hypothetical `rig-openai` companion crate. Verified at implementation time.
+**Tech Stack:** Same as v2. rig 0.36's OpenAI and Anthropic providers are bundled — no Cargo.toml changes needed (Task 1 confirmed both live at `rig::providers::openai` and `rig::providers::anthropic` without feature flags).
 
 **Reference:** [`docs/specs/phase-2-llm-extraction.md`](../../specs/phase-2-llm-extraction.md) v3 is the spec this plan implements. Sections cited inline.
 
@@ -14,7 +14,7 @@
 
 ## Why this plan is short (4 tasks)
 
-The v2 work already did the heavy lifting — `LlmClient`, `from_env`, `extract`, error type, prompt, schema, test infrastructure with the disable flag, smoke example, doc structure. v3 just changes the dispatch shape and adds OpenAI alongside.
+The v2 work already did the heavy lifting — `LlmClient`, `from_env`, `extract`, error type, prompt, schema, test infrastructure with the disable flag, smoke example, doc structure. v3 just changes the dispatch shape and adds OpenAI + Anthropic-direct alongside.
 
 ---
 
@@ -39,72 +39,11 @@ The `extraction.rs`, `ws.rs`, `main.rs`, and `tests/common/mod.rs` files do NOT 
 
 ---
 
-## Task 1: Enable / add OpenAI provider in Cargo.toml
+## Task 1: Cargo.toml verification (no code changes)
 
-**Files:**
+**Status:** Already done. Investigation confirmed `rig-core 0.36` ships both `rig::providers::openai` and `rig::providers::anthropic` as always-available public submodules — no feature flag, no separate crate. The existing `Cargo.toml` already provides access. No commit was made.
 
-- Modify: `packages/server/Cargo.toml`
-
-- [ ] **Step 1: Verify how rig exposes OpenAI**
-
-```bash
-cargo doc --no-deps -p rig-core --open
-```
-
-Or browse https://docs.rs/rig-core/latest/rig/providers/ — check whether `openai` is:
-
-- (a) A submodule of `rig-core` always available (no extra dep / feature needed),
-- (b) Behind a `rig-core` feature flag (e.g. `rig-core = { features = ["openai"] }`),
-- (c) A separate companion crate (`rig-openai = "..."`).
-
-The v2 build pulled in `rig-core 0.36.0` with `features = ["derive"]`. As of that version's docs, OpenAI is most likely option (a) or (b).
-
-- [ ] **Step 2: Adjust `Cargo.toml` accordingly**
-
-If (a): no change needed — OpenAI is already accessible via `rig::providers::openai`. Skip to Step 3.
-
-If (b): add the feature, e.g.:
-
-```toml
-rig-core = { version = "0.36", features = ["derive", "openai"] }
-```
-
-If (c): add the new dep:
-
-```toml
-rig-openai = "<current>"
-```
-
-- [ ] **Step 3: Verify build**
-
-```bash
-cargo build -p meeting-companion-server
-```
-
-Expected: clean build. The OpenAI client transitively pulls `reqwest` etc. (already present).
-
-- [ ] **Step 4: Verify existing tests still pass**
-
-```bash
-cargo test -p meeting-companion-server -- --test-threads=1
-```
-
-Expected: 84 tests pass (no behavior change yet).
-
-- [ ] **Step 5: Verify clippy clean**
-
-```bash
-cargo clippy -p meeting-companion-server -- -D warnings
-```
-
-- [ ] **Step 6: Commit**
-
-```bash
-git add packages/server/Cargo.toml Cargo.lock
-git commit -m "chore(server): enable rig OpenAI provider"
-```
-
-If you adjusted feature flags or added a companion crate, document the actual choice in the commit body.
+The remaining tasks (2-4) are the actual work.
 
 ---
 
@@ -120,38 +59,47 @@ This is a single-commit refactor. It changes the internal shape of `LlmClient` f
 
 Re-read `packages/server/src/llm.rs` to know the v2 shape — especially the rig import paths the v2 implementer settled on (the v2 task used `use rig_bedrock::client::Client as BedrockClient` and `use rig_bedrock::completion::CompletionModel`, NOT `rig::providers::bedrock`).
 
-- [ ] **Step 2: Look up the OpenAI provider's actual API**
+- [ ] **Step 2: Look up the OpenAI and Anthropic providers' actual APIs**
 
-Confirm:
+Confirm for each:
 
-- Constructor: `rig::providers::openai::Client::from_env()` (sync, reads `OPENAI_API_KEY`) — verify by checking `rig_core`'s docs.
-- Model type: `rig::providers::openai::completion::CompletionModel` or similar — confirm the path.
-- Extractor builder: `client.extractor::<ExtractedMetadata>(model_id).preamble(...).build()` — same shape as Bedrock.
+- **OpenAI**:
+  - Constructor: `rig::providers::openai::Client::from_env()` (sync, reads `OPENAI_API_KEY`).
+  - Model type: `rig::providers::openai::completion::CompletionModel` or similar — confirm the exact path.
+  - Extractor builder: `client.extractor::<ExtractedMetadata>(model_id).preamble(...).build()` — same shape as Bedrock.
+- **Anthropic-direct**:
+  - Constructor: `rig::providers::anthropic::Client::from_env()` (sync, reads `ANTHROPIC_API_KEY`).
+  - Model type: `rig::providers::anthropic::completion::CompletionModel` or similar — confirm the exact path.
+  - Extractor builder: same shape.
 
-If the actual API differs from these guesses, adapt the implementation accordingly. Don't fight the framework.
+If the actual API differs from these guesses, adapt the implementation accordingly. Don't fight the framework. Both providers' Anthropic-API-compatible model id schemes are different — Bedrock uses `us.anthropic.claude-...` (cross-region inference profile), Anthropic-direct uses bare `claude-sonnet-4-7-...`. Use whatever the provider expects.
 
 - [ ] **Step 3: Rewrite `llm.rs`**
 
 Replace the v2 module with the v3 version per spec §3.3-3.5. Key changes:
 
-1. Add a `Provider` enum (`pub enum Provider { Bedrock, OpenAI }`).
-2. Add an `LlmExtractor` enum with two variants (`Bedrock(Arc<...>)`, `OpenAI(Arc<...>)`) — `pub(crate)` visibility.
+1. Add a `Provider` enum (`pub enum Provider { Bedrock, OpenAI, Anthropic }`).
+2. Add an `LlmExtractor` enum with three variants (`Bedrock(Arc<...>)`, `OpenAI(Arc<...>)`, `Anthropic(Arc<...>)`) — `pub(crate)` visibility.
 3. Add a `parse_provider(&str) -> Result<Provider, LlmInitError>` pure function.
-4. Add a new error variant `LlmInitError::UnknownProvider(String)` and `LlmInitError::MissingProviderCredentials(String)`.
-5. Add new constants: `DEFAULT_OPENAI_MODEL_ID = "gpt-4.1-mini"` (or whatever's current — verify against OpenAI's available models. If `gpt-4.1-mini` doesn't exist on the user's account, fall back to `gpt-4o-mini`).
+4. Add new error variants `LlmInitError::UnknownProvider(String)` and `LlmInitError::MissingProviderCredentials(String)`.
+5. Add new constants:
+   - `DEFAULT_OPENAI_MODEL_ID = "gpt-4.1-mini"` (or fall back to `gpt-4o-mini` if `gpt-4.1-mini` isn't released yet on the user's account).
+   - `DEFAULT_ANTHROPIC_MODEL_ID = "claude-sonnet-4-7-20251015"` (Anthropic-direct uses the bare model name without Bedrock's `us.` cross-region prefix; verify the exact date suffix is current).
 6. Rename `DEFAULT_REGION` → `DEFAULT_BEDROCK_REGION` and `DEFAULT_MODEL_ID` → `DEFAULT_BEDROCK_MODEL_ID`. The `default_model_id_is_cross_region_profile` test name updates to `default_bedrock_model_id_is_cross_region_profile`.
 7. Refactor `LlmClient` to hold `extractor: LlmExtractor` and `provider: Provider`. Add a `pub fn provider(&self) -> Provider` accessor.
-8. Refactor `from_env` per spec §3.4 — read `MEETING_COMPANION_LLM_PROVIDER` (default `bedrock`), match on the parsed provider, construct the appropriate Extractor.
-9. Refactor `extract` per spec §3.5 — match on `self.extractor`, dispatch to the right `e.extract(&prompt)`.
-10. Add 5 new unit tests:
+8. Refactor `from_env` per spec §3.4 — read `MEETING_COMPANION_LLM_PROVIDER` (default `bedrock`), match on the parsed provider, construct the appropriate Extractor. Each provider arm checks its own credential env var (`OPENAI_API_KEY` for openai, `ANTHROPIC_API_KEY` for anthropic) and returns `LlmInitError::MissingProviderCredentials` if missing.
+9. Refactor `extract` per spec §3.5 — match on `self.extractor`, dispatch to the right `e.extract(&prompt)`. Three arms in v3.
+10. Add 7 new unit tests:
     - `parse_provider_accepts_bedrock`
     - `parse_provider_accepts_openai`
+    - `parse_provider_accepts_anthropic`
     - `parse_provider_is_case_insensitive`
     - `parse_provider_rejects_unknown`
     - `default_openai_model_id_is_set`
+    - `default_anthropic_model_id_is_set`
 11. Rename the existing `default_model_id_is_cross_region_profile` test to `default_bedrock_model_id_is_cross_region_profile`.
 
-The full module is roughly 200 lines after the refactor.
+The full module is roughly 240 lines after the refactor.
 
 - [ ] **Step 4: Verify build**
 
@@ -168,8 +116,8 @@ cargo test -p meeting-companion-server -- --test-threads=1
 ```
 
 Expected:
-- 5 v2 unit tests in `llm.rs` minus 1 (renamed) plus 5 new v3 tests = 9 unit tests in `llm.rs`. Wait — the rename keeps the test, so it's 5 (v2, including renamed) + 5 (v3 new) = 10 unit tests in `llm.rs`.
-- Total: 84 (v2 baseline) − 0 (no v2 tests removed) + 5 (v3 new) = **89 tests**.
+- 5 v2 unit tests in `llm.rs` (one is renamed but still counts) + 7 new v3 tests = 12 unit tests in `llm.rs`.
+- Total: 84 (v2 baseline) + 7 (v3 new) = **91 tests**.
 
 - [ ] **Step 6: Run clippy**
 
@@ -183,7 +131,7 @@ Expected: clean.
 
 ```bash
 git add packages/server/src/llm.rs
-git commit -m "feat(server): multi-provider LLM dispatch (Bedrock + OpenAI)"
+git commit -m "feat(server): multi-provider LLM dispatch (Bedrock + OpenAI + Anthropic)"
 ```
 
 ---
@@ -225,7 +173,7 @@ let result = client.extract(/* ... */).await.expect(/* ... */);
 
 (If `tracing_subscriber::fmt::init()` isn't being called in the test, use `eprintln!` instead so the line shows up.)
 
-- [ ] **Step 3: Add `llm-smoke-bedrock` and `llm-smoke-openai` recipes to `Justfile`**
+- [ ] **Step 3: Add provider-pinned smoke recipes to `Justfile`**
 
 Append to the `# --- LLM ---` section:
 
@@ -237,6 +185,10 @@ llm-smoke-bedrock description="Q1 budget review for helix product launch":
 # Smoke-test against OpenAI specifically.
 llm-smoke-openai description="Q1 budget review for helix product launch":
     MEETING_COMPANION_LLM_PROVIDER=openai cargo run -p meeting-companion-server --example llm_smoke -- "{{description}}"
+
+# Smoke-test against Anthropic-direct specifically.
+llm-smoke-anthropic description="Q1 budget review for helix product launch":
+    MEETING_COMPANION_LLM_PROVIDER=anthropic cargo run -p meeting-companion-server --example llm_smoke -- "{{description}}"
 ```
 
 The original `llm-smoke` recipe stays as-is (uses whatever the user's shell env says).
@@ -245,11 +197,11 @@ The original `llm-smoke` recipe stays as-is (uses whatever the user's shell env 
 
 ```bash
 cargo build -p meeting-companion-server --examples
-cargo test -p meeting-companion-server -- --test-threads=1   # still 89 tests
+cargo test -p meeting-companion-server -- --test-threads=1   # still 91 tests
 just --list                                                  # confirms the new recipes
 ```
 
-Optionally run `just llm-smoke-bedrock` (requires AWS creds) and `just llm-smoke-openai` (requires `OPENAI_API_KEY`) to verify both paths hit live providers.
+Optionally run `just llm-smoke-bedrock` (requires AWS creds), `just llm-smoke-openai` (requires `OPENAI_API_KEY`), and `just llm-smoke-anthropic` (requires `ANTHROPIC_API_KEY`) to verify all three paths hit live providers.
 
 - [ ] **Step 5: Commit**
 
@@ -288,7 +240,7 @@ After:
 ```markdown
 ## LLM-based metadata extraction
 
-Phase 2 step 16 wires real LLM-based metadata extraction via [rig](https://github.com/0xPlaygrounds/rig). The server supports two providers as of v3: **AWS Bedrock** (default — Anthropic Claude Sonnet 4.7) and **OpenAI** (gpt-4.1-mini by default). Provider chosen at boot via env var.
+Phase 2 step 16 wires real LLM-based metadata extraction via [rig](https://github.com/0xPlaygrounds/rig). The server supports three providers as of v3: **AWS Bedrock** (default — Anthropic Claude Sonnet 4.7), **OpenAI** (gpt-4.1-mini by default), and **Anthropic-direct** (Claude Sonnet 4.7 by default). Provider chosen at boot via env var.
 
 ### Configuration
 
@@ -302,6 +254,8 @@ Phase 2 step 16 wires real LLM-based metadata extraction via [rig](https://githu
 | `MEETING_COMPANION_LLM_REGION`       | no                                  | `us-west-2`                                      |
 | **OpenAI-only**                      |                                     |                                                  |
 | `OPENAI_API_KEY`                     | when `LLM_PROVIDER=openai`          | —                                                |
+| **Anthropic-only**                   |                                     |                                                  |
+| `ANTHROPIC_API_KEY`                  | when `LLM_PROVIDER=anthropic`       | —                                                |
 
 ### Smoke
 
@@ -309,15 +263,17 @@ Phase 2 step 16 wires real LLM-based metadata extraction via [rig](https://githu
 just llm-smoke "your meeting description"          # uses currently-configured provider
 just llm-smoke-bedrock "your description"          # forces bedrock
 just llm-smoke-openai "your description"           # forces openai
+just llm-smoke-anthropic "your description"        # forces anthropic-direct
 \`\`\`
 
 ### Comparing providers
 
-To compare extractions side by side, run the same description against both:
+To compare extractions side by side, run the same description against multiple:
 
 \`\`\`bash
 just llm-smoke-bedrock "Q1 budget review for helix"
 just llm-smoke-openai "Q1 budget review for helix"
+just llm-smoke-anthropic "Q1 budget review for helix"
 \`\`\`
 ```
 
@@ -333,10 +289,10 @@ Find:
 - **Phase 2 (real audio + extraction pipeline) — partially shipped.** Step 16 (LLM metadata extraction via rig + Sonnet 4.7) is complete; ...
 ```
 
-Append " (v3 supports both Bedrock and OpenAI as runtime-selectable providers)":
+Append "(v3 supports Bedrock, OpenAI, and Anthropic-direct as runtime-selectable providers)":
 
 ```markdown
-- **Phase 2 (real audio + extraction pipeline) — partially shipped.** Step 16 (LLM metadata extraction via rig + Sonnet 4.7) is complete and supports both AWS Bedrock and OpenAI as runtime-selectable providers; see [`docs/specs/phase-2-llm-extraction.md`](specs/phase-2-llm-extraction.md). Remaining Phase 2 work: step 15 (real audio + STT/summarizer), step 17 (dynamic mode catalog), step 18 (memory-system enrichment via mnemo).
+- **Phase 2 (real audio + extraction pipeline) — partially shipped.** Step 16 (LLM metadata extraction via rig + Sonnet 4.7) is complete and supports AWS Bedrock, OpenAI, and Anthropic-direct as runtime-selectable providers; see [`docs/specs/phase-2-llm-extraction.md`](specs/phase-2-llm-extraction.md). Remaining Phase 2 work: step 15 (real audio + STT/summarizer), step 17 (dynamic mode catalog), step 18 (memory-system enrichment via mnemo).
 ```
 
 - [ ] **Step 3: Verify**
@@ -392,12 +348,14 @@ git commit -m "docs: Phase 2 step 16 v3 — multi-provider documented"
 - **Added (Task 2):**
   - `parse_provider_accepts_bedrock`
   - `parse_provider_accepts_openai`
+  - `parse_provider_accepts_anthropic`
   - `parse_provider_is_case_insensitive`
   - `parse_provider_rejects_unknown`
   - `default_openai_model_id_is_set`
+  - `default_anthropic_model_id_is_set`
 - **Renamed (no count change):** `default_model_id_is_cross_region_profile` → `default_bedrock_model_id_is_cross_region_profile`.
-- **Net: +5** → **89 tests** at completion.
+- **Net: +7** → **91 tests** at completion.
 
 ---
 
-After Task 4, the server supports two LLM providers (Bedrock, OpenAI) selectable via `MEETING_COMPANION_LLM_PROVIDER` env var. Adding more providers later is a small refactor pattern (1 enum variant + 1 from_env arm + 1 extract arm). The wire contract, test infra, and PWA all stay unchanged.
+After Task 4, the server supports three LLM providers (Bedrock, OpenAI, Anthropic-direct) selectable via `MEETING_COMPANION_LLM_PROVIDER` env var. Adding more providers later is a small refactor pattern (1 enum variant + 1 from_env arm + 1 extract arm). The wire contract, test infra, and PWA all stay unchanged.
