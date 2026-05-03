@@ -18,10 +18,43 @@ const CANNED: &[&str] = &[
     "The launch date is still tentative; depends on the security review.",
 ];
 
-/// Spawn-friendly task body. Sends one canned `TranscriptChunk` per `interval`
+pub struct MockStt {
+    interval: Duration,
+}
+
+impl MockStt {
+    pub fn from_env() -> Self {
+        let interval_ms: u64 = std::env::var("MEETING_COMPANION_STT_MOCK_INTERVAL_MS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(3000);
+        Self {
+            interval: Duration::from_millis(interval_ms),
+        }
+    }
+}
+
+impl crate::stt::SttProvider for MockStt {
+    fn name(&self) -> &'static str {
+        "mock"
+    }
+
+    fn run(
+        self: Box<Self>,
+        _audio_rx: Option<tokio::sync::mpsc::Receiver<Vec<u8>>>,
+        transcript_tx: broadcast::Sender<TranscriptChunk>,
+        cancel: CancellationToken,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> {
+        Box::pin(async move {
+            run_mock_stt_inner(transcript_tx, cancel, self.interval).await;
+        })
+    }
+}
+
+/// Private run loop — sends one canned `TranscriptChunk` per `interval`
 /// tick to `tx`. Cycles through the canned utterance list. Stops cleanly when
 /// `cancel` fires.
-pub async fn run_mock_stt(
+async fn run_mock_stt_inner(
     tx: broadcast::Sender<TranscriptChunk>,
     cancel: CancellationToken,
     interval: Duration,
@@ -61,7 +94,7 @@ mod tests {
         let task_cancel = cancel.clone();
         let task_tx = tx.clone();
         let handle = tokio::spawn(async move {
-            run_mock_stt(task_tx, task_cancel, Duration::from_millis(100)).await;
+            run_mock_stt_inner(task_tx, task_cancel, Duration::from_millis(100)).await;
         });
 
         // Advance virtual time by ~350 ms — should yield 3 chunks (at +100, +200, +300).

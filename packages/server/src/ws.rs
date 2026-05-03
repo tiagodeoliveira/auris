@@ -434,15 +434,13 @@ fn short_error(e: &crate::llm::ExtractionError) -> String {
 }
 
 fn spawn_live_pipeline(handle: ServerHandle, cancel: CancellationToken) {
-    use std::time::Duration;
-
     // Audio capture is task 9; for now, the pipeline is STT → summarizers.
     // We honor MEETING_COMPANION_AUDIO_DISABLED implicitly (no audio task spawned yet).
 
     let (chunk_tx, _) = tokio::sync::broadcast::channel::<crate::stt::TranscriptChunk>(64);
 
-    // STT task — mock or real depending on env var
-    let stt_provider = std::env::var("MEETING_COMPANION_STT_PROVIDER")
+    // STT task — dispatch via trait so future providers slot in cleanly.
+    let provider_name = std::env::var("MEETING_COMPANION_STT_PROVIDER")
         .or_else(|_| {
             if std::env::var("MEETING_COMPANION_STT_MOCK").is_ok() {
                 Ok("mock".to_string())
@@ -452,28 +450,18 @@ fn spawn_live_pipeline(handle: ServerHandle, cancel: CancellationToken) {
         })
         .unwrap_or_else(|_| "soniox".to_string());
 
-    match stt_provider.as_str() {
-        "mock" => {
-            let interval_ms: u64 = std::env::var("MEETING_COMPANION_STT_MOCK_INTERVAL_MS")
-                .ok()
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(3000);
+    match crate::stt::make_provider(&provider_name) {
+        Ok(provider) => {
             let stt_cancel = cancel.child_token();
             let stt_tx = chunk_tx.clone();
-            tokio::spawn(async move {
-                crate::stt::run_mock_stt(stt_tx, stt_cancel, Duration::from_millis(interval_ms))
-                    .await;
-            });
-            tracing::info!(interval_ms, "live pipeline started (mock STT)");
+            tracing::info!(provider = provider.name(), "live pipeline STT spawning");
+            // No audio source yet (Task 9b adds ScreenCaptureKit).
+            // For now: pass None as audio_rx; mock providers ignore it.
+            let audio_rx: Option<tokio::sync::mpsc::Receiver<Vec<u8>>> = None;
+            tokio::spawn(provider.run(audio_rx, stt_tx, stt_cancel));
         }
-        "soniox" => {
-            // Task 10 wires this in. For now, log and skip.
-            tracing::warn!(
-                "Soniox STT provider not yet implemented (Task 10); meeting will run without transcription"
-            );
-        }
-        other => {
-            tracing::error!(provider = %other, "unknown STT provider");
+        Err(e) => {
+            tracing::error!(error = %e, provider = %provider_name, "STT provider init failed; meeting will run without transcription");
         }
     }
 
