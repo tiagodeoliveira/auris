@@ -5,5 +5,6 @@
 //! - highlights: rig Extractor on a 20s heartbeat (task 5)
 //! - actions: rig Extractor on a 15s heartbeat (task 6)
 
+pub mod actions;
 pub mod highlights;
 pub mod transcript;
