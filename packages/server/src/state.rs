@@ -281,7 +281,10 @@ impl ServerState {
             UpdateStrategy::Replace => items.clone(),
             UpdateStrategy::Append => vec![items[idx].clone()],
         };
-        outcome.events.push(Event::ItemsUpdate { items: payload });
+        outcome.events.push(Event::ItemsUpdate {
+            mode: self.current_mode.clone(),
+            items: payload,
+        });
     }
 
     pub fn current_mode_id(&self) -> &str {
@@ -697,7 +700,8 @@ mod tests {
             item_id: "i2".into(),
         });
         match &out.events[..] {
-            [Event::ItemsUpdate { items }] => {
+            [Event::ItemsUpdate { mode, items }] => {
+                assert_eq!(mode, "transcript");
                 assert_eq!(items.len(), 1);
                 assert_eq!(items[0].id, "i2");
                 assert!(items[0].detail.is_some());
@@ -720,7 +724,8 @@ mod tests {
             item_id: "h1".into(),
         });
         match &out.events[..] {
-            [Event::ItemsUpdate { items }] => {
+            [Event::ItemsUpdate { mode, items }] => {
+                assert_eq!(mode, "highlights");
                 assert_eq!(items.len(), 2);
                 assert!(items[0].detail.is_some());
                 assert!(items[1].detail.is_none());

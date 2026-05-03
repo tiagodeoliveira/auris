@@ -49,7 +49,7 @@ export function handleServerEvent(event: ServerEvent, store: Store): void {
         currentMode: event.mode,
         displayTag: event.display_tag ?? null,
         metadata: event.metadata,
-        items: event.items,
+        itemsByMode: { ...store.get().itemsByMode, [event.mode]: event.items },
         status: event.status,
         glassesView: nextGlassesView,
         highlightIndex: 0,
@@ -77,7 +77,7 @@ export function handleServerEvent(event: ServerEvent, store: Store): void {
       store.update({
         currentMode: event.mode,
         displayTag: event.display_tag ?? null,
-        items: event.items,
+        itemsByMode: { ...store.get().itemsByMode, [event.mode]: event.items },
         highlightIndex: 0,
         viewportStart: 0,
       });
@@ -89,12 +89,16 @@ export function handleServerEvent(event: ServerEvent, store: Store): void {
       store.update({ metadata: event.metadata });
       return;
     case "items_update": {
-      const mode = store.get().availableModes.find((m) => m.id === store.get().currentMode);
-      if (!mode) return;
-      const items = applyItemsUpdate(store.get().items, event.items, mode);
-      store.update({ items });
+      const modeOpt = store.get().availableModes.find((m) => m.id === event.mode);
+      if (!modeOpt) return;
+      const current = store.get().itemsByMode[event.mode] ?? [];
+      const next = applyItemsUpdate(current, event.items, modeOpt);
+      store.update({ itemsByMode: { ...store.get().itemsByMode, [event.mode]: next } });
       return;
     }
+    case "transcript_interim":
+      store.update({ liveTranscriptInterim: event.text });
+      return;
     case "status":
       store.update({ status: event.status });
       return;

@@ -1,4 +1,5 @@
 import type { Store } from "../store";
+import { activeItems } from "../types";
 
 export function mountItemsMirror(parent: HTMLElement, store: Store): void {
   const wrap = document.createElement("div");
@@ -15,7 +16,7 @@ export function mountItemsMirror(parent: HTMLElement, store: Store): void {
   function render() {
     const s = store.get();
     list.innerHTML = "";
-    s.items.forEach((item, idx) => {
+    activeItems(s).forEach((item, idx) => {
       const row = document.createElement("div");
       const cursor = idx === s.highlightIndex ? "▶ " : "  ";
       row.textContent = cursor + item.text;
@@ -24,6 +25,6 @@ export function mountItemsMirror(parent: HTMLElement, store: Store): void {
   }
 
   render();
-  store.subscribe((s) => s.items, render);
+  store.subscribe((s) => s.itemsByMode[s.currentMode], render);
   store.subscribe((s) => s.highlightIndex, render);
 }

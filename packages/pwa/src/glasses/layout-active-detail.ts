@@ -4,6 +4,7 @@ import {
   TextContainerUpgrade,
 } from "@evenrealities/even_hub_sdk";
 import type { AppState } from "../types";
+import { activeItems } from "../types";
 
 const HEADER_ID = 1;
 const BODY_ID = 2;
@@ -52,7 +53,9 @@ export function buildDetailBodyUpgrade(state: AppState) {
 }
 
 function findDetailItem(state: AppState) {
-  return state.detailItemId ? state.items.find((i) => i.id === state.detailItemId) : undefined;
+  return state.detailItemId
+    ? activeItems(state).find((i) => i.id === state.detailItemId)
+    : undefined;
 }
 
 function buildHeader(state: AppState): string {

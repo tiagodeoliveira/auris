@@ -4,6 +4,7 @@ import {
   TextContainerUpgrade,
 } from "@evenrealities/even_hub_sdk";
 import type { AppState } from "../types";
+import { activeItems } from "../types";
 import { formatActiveListBody } from "./format-active-list";
 
 const HEADER_ID = 1;
@@ -78,7 +79,7 @@ function buildHeader(state: AppState): string {
 
 function buildBody(state: AppState): string {
   return formatActiveListBody(
-    state.items,
+    activeItems(state),
     state.highlightIndex,
     state.viewportStart,
     LINES_PER_SCREEN,

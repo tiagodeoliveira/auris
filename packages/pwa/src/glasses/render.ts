@@ -1,5 +1,6 @@
 import type { Store } from "../store";
 import type { GlassesView } from "../types";
+import { activeItems } from "../types";
 import { buildIdleRebuild } from "./layout-idle";
 import { buildActiveListLayout, buildBodyUpgrade, buildHeaderUpgrade } from "./layout-active-list";
 import { buildActiveDetailLayout, buildDetailBodyUpgrade } from "./layout-active-detail";
@@ -46,7 +47,7 @@ export function createGlassesRenderer(bridge: BridgeLike, store: Store): Glasses
 
   // active_list body subscriptions — fire only when we're in active_list view.
   store.subscribe(
-    (s) => s.items,
+    (s) => s.itemsByMode[s.currentMode],
     () => {
       if (lastView === "active_list")
         void bridge.textContainerUpgrade(buildBodyUpgrade(store.get()));
@@ -83,7 +84,7 @@ export function createGlassesRenderer(bridge: BridgeLike, store: Store): Glasses
 
   // active_detail body subscription — fires when the detail item or its content changes.
   store.subscribe(
-    (s) => (s.detailItemId ? s.items.find((i) => i.id === s.detailItemId) : null),
+    (s) => (s.detailItemId ? activeItems(s).find((i) => i.id === s.detailItemId) : null),
     () => {
       if (lastView === "active_detail")
         void bridge.textContainerUpgrade(buildDetailBodyUpgrade(store.get()));

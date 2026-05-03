@@ -2,6 +2,7 @@ import { OsEventTypeList } from "@evenrealities/even_hub_sdk";
 import { computeNextGlassesView } from "../state-machine";
 import type { Store } from "../store";
 import type { Intent } from "../types";
+import { activeItems } from "../types";
 
 interface BridgeEvent {
   textEvent?: { eventType?: number | undefined };
@@ -31,7 +32,7 @@ function handleInput(eventType: number, store: Store, send: SendIntent): void {
       const next = computeNextGlassesView(state.glassesView, { kind: "ring_click" }, {});
       const patch: Parameters<Store["update"]>[0] = { glassesView: next };
       if (state.glassesView === "active_list" && next === "active_detail") {
-        const item = state.items[state.highlightIndex];
+        const item = activeItems(state)[state.highlightIndex];
         if (item) {
           patch.detailItemId = item.id;
           if (!item.detail) {
@@ -61,7 +62,7 @@ function handleInput(eventType: number, store: Store, send: SendIntent): void {
     }
     case OsEventTypeList.SCROLL_BOTTOM_EVENT: {
       if (state.glassesView === "active_list") {
-        const next = Math.min(state.items.length - 1, state.highlightIndex + 1);
+        const next = Math.min(activeItems(state).length - 1, state.highlightIndex + 1);
         store.update({ highlightIndex: next });
       }
       return;

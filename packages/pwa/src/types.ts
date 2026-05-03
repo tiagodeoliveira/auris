@@ -40,7 +40,8 @@ export interface AppState {
   currentMode: string;
   displayTag: string | null;
   metadata: Record<string, string>;
-  items: Item[];
+  itemsByMode: Record<string, Item[]>;
+  liveTranscriptInterim: string;
   status: ServerStatus;
   glassesView: GlassesView;
   highlightIndex: number;
@@ -61,6 +62,10 @@ export interface AppState {
 // Re-exported for convenience.
 export type { ServerEvent, Intent, Item, ModeOption, ServerStatus, MeetingState };
 
+export function activeItems(s: AppState): Item[] {
+  return s.itemsByMode[s.currentMode] ?? [];
+}
+
 export function defaultAppState(): AppState {
   return {
     settings: { serverUrl: "", serverToken: "", sonioxKey: "", lastMetadata: {} },
@@ -72,7 +77,8 @@ export function defaultAppState(): AppState {
     currentMode: "highlights",
     displayTag: null,
     metadata: {},
-    items: [],
+    itemsByMode: {},
+    liveTranscriptInterim: "",
     status: { listening: false, paused: false },
     glassesView: "idle",
     highlightIndex: 0,

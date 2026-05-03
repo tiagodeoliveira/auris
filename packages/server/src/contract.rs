@@ -110,7 +110,11 @@ pub enum Event {
         metadata: HashMap<String, String>,
     },
     ItemsUpdate {
+        mode: String,
         items: Vec<Item>,
+    },
+    TranscriptInterim {
+        text: String,
     },
     Status {
         status: Status,
@@ -261,9 +265,45 @@ mod tests {
     }
 
     #[test]
-    fn event_items_update() {
-        let e = Event::ItemsUpdate { items: vec![] };
-        assert_eq!(round_trip(&e), e);
+    fn event_items_update_carries_mode() {
+        let e = Event::ItemsUpdate {
+            mode: "highlights".into(),
+            items: vec![Item {
+                id: "h-0".into(),
+                text: "key point".into(),
+                detail: None,
+                t: 0,
+                meta: None,
+            }],
+        };
+        let json = serde_json::to_string(&e).unwrap();
+        assert!(json.contains(r#""type":"items_update""#));
+        assert!(json.contains(r#""mode":"highlights""#));
+        let round: Event = serde_json::from_str(&json).unwrap();
+        match round {
+            Event::ItemsUpdate { mode, items } => {
+                assert_eq!(mode, "highlights");
+                assert_eq!(items.len(), 1);
+            }
+            _ => panic!("expected ItemsUpdate"),
+        }
+    }
+
+    #[test]
+    fn event_transcript_interim_round_trip() {
+        let e = Event::TranscriptInterim {
+            text: "hello world".into(),
+        };
+        let json = serde_json::to_string(&e).unwrap();
+        assert!(json.contains(r#""type":"transcript_interim""#));
+        assert!(json.contains(r#""text":"hello world""#));
+        let round: Event = serde_json::from_str(&json).unwrap();
+        match round {
+            Event::TranscriptInterim { text } => {
+                assert_eq!(text, "hello world");
+            }
+            _ => panic!("expected TranscriptInterim"),
+        }
     }
 
     #[test]

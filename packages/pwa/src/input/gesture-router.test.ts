@@ -10,7 +10,7 @@ describe("gesture-router", () => {
     const store = createStore({
       ...defaultAppState(),
       glassesView: "active_list",
-      items: [{ id: "a", text: "x", t: 0 }],
+      itemsByMode: { highlights: [{ id: "a", text: "x", t: 0 }] },
     });
     handleBridgeEvent({ textEvent: { eventType: OsEventTypeList.CLICK_EVENT } }, store, vi.fn());
     expect(store.get().glassesView).toBe("active_detail");
@@ -21,10 +21,12 @@ describe("gesture-router", () => {
     const store = createStore({
       ...defaultAppState(),
       glassesView: "active_list",
-      items: [
-        { id: "a", text: "x", t: 0 },
-        { id: "b", text: "y", t: 0 },
-      ],
+      itemsByMode: {
+        highlights: [
+          { id: "a", text: "x", t: 0 },
+          { id: "b", text: "y", t: 0 },
+        ],
+      },
       highlightIndex: 1,
     });
     handleBridgeEvent(
@@ -39,10 +41,12 @@ describe("gesture-router", () => {
     const store = createStore({
       ...defaultAppState(),
       glassesView: "active_list",
-      items: [
-        { id: "a", text: "x", t: 0 },
-        { id: "b", text: "y", t: 0 },
-      ],
+      itemsByMode: {
+        highlights: [
+          { id: "a", text: "x", t: 0 },
+          { id: "b", text: "y", t: 0 },
+        ],
+      },
       highlightIndex: 0,
     });
     handleBridgeEvent(
@@ -72,7 +76,7 @@ describe("gesture-router", () => {
     const store = createStore({
       ...defaultAppState(),
       glassesView: "active_list",
-      items: [{ id: "a", text: "x", t: 0 }],
+      itemsByMode: { highlights: [{ id: "a", text: "x", t: 0 }] },
     });
     handleBridgeEvent({ textEvent: { eventType: undefined } }, store, vi.fn());
     expect(store.get().glassesView).toBe("active_detail");

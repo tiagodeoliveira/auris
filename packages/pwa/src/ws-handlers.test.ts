@@ -1,7 +1,7 @@
 import { describe, expect, test } from "vitest";
 import { handleServerEvent } from "./ws-handlers";
 import { createStore } from "./store";
-import { defaultAppState } from "./types";
+import { defaultAppState, activeItems } from "./types";
 import type { ServerEvent } from "./types";
 
 describe("ws handlers", () => {
@@ -37,7 +37,7 @@ describe("ws handlers", () => {
     handleServerEvent(event, store);
     expect(store.get().protocolVersionMatched).toBe(true);
     expect(store.get().meetingState).toBe("active");
-    expect(store.get().items).toHaveLength(1);
+    expect(activeItems(store.get())).toHaveLength(1);
     expect(store.get().glassesView).toBe("active_list");
   });
 
@@ -59,13 +59,13 @@ describe("ws handlers", () => {
       protocolVersionMatched: true,
       availableModes: [{ id: "transcript", label: "Transcript", update_strategy: "append" }],
       currentMode: "transcript",
-      items: [{ id: "a", text: "first", t: 0 }],
+      itemsByMode: { transcript: [{ id: "a", text: "first", t: 0 }] },
     });
     handleServerEvent(
-      { type: "items_update", items: [{ id: "b", text: "second", t: 100 }] },
+      { type: "items_update", mode: "transcript", items: [{ id: "b", text: "second", t: 100 }] },
       store,
     );
-    expect(store.get().items.map((i) => i.id)).toEqual(["a", "b"]);
+    expect(activeItems(store.get()).map((i) => i.id)).toEqual(["a", "b"]);
   });
 
   test("error event surfaces as toast", () => {
