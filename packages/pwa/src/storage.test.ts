@@ -9,9 +9,9 @@ describe("storage", () => {
     bridge = createMockBridge();
   });
 
-  test("loadSettings returns empty defaults when bridge is empty", async () => {
+  test("loadSettings falls back to localhost server URL when bridge and env are empty", async () => {
     const s = await loadSettings(bridge, {});
-    expect(s.serverUrl).toBe("");
+    expect(s.serverUrl).toBe("ws://localhost:7331");
     expect(s.serverToken).toBe("");
     expect(s.sonioxKey).toBe("");
     expect(s.lastMetadata).toEqual({});

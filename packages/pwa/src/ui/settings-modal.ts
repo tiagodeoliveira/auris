@@ -35,7 +35,7 @@ export function mountSettingsModal(
 
   const form = document.createElement("div");
   form.style.cssText = "display:flex;flex-direction:column;gap:12px;";
-  const urlInput = field("Server URL", "ws://laptop.local:7331", "text");
+  const urlInput = field("Server URL", "ws://localhost:7331", "text");
   const tokenInput = field("Server token", "", "password");
   const sonioxInput = field("Soniox API key", "", "password");
   form.append(urlInput.wrap, tokenInput.wrap, sonioxInput.wrap);

@@ -39,16 +39,15 @@ describe("boot", () => {
     expect(store.get().errorOverlay?.title).toMatch(/Failed to initialize/i);
   });
 
-  test("opens settings modal if serverUrl is empty", async () => {
+  test("opens settings modal if serverToken is missing", async () => {
     const bridge = createMockBridge();
     const store = createStore(defaultAppState());
     await boot({ bridge, store, env: {} });
     expect(store.get().settingsModalOpen).toBe(true);
   });
 
-  test("does not open settings modal if serverUrl is in storage", async () => {
+  test("does not open settings modal if serverToken is in storage", async () => {
     const bridge = createMockBridge();
-    bridge.storage["mc.serverUrl"] = "ws://laptop:7331";
     bridge.storage["mc.serverToken"] = "tok";
     const store = createStore(defaultAppState());
     await boot({ bridge, store, env: {} });

@@ -54,8 +54,9 @@ export async function boot({ bridge, store, env }: BootOptions): Promise<void> {
     // Status reflection lands in later tasks.
   });
 
-  // 5. Open settings modal on first run.
-  if (!settings.serverUrl) {
+  // 5. Open settings modal on first run when the auth token is missing.
+  //    The server URL has a sensible default; the token does not.
+  if (!settings.serverToken) {
     store.update({ settingsModalOpen: true });
   }
 }

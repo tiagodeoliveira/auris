@@ -44,7 +44,7 @@ export async function loadSettings(
   }
 
   return {
-    serverUrl: url || env[ENV_KEYS.serverUrl!] || "",
+    serverUrl: url || env[ENV_KEYS.serverUrl!] || "ws://localhost:7331",
     serverToken: token || env[ENV_KEYS.serverToken!] || "",
     sonioxKey: key || env[ENV_KEYS.sonioxKey!] || "",
     lastMetadata,
