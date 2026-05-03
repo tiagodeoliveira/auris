@@ -6,6 +6,8 @@ use meeting_companion_server::llm::LlmClient;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    let _ = dotenvy::dotenv();
+
     let description = std::env::args()
         .nth(1)
         .unwrap_or_else(|| "Q1 budget review for helix product launch".to_string());

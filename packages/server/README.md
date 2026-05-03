@@ -28,6 +28,8 @@ Phase 2 step 16 wires real LLM-based metadata extraction via [rig](https://githu
 
 ### Configuration
 
+For local dev, copy `.env.example` (at the workspace root) to `.env` and fill in the keys you need. The server binary, the `llm_smoke` example, and the env-gated integration test all auto-load `.env` via `dotenvy`. `.env` is gitignored; `.env.example` is not.
+
 | Env var                              | Required when                 | Default           |
 | ------------------------------------ | ----------------------------- | ----------------- |
 | `MEETING_COMPANION_LLM_PROVIDER`     | no                            | `bedrock`         |

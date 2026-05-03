@@ -10,6 +10,7 @@
 
 #[tokio::test]
 async fn extracts_title_from_real_description() {
+    let _ = dotenvy::dotenv();
     if std::env::var("RUN_LLM_INTEGRATION").is_err() {
         return;
     }

@@ -15,6 +15,7 @@ path = "src/main.rs"
 [dependencies]
 anyhow = "1"
 clap = { version = "4", features = ["derive", "env"] }
+dotenvy = "0.15"
 futures-util = "0.3"
 rig-bedrock = "0.4"
 rig-core = { version = "0.36", features = ["derive"] }
