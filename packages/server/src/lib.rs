@@ -4,6 +4,7 @@
 
 pub mod contract;
 pub mod extraction;
+pub mod llm;
 pub mod mock;
 pub mod state;
 pub mod ws;
