@@ -7,6 +7,7 @@ pub mod extraction;
 pub mod llm;
 pub mod state;
 pub mod stt;
+pub mod summarizer;
 pub mod ws;
 
 pub use ws::run_server;
