@@ -18,7 +18,6 @@ use tracing::{info, warn};
 
 use crate::contract::{Event, Intent};
 use crate::llm::LlmClient;
-use crate::mock::make_item;
 use crate::state::ServerState;
 
 #[derive(Clone)]
@@ -304,15 +303,11 @@ async fn dispatch_intent(
         let _ = handle.events_tx.send(event);
     }
     if outcome.started_meeting || outcome.resumed_meeting {
-        let token = CancellationToken::new();
-        {
-            let mut slot = handle.meeting_cancel.lock().unwrap();
-            if let Some(prev) = slot.take() {
-                prev.cancel();
-            }
-            *slot = Some(token.clone());
+        let mut slot = handle.meeting_cancel.lock().unwrap();
+        if let Some(prev) = slot.take() {
+            prev.cancel();
         }
-        spawn_mock_generator(handle.clone(), token);
+        *slot = Some(CancellationToken::new());
     }
     if let Some(description) = outcome.start_extraction_for {
         let token = handle
@@ -352,8 +347,6 @@ async fn send_protocol_error(
     sink.send(Message::Text(json)).await.ok();
     Ok(())
 }
-
-const MOCK_INTERVAL: Duration = Duration::from_secs(3);
 
 fn heartbeat_interval() -> Duration {
     if let Ok(s) = std::env::var("MEETING_COMPANION_HEARTBEAT_MS") {
@@ -417,32 +410,4 @@ fn short_error(e: &crate::llm::ExtractionError) -> String {
         Timeout(_) => "Metadata extraction timed out".to_string(),
         Extract(_) => "Metadata extraction failed".to_string(),
     }
-}
-
-pub fn spawn_mock_generator(handle: ServerHandle, cancel: CancellationToken) {
-    tokio::spawn(async move {
-        let mut interval = tokio::time::interval(MOCK_INTERVAL);
-        interval.tick().await; // discard the immediate tick
-        let mut idx: usize = 0;
-        loop {
-            tokio::select! {
-                _ = interval.tick() => {
-                    let event = {
-                        let mut s = handle.state.lock().await;
-                        let started_at = match s.meeting_started_at() {
-                            Some(t) => t,
-                            None => break,
-                        };
-                        let mode_id = s.current_mode_id().to_string();
-                        let item = make_item(&mode_id, idx, started_at);
-                        let payload = s.push_mock_item(item);
-                        Event::ItemsUpdate { items: payload }
-                    };
-                    let _ = handle.events_tx.send(event);
-                    idx += 1;
-                }
-                _ = cancel.cancelled() => break,
-            }
-        }
-    });
 }
