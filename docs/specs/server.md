@@ -651,6 +651,11 @@ which lets the PWA exercise both code paths in Phase 0.
 
 ### 8.4 Simulated LLM extraction
 
+> **Phase 2 update:** This section describes the Phase 0 simulated stub.
+> Phase 2 step 16 replaces it with real extraction via rig + Sonnet 4.7 —
+> see [`docs/specs/phase-2-llm-extraction.md`](phase-2-llm-extraction.md).
+> The wire contract (events, ordering, merge semantics) is unchanged.
+
 Triggered when `start_meeting.description` is present and non-empty.
 
 Pseudocode:
