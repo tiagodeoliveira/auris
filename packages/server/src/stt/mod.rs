@@ -67,13 +67,13 @@ pub trait SttProvider: Send {
 pub fn make_provider(name: &str) -> Result<Box<dyn SttProvider>, SttInitError> {
     match name {
         "mock" => Ok(Box::new(mock::MockStt::from_env())),
-        "soniox" => Err(SttInitError::Unknown(
-            "soniox not yet implemented (lands in Task 10)".to_string(),
-        )),
+        "soniox" => Ok(Box::new(soniox::SonioxStt::from_env()?)),
         other => Err(SttInitError::Unknown(other.to_string())),
     }
 }
 
 pub mod mock;
+pub mod soniox;
 
 pub use mock::MockStt;
+pub use soniox::SonioxStt;
