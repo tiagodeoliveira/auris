@@ -3,6 +3,7 @@
 use crate::contract::{
     Event, Intent, Item, MeetingState, ModeOption, Status, UpdateStrategy, PROTOCOL_VERSION,
 };
+use crate::stt::TranscriptChunk;
 use std::collections::HashMap;
 use std::time::Instant;
 
@@ -57,6 +58,7 @@ pub struct ServerState {
     pub(crate) items_per_mode: HashMap<String, Vec<Item>>,
     pub(crate) metadata: HashMap<String, String>,
     pub(crate) meeting_started_at: Option<Instant>,
+    pub(crate) rolling_transcript: Vec<TranscriptChunk>,
 }
 
 impl ServerState {
@@ -71,6 +73,7 @@ impl ServerState {
             items_per_mode,
             metadata: HashMap::new(),
             meeting_started_at: None,
+            rolling_transcript: Vec::new(),
         };
         s.assert_invariants();
         s
@@ -170,6 +173,7 @@ impl ServerState {
         }
         self.meeting_started_at = None;
         self.current_mode = DEFAULT_MODE_ID.to_string();
+        self.rolling_transcript.clear();
 
         outcome.events.push(Event::MeetingStateChanged {
             meeting_state: MeetingState::Idle,
@@ -285,6 +289,69 @@ impl ServerState {
             mode: self.current_mode.clone(),
             items: payload,
         });
+    }
+
+    /// Append a transcript chunk to the rolling buffer. Silently no-ops
+    /// if the meeting is not Active.
+    pub fn append_transcript_chunk(&mut self, chunk: TranscriptChunk) {
+        if !matches!(self.meeting_state, MeetingState::Active) {
+            return;
+        }
+        self.rolling_transcript.push(chunk);
+    }
+
+    /// Return the rolling transcript joined as a single string with
+    /// newlines between chunks. Empty string if no chunks accumulated.
+    pub fn rolling_transcript_text(&self) -> String {
+        self.rolling_transcript
+            .iter()
+            .map(|c| c.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// Append an item to the named mode's list using its declared UpdateStrategy.
+    /// Returns the broadcast payload (full list for Replace, single-item Vec for Append).
+    /// Empty Vec if mode is unknown or no item buffer exists.
+    /// Caps Replace-strategy lists at 10 items (FIFO).
+    pub fn push_item_for_mode(&mut self, mode: &str, item: Item) -> Vec<Item> {
+        let strategy = match self.available_modes.iter().find(|m| m.id == mode) {
+            Some(m) => m.update_strategy,
+            None => return Vec::new(),
+        };
+        let items = match self.items_per_mode.get_mut(mode) {
+            Some(v) => v,
+            None => return Vec::new(),
+        };
+        items.push(item.clone());
+        let payload = match strategy {
+            UpdateStrategy::Replace => {
+                while items.len() > 10 {
+                    items.remove(0);
+                }
+                items.clone()
+            }
+            UpdateStrategy::Append => vec![item],
+        };
+        self.assert_invariants();
+        payload
+    }
+
+    /// Replace the entire item list for the named mode. Used by Replace-strategy
+    /// summarizers that re-derive the full list each cycle (highlights).
+    /// Caps at 10 items (FIFO from the front of the supplied list).
+    /// Empty Vec if mode is unknown.
+    pub fn replace_items_for_mode(&mut self, mode: &str, new_items: Vec<Item>) -> Vec<Item> {
+        if !self.available_modes.iter().any(|m| m.id == mode) {
+            return Vec::new();
+        }
+        let mut capped = new_items;
+        while capped.len() > 10 {
+            capped.remove(0);
+        }
+        self.items_per_mode.insert(mode.to_string(), capped.clone());
+        self.assert_invariants();
+        capped
     }
 
     pub fn current_mode_id(&self) -> &str {
@@ -754,5 +821,189 @@ mod tests {
             }
             _ => panic!(),
         }
+    }
+
+    #[test]
+    fn rolling_transcript_appends_chunks() {
+        let mut s = ServerState::new();
+        s.apply_intent(Intent::StartMeeting {
+            description: None,
+            metadata: None,
+        });
+        let chunk = crate::stt::TranscriptChunk {
+            id: "c1".into(),
+            text: "hello world".into(),
+            t_start_ms: 100,
+            t_end_ms: 1100,
+            speaker: None,
+        };
+        s.append_transcript_chunk(chunk);
+        assert_eq!(s.rolling_transcript_text(), "hello world");
+    }
+
+    #[test]
+    fn rolling_transcript_joins_with_newlines() {
+        let mut s = ServerState::new();
+        s.apply_intent(Intent::StartMeeting {
+            description: None,
+            metadata: None,
+        });
+        s.append_transcript_chunk(crate::stt::TranscriptChunk {
+            id: "c1".into(),
+            text: "first line".into(),
+            t_start_ms: 0,
+            t_end_ms: 1000,
+            speaker: None,
+        });
+        s.append_transcript_chunk(crate::stt::TranscriptChunk {
+            id: "c2".into(),
+            text: "second line".into(),
+            t_start_ms: 1100,
+            t_end_ms: 2000,
+            speaker: None,
+        });
+        assert_eq!(s.rolling_transcript_text(), "first line\nsecond line");
+    }
+
+    #[test]
+    fn append_transcript_chunk_noop_when_not_active() {
+        let mut s = ServerState::new();
+        // Meeting is Idle, not Active
+        s.append_transcript_chunk(crate::stt::TranscriptChunk {
+            id: "c1".into(),
+            text: "should not be stored".into(),
+            t_start_ms: 0,
+            t_end_ms: 100,
+            speaker: None,
+        });
+        assert_eq!(s.rolling_transcript_text(), "");
+    }
+
+    #[test]
+    fn stop_meeting_clears_rolling_transcript() {
+        let mut s = ServerState::new();
+        s.apply_intent(Intent::StartMeeting {
+            description: None,
+            metadata: None,
+        });
+        s.append_transcript_chunk(crate::stt::TranscriptChunk {
+            id: "c1".into(),
+            text: "stuff".into(),
+            t_start_ms: 0,
+            t_end_ms: 100,
+            speaker: None,
+        });
+        s.apply_intent(Intent::StopMeeting);
+        assert_eq!(s.rolling_transcript_text(), "");
+    }
+
+    #[test]
+    fn push_item_for_mode_replace_caps_at_10() {
+        let mut s = ServerState::new();
+        s.apply_intent(Intent::StartMeeting {
+            description: None,
+            metadata: None,
+        });
+        // current_mode = highlights = replace strategy
+        for i in 0..15 {
+            let item = Item {
+                id: format!("h{}", i),
+                text: format!("item {}", i),
+                detail: None,
+                t: i as u64,
+                meta: None,
+            };
+            let payload = s.push_item_for_mode("highlights", item);
+            assert!(payload.len() <= 10);
+        }
+        let final_items = &s.items_per_mode["highlights"];
+        assert_eq!(final_items.len(), 10);
+        assert_eq!(final_items[0].id, "h5"); // FIFO drop kept items 5..15
+        assert_eq!(final_items[9].id, "h14");
+    }
+
+    #[test]
+    fn push_item_for_mode_append_returns_single_item() {
+        let mut s = ServerState::new();
+        s.apply_intent(Intent::StartMeeting {
+            description: None,
+            metadata: None,
+        });
+        let item = Item {
+            id: "t1".into(),
+            text: "hi".into(),
+            detail: None,
+            t: 0,
+            meta: None,
+        };
+        let payload = s.push_item_for_mode("transcript", item.clone());
+        assert_eq!(payload.len(), 1);
+        assert_eq!(payload[0].id, "t1");
+        // items_per_mode keeps growing
+        for i in 0..5 {
+            s.push_item_for_mode(
+                "transcript",
+                Item {
+                    id: format!("t{}", i + 2),
+                    text: format!("hi{}", i + 2),
+                    detail: None,
+                    t: i as u64,
+                    meta: None,
+                },
+            );
+        }
+        assert_eq!(s.items_per_mode["transcript"].len(), 6);
+    }
+
+    #[test]
+    fn push_item_for_unknown_mode_is_noop() {
+        let mut s = ServerState::new();
+        s.apply_intent(Intent::StartMeeting {
+            description: None,
+            metadata: None,
+        });
+        let payload = s.push_item_for_mode(
+            "nonexistent",
+            Item {
+                id: "x".into(),
+                text: "y".into(),
+                detail: None,
+                t: 0,
+                meta: None,
+            },
+        );
+        assert!(payload.is_empty());
+    }
+
+    #[test]
+    fn replace_items_for_mode_overwrites() {
+        let mut s = ServerState::new();
+        s.apply_intent(Intent::StartMeeting {
+            description: None,
+            metadata: None,
+        });
+        let initial: Vec<Item> = (0..3)
+            .map(|i| Item {
+                id: format!("h{}", i),
+                text: format!("first {}", i),
+                detail: None,
+                t: 0,
+                meta: None,
+            })
+            .collect();
+        s.replace_items_for_mode("highlights", initial);
+        let replacement: Vec<Item> = (0..2)
+            .map(|i| Item {
+                id: format!("h{}", i),
+                text: format!("second {}", i),
+                detail: None,
+                t: 0,
+                meta: None,
+            })
+            .collect();
+        let payload = s.replace_items_for_mode("highlights", replacement);
+        assert_eq!(payload.len(), 2);
+        assert_eq!(s.items_per_mode["highlights"].len(), 2);
+        assert_eq!(s.items_per_mode["highlights"][0].text, "second 0");
     }
 }

@@ -6,6 +6,7 @@ pub mod contract;
 pub mod extraction;
 pub mod llm;
 pub mod state;
+pub mod stt;
 pub mod ws;
 
 pub use ws::run_server;
