@@ -19,3 +19,7 @@ pub struct TranscriptChunk {
     /// Optional speaker label from STT token metadata (often unavailable).
     pub speaker: Option<String>,
 }
+
+pub mod mock;
+
+pub use mock::run_mock_stt;
