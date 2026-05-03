@@ -290,6 +290,8 @@ async fn dispatch_intent(
         }
     };
 
+    tracing::info!(intent = ?intent, "intent received");
+
     let outcome = {
         let mut s = handle.state.lock().await;
         s.apply_intent(intent)
@@ -360,13 +362,21 @@ fn spawn_extraction(handle: ServerHandle, description: String, cancel: Cancellat
     tokio::spawn(async move {
         // Dev escape hatch.
         if std::env::var("MEETING_COMPANION_LLM_DISABLED").is_ok() {
-            tracing::debug!("LLM extraction disabled by env var; skipping");
+            tracing::info!("LLM extraction disabled by env var; skipping");
             return;
         }
 
+        tracing::info!(
+            provider = ?handle.llm.provider(),
+            description_len = description.len(),
+            "metadata extraction starting"
+        );
         let extracted = tokio::select! {
             result = handle.llm.extract(&description) => match result {
-                Ok(map) => map,
+                Ok(map) => {
+                    tracing::info!(field_count = map.len(), fields = ?map.keys().collect::<Vec<_>>(), "metadata extraction succeeded");
+                    map
+                }
                 Err(e) => {
                     tracing::warn!(error = %e, "metadata extraction failed");
                     let s = handle.state.lock().await;
