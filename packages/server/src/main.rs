@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use clap::Parser;
 use std::net::SocketAddr;
+use std::sync::Arc;
 use tokio::sync::oneshot;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
@@ -32,6 +33,14 @@ async fn main() -> Result<()> {
     let addr: SocketAddr = format!("{}:{}", args.bind, args.port).parse()?;
     info!(?addr, version = env!("CARGO_PKG_VERSION"), "boot");
 
+    let llm = match meeting_companion_server::llm::LlmClient::from_env().await {
+        Ok(c) => Arc::new(c),
+        Err(e) => {
+            tracing::error!(error = %e, "LLM client init failed");
+            std::process::exit(3);
+        }
+    };
+
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
     tokio::spawn(async move {
         use tokio::signal::unix::{signal, SignalKind};
@@ -43,5 +52,5 @@ async fn main() -> Result<()> {
         let _ = shutdown_tx.send(());
     });
 
-    meeting_companion_server::run_server(addr, token, shutdown_rx).await
+    meeting_companion_server::run_server(addr, token, llm, shutdown_rx).await
 }

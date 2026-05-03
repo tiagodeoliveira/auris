@@ -33,12 +33,32 @@ pub async fn spawn_test_server() -> TestServer {
 }
 
 pub async fn spawn_test_server_with_token(token: &str) -> TestServer {
+    // Disable LLM extraction in tests by default. The actual extract path
+    // never fires from spawn_extraction; the LlmClient is constructed only
+    // because the run_server signature requires one.
+    std::env::set_var("MEETING_COMPANION_LLM_DISABLED", "1");
+    // Prevent the AWS credential chain from blocking on IMDS / SSO if the
+    // dev machine has no real credentials configured.
+    if std::env::var("AWS_ACCESS_KEY_ID").is_err() {
+        std::env::set_var("AWS_ACCESS_KEY_ID", "test");
+        std::env::set_var("AWS_SECRET_ACCESS_KEY", "test");
+        std::env::set_var("AWS_REGION", "us-west-2");
+    }
+
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let addr = listener.local_addr().expect("addr");
     let (tx, rx) = oneshot::channel();
     let token = token.to_string();
+
+    let llm = std::sync::Arc::new(
+        meeting_companion_server::llm::LlmClient::from_env()
+            .await
+            .expect("LLM client init in tests"),
+    );
+
     tokio::spawn(async move {
-        let _ = meeting_companion_server::ws::run_server_with_listener(listener, token, rx).await;
+        let _ =
+            meeting_companion_server::ws::run_server_with_listener(listener, token, llm, rx).await;
     });
     TestServer {
         addr,

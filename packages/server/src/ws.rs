@@ -17,7 +17,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
 use crate::contract::{Event, Intent};
-use crate::extraction;
+use crate::llm::LlmClient;
 use crate::mock::make_item;
 use crate::state::ServerState;
 
@@ -28,22 +28,25 @@ pub struct ServerHandle {
     pub token: Arc<String>,
     pub meeting_cancel: Arc<StdMutex<Option<CancellationToken>>>,
     pub shutdown: CancellationToken,
+    pub llm: Arc<LlmClient>,
 }
 
 pub async fn run_server(
     addr: SocketAddr,
     token: String,
+    llm: Arc<LlmClient>,
     shutdown_rx: oneshot::Receiver<()>,
 ) -> Result<()> {
     let listener = TcpListener::bind(addr).await?;
     let actual = listener.local_addr()?;
     info!(addr = ?actual, "listening");
-    run_server_with_listener(listener, token, shutdown_rx).await
+    run_server_with_listener(listener, token, llm, shutdown_rx).await
 }
 
 pub async fn run_server_with_listener(
     listener: TcpListener,
     token: String,
+    llm: Arc<LlmClient>,
     mut shutdown_rx: oneshot::Receiver<()>,
 ) -> Result<()> {
     let (events_tx, _) = broadcast::channel::<Event>(64);
@@ -54,6 +57,7 @@ pub async fn run_server_with_listener(
         token: Arc::new(token),
         meeting_cancel: Arc::new(StdMutex::new(None)),
         shutdown: shutdown.clone(),
+        llm,
     };
 
     let hb_handle = handle.clone();
@@ -359,28 +363,60 @@ fn heartbeat_interval() -> Duration {
     }
     Duration::from_secs(10)
 }
-const EXTRACTION_DELAY: Duration = Duration::from_millis(1500);
-
 fn spawn_extraction(handle: ServerHandle, description: String, cancel: CancellationToken) {
     tokio::spawn(async move {
-        tokio::select! {
-            _ = tokio::time::sleep(EXTRACTION_DELAY) => {
-                let extracted = extraction::extract_metadata(&description);
-                let event = {
-                    let mut s = handle.state.lock().await;
-                    if !matches!(s.snapshot_meeting_state(), crate::contract::MeetingState::Active | crate::contract::MeetingState::Paused) {
-                        return;
-                    }
-                    let manual = s.metadata_clone();
-                    let merged = extraction::merge_manual_wins(extracted, &manual);
-                    s.set_metadata_full(merged.clone());
-                    Event::MetadataChanged { metadata: merged }
-                };
-                let _ = handle.events_tx.send(event);
-            }
-            _ = cancel.cancelled() => {}
+        // Dev escape hatch.
+        if std::env::var("MEETING_COMPANION_LLM_DISABLED").is_ok() {
+            tracing::debug!("LLM extraction disabled by env var; skipping");
+            return;
         }
+
+        let extracted = tokio::select! {
+            result = handle.llm.extract(&description) => match result {
+                Ok(map) => map,
+                Err(e) => {
+                    tracing::warn!(error = %e, "metadata extraction failed");
+                    let s = handle.state.lock().await;
+                    let status = crate::contract::Status {
+                        listening: matches!(s.snapshot_meeting_state(), crate::contract::MeetingState::Active),
+                        paused: matches!(s.snapshot_meeting_state(), crate::contract::MeetingState::Paused),
+                        error: Some(short_error(&e)),
+                    };
+                    drop(s);
+                    let _ = handle.events_tx.send(Event::Status { status });
+                    return;
+                }
+            },
+            _ = cancel.cancelled() => {
+                tracing::debug!("extraction cancelled");
+                return;
+            }
+        };
+
+        // Re-acquire lock; abandon if meeting was stopped between extraction and lock.
+        let event = {
+            let mut s = handle.state.lock().await;
+            if !matches!(
+                s.snapshot_meeting_state(),
+                crate::contract::MeetingState::Active | crate::contract::MeetingState::Paused
+            ) {
+                return;
+            }
+            let manual = s.metadata_clone();
+            let merged = crate::extraction::merge_manual_wins(extracted, &manual);
+            s.set_metadata_full(merged.clone());
+            Event::MetadataChanged { metadata: merged }
+        };
+        let _ = handle.events_tx.send(event);
     });
+}
+
+fn short_error(e: &crate::llm::ExtractionError) -> String {
+    use crate::llm::ExtractionError::*;
+    match e {
+        Timeout(_) => "Metadata extraction timed out".to_string(),
+        Extract(_) => "Metadata extraction failed".to_string(),
+    }
 }
 
 pub fn spawn_mock_generator(handle: ServerHandle, cancel: CancellationToken) {
