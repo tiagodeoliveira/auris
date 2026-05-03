@@ -51,6 +51,18 @@ smoke-instructions:
 llm-smoke description="Q1 budget review for helix product launch":
     cargo run -p meeting-companion-server --example llm_smoke -- "{{description}}"
 
-# Run the env-gated LLM integration test (requires real AWS creds + Sonnet 4.7 in Bedrock).
+# Smoke-test against Bedrock specifically.
+llm-smoke-bedrock description="Q1 budget review for helix product launch":
+    MEETING_COMPANION_LLM_PROVIDER=bedrock cargo run -p meeting-companion-server --example llm_smoke -- "{{description}}"
+
+# Smoke-test against OpenAI specifically.
+llm-smoke-openai description="Q1 budget review for helix product launch":
+    MEETING_COMPANION_LLM_PROVIDER=openai cargo run -p meeting-companion-server --example llm_smoke -- "{{description}}"
+
+# Smoke-test against Anthropic-direct specifically.
+llm-smoke-anthropic description="Q1 budget review for helix product launch":
+    MEETING_COMPANION_LLM_PROVIDER=anthropic cargo run -p meeting-companion-server --example llm_smoke -- "{{description}}"
+
+# Run the env-gated LLM integration test (provider selected via MEETING_COMPANION_LLM_PROVIDER, defaults to bedrock).
 llm-integration:
     RUN_LLM_INTEGRATION=1 cargo test -p meeting-companion-server --test llm_integration -- --nocapture

@@ -1,5 +1,9 @@
-//! Integration test for the rig-backed LLM client. Requires real AWS
-//! credentials and Sonnet 4.7 enabled in Bedrock.
+//! Integration test for the rig-backed LLM client. The provider used is
+//! whatever `MEETING_COMPANION_LLM_PROVIDER` selects (default: bedrock).
+//! Requires the matching credentials for that provider:
+//!   - bedrock:   AWS credentials chain + Sonnet 4.7 enabled in Bedrock
+//!   - openai:    OPENAI_API_KEY
+//!   - anthropic: ANTHROPIC_API_KEY
 //!
 //! Skipped by default. Run with:
 //!   RUN_LLM_INTEGRATION=1 cargo test -p meeting-companion-server --test llm_integration
@@ -14,6 +18,11 @@ async fn extracts_title_from_real_description() {
     let client = meeting_companion_server::llm::LlmClient::from_env()
         .await
         .expect("LLM client init");
+
+    eprintln!(
+        "running integration test against provider: {:?}",
+        client.provider()
+    );
 
     let result = client
         .extract("Q1 budget review for the helix product launch and rollout plan")

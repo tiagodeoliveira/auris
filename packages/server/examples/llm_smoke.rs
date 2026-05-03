@@ -14,6 +14,7 @@ async fn main() -> anyhow::Result<()> {
 
     println!("Initializing LLM client...");
     let client = LlmClient::from_env().await?;
+    println!("Provider: {:?}", client.provider());
 
     println!("Description: {description}");
     println!("Extracting...");
