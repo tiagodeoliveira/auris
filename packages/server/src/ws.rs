@@ -319,7 +319,7 @@ async fn dispatch_intent(
             .as_ref()
             .map(|t| t.child_token());
         if let Some(t) = token {
-            spawn_live_pipeline(handle.clone(), t);
+            spawn_live_pipeline(handle.clone(), t).await;
         }
     }
     if let Some(description) = outcome.start_extraction_for {
@@ -433,13 +433,41 @@ fn short_error(e: &crate::llm::ExtractionError) -> String {
     }
 }
 
-fn spawn_live_pipeline(handle: ServerHandle, cancel: CancellationToken) {
-    // Audio capture is task 9; for now, the pipeline is STT → summarizers.
-    // We honor MEETING_COMPANION_AUDIO_DISABLED implicitly (no audio task spawned yet).
-
+async fn spawn_live_pipeline(handle: ServerHandle, cancel: CancellationToken) {
     let (chunk_tx, _) = tokio::sync::broadcast::channel::<crate::stt::TranscriptChunk>(64);
 
+    // -------------------------------------------------------------------
+    // Audio capture task (macOS only; honors MEETING_COMPANION_AUDIO_DISABLED)
+    // -------------------------------------------------------------------
+    let audio_disabled = std::env::var("MEETING_COMPANION_AUDIO_DISABLED").is_ok();
+    let audio_rx = if audio_disabled {
+        tracing::info!("audio capture disabled by env var");
+        None
+    } else {
+        let audio_cancel = cancel.child_token();
+        match crate::audio::spawn_audio_task(audio_cancel).await {
+            Ok(rx) => {
+                tracing::info!("audio capture started (ScreenCaptureKit)");
+                Some(rx)
+            }
+            Err(e) => {
+                tracing::error!(error = %e, "audio capture init failed; meeting will run silent");
+                let status = crate::contract::Status {
+                    listening: true,
+                    paused: false,
+                    error: Some(format!("audio: {e}")),
+                };
+                let _ = handle
+                    .events_tx
+                    .send(crate::contract::Event::Status { status });
+                None
+            }
+        }
+    };
+
+    // -------------------------------------------------------------------
     // STT task — dispatch via trait so future providers slot in cleanly.
+    // -------------------------------------------------------------------
     let provider_name = std::env::var("MEETING_COMPANION_STT_PROVIDER")
         .or_else(|_| {
             if std::env::var("MEETING_COMPANION_STT_MOCK").is_ok() {
@@ -455,9 +483,6 @@ fn spawn_live_pipeline(handle: ServerHandle, cancel: CancellationToken) {
             let stt_cancel = cancel.child_token();
             let stt_tx = chunk_tx.clone();
             tracing::info!(provider = provider.name(), "live pipeline STT spawning");
-            // No audio source yet (Task 9b adds ScreenCaptureKit).
-            // For now: pass None as audio_rx; mock providers ignore it.
-            let audio_rx: Option<tokio::sync::mpsc::Receiver<Vec<u8>>> = None;
             tokio::spawn(provider.run(audio_rx, stt_tx, stt_cancel));
         }
         Err(e) => {
