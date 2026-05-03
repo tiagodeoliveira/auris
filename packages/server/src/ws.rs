@@ -311,6 +311,17 @@ async fn dispatch_intent(
         }
         *slot = Some(CancellationToken::new());
     }
+    if outcome.started_meeting {
+        let token = handle
+            .meeting_cancel
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|t| t.child_token());
+        if let Some(t) = token {
+            spawn_live_pipeline(handle.clone(), t);
+        }
+    }
     if let Some(description) = outcome.start_extraction_for {
         let token = handle
             .meeting_cancel
@@ -419,5 +430,111 @@ fn short_error(e: &crate::llm::ExtractionError) -> String {
     match e {
         Timeout(_) => "Metadata extraction timed out".to_string(),
         Extract(_) => "Metadata extraction failed".to_string(),
+    }
+}
+
+fn spawn_live_pipeline(handle: ServerHandle, cancel: CancellationToken) {
+    use std::time::Duration;
+
+    // Audio capture is task 9; for now, the pipeline is STT → summarizers.
+    // We honor MEETING_COMPANION_AUDIO_DISABLED implicitly (no audio task spawned yet).
+
+    let (chunk_tx, _) = tokio::sync::broadcast::channel::<crate::stt::TranscriptChunk>(64);
+
+    // STT task — mock or real depending on env var
+    let stt_provider = std::env::var("MEETING_COMPANION_STT_PROVIDER")
+        .or_else(|_| {
+            if std::env::var("MEETING_COMPANION_STT_MOCK").is_ok() {
+                Ok("mock".to_string())
+            } else {
+                Err(std::env::VarError::NotPresent)
+            }
+        })
+        .unwrap_or_else(|_| "soniox".to_string());
+
+    match stt_provider.as_str() {
+        "mock" => {
+            let interval_ms: u64 = std::env::var("MEETING_COMPANION_STT_MOCK_INTERVAL_MS")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(3000);
+            let stt_cancel = cancel.child_token();
+            let stt_tx = chunk_tx.clone();
+            tokio::spawn(async move {
+                crate::stt::run_mock_stt(stt_tx, stt_cancel, Duration::from_millis(interval_ms))
+                    .await;
+            });
+            tracing::info!(interval_ms, "live pipeline started (mock STT)");
+        }
+        "soniox" => {
+            // Task 10 wires this in. For now, log and skip.
+            tracing::warn!(
+                "Soniox STT provider not yet implemented (Task 10); meeting will run without transcription"
+            );
+        }
+        other => {
+            tracing::error!(provider = %other, "unknown STT provider");
+        }
+    }
+
+    // Transcript summarizer (no LLM)
+    {
+        let task_state = Arc::clone(&handle.state);
+        let task_events = handle.events_tx.clone();
+        let task_rx = chunk_tx.subscribe();
+        let task_cancel = cancel.child_token();
+        tokio::spawn(async move {
+            crate::summarizer::transcript::run_transcript_summarizer(
+                task_state,
+                task_rx,
+                task_events,
+                task_cancel,
+            )
+            .await;
+        });
+    }
+
+    // Highlights summarizer
+    {
+        let task_state = Arc::clone(&handle.state);
+        let task_llm = Arc::clone(&handle.llm);
+        let task_events = handle.events_tx.clone();
+        let task_cancel = cancel.child_token();
+        let interval_ms: u64 = std::env::var("MEETING_COMPANION_HIGHLIGHTS_INTERVAL_MS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(crate::summarizer::highlights::HEARTBEAT_DEFAULT_MS);
+        tokio::spawn(async move {
+            crate::summarizer::highlights::run_highlights_summarizer(
+                task_state,
+                task_llm,
+                task_events,
+                task_cancel,
+                Duration::from_millis(interval_ms),
+            )
+            .await;
+        });
+    }
+
+    // Actions summarizer
+    {
+        let task_state = Arc::clone(&handle.state);
+        let task_llm = Arc::clone(&handle.llm);
+        let task_events = handle.events_tx.clone();
+        let task_cancel = cancel.child_token();
+        let interval_ms: u64 = std::env::var("MEETING_COMPANION_ACTIONS_INTERVAL_MS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(crate::summarizer::actions::HEARTBEAT_DEFAULT_MS);
+        tokio::spawn(async move {
+            crate::summarizer::actions::run_actions_summarizer(
+                task_state,
+                task_llm,
+                task_events,
+                task_cancel,
+                Duration::from_millis(interval_ms),
+            )
+            .await;
+        });
     }
 }
