@@ -28,9 +28,10 @@ display. Iterates against the Even Hub simulator before touching real hardware.
     ScreenCaptureKit microphone capture → Soniox WS streaming STT →
     transcript / highlights / actions summarizers running in parallel
     while a meeting is active. See [`docs/specs/phase-2-step-15-live-pipeline.md`](specs/phase-2-step-15-live-pipeline.md).
-    macOS-only; mic-only capture (system audio mixer is a follow-up).
-  - Remaining Phase 2 work: step 17 (dynamic mode catalog), step 18
-    (memory-system enrichment via mnemo).
+    macOS-only; system audio + mic real-time mixer; four modes (transcript,
+    highlights, actions, open_questions). The mode catalog is server-defined
+    and not user-configurable — modes carry server-side prompts and schema.
+  - Remaining Phase 2 work: step 18 (memory-system enrichment via mnemo).
 
 The §6 wire contract is identical across phases — only internals evolve.
 
