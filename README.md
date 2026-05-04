@@ -3,22 +3,27 @@
 Real-time meeting summarization for Even Realities G2 glasses, driven by a
 laptop server, a phone PWA, and the glasses as a thin display.
 
-For the system design and component contracts, see [`docs/`](docs/).
+For the system design and component contracts, see
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+For the WebSocket wire protocol, see [`docs/PROTOCOL.md`](docs/PROTOCOL.md).
+For the PWA design system and interaction patterns, see
+[`docs/UX.md`](docs/UX.md).
+For non-obvious decisions, see [`docs/adr/`](docs/adr/).
 
-## Status — Phase 0 complete
+## Status
 
-| Component                 | Status                                           | Tests                                                                               |
-| ------------------------- | ------------------------------------------------ | ----------------------------------------------------------------------------------- |
-| `packages/server/` (Rust) | Functional                                       | 79 unit + integration tests, all passing                                            |
-| `packages/pwa/` (TS)      | Functional                                       | 64 unit tests, all passing; 2 integration tests skipped (require running simulator) |
-| Glasses display           | Renders via the PWA inside the EvenHub simulator | manual smoke checklist in `packages/pwa/README.md`                                  |
+| Component                 | Status                                                                 | Tests                                        |
+| ------------------------- | ---------------------------------------------------------------------- | -------------------------------------------- |
+| `packages/server/` (Rust) | Phase 2 complete — live audio, STT, parallel summarizers, mnemo memory | 110                                          |
+| `packages/pwa/` (TS)      | Phase 2 complete — full UX redesign, mnemo memory badge                | 64 unit + 2 simulator-gated                  |
+| Glasses display           | Renders via the PWA inside the EvenHub simulator                       | manual checklist in `packages/pwa/README.md` |
 
-End-to-end behavior: the PWA boots inside the EvenHub simulator (or on real
-G2 glasses), renders the four glasses layouts, captures audio for the meeting
-description via Soniox STT, and stays in sync with the laptop server's mock
-content over WebSocket. See [`docs/specs/`](docs/specs/) for the full
-contract; see [`docs/superpowers/plans/`](docs/superpowers/plans/) for what
-each task did.
+End-to-end: the server captures system audio + microphone via macOS
+ScreenCaptureKit, streams it to Soniox for STT, and runs four parallel
+LLM-backed summarizers (transcript, highlights, actions, open questions)
+against the rolling transcript. The PWA mirrors all of it, drives the
+glasses display, and integrates with [mnemo](https://github.com/tiagodeoliveira/mnemo)
+to push transcripts and recall prior context across meetings.
 
 ## Repository layout
 
@@ -27,10 +32,10 @@ packages/
   server/      Rust WebSocket server (state owner). See packages/server/README.md.
   pwa/         TypeScript PWA — Even Hub plugin. See packages/pwa/README.md.
 docs/
-  ARCHITECTURE.md           System-level spec.
-  adr/                      Architecture Decision Records (load-bearing decisions).
-  specs/                    Per-component specs (server.md, pwa.md).
-  superpowers/plans/        Implementation plans derived from the specs.
+  ARCHITECTURE.md   System topology, component split, end-to-end flow.
+  PROTOCOL.md       WebSocket contract — intents, events, error codes.
+  UX.md             PWA design system and interaction patterns.
+  adr/              Architecture Decision Records — the durable "why" record.
 ```
 
 ## Prerequisites
@@ -38,9 +43,16 @@ docs/
 - Rust (stable, 2021 edition).
 - Node 20+ with pnpm 9+.
 - [`just`](https://github.com/casey/just) for the task runner (recommended).
-- A [Soniox](https://soniox.com/) API key for the meeting-description STT
-  flow (optional — the PWA shows an error toast if missing and falls back to
-  empty-description meetings).
+- macOS for live audio capture (Phase 2 / ScreenCaptureKit). Other
+  platforms run with audio disabled.
+- A [Soniox](https://soniox.com/) API key for live STT and the
+  description-dictation flow (optional — the PWA shows an error toast
+  if missing).
+- One of: AWS credentials (Bedrock), an OpenAI API key, or an
+  Anthropic API key for LLM extraction (optional — set
+  `MEETING_COMPANION_LLM_DISABLED=1` to skip).
+- Optionally: a [mnemo](https://github.com/tiagodeoliveira/mnemo)
+  deployment URL + API key for the memory layer.
 
 ## Install
 
@@ -50,6 +62,25 @@ pnpm install
 
 `pnpm install` also wires the husky pre-commit hook (prettier on staged
 JS/TS/JSON/MD/YAML; `cargo fmt --check` on staged Rust files).
+
+## Configure
+
+Copy `.env.example` to `.env` and fill in the keys you need. The
+server binary, the `llm_smoke` example, and the env-gated integration
+test all auto-load `.env` via `dotenvy`. `.env` is gitignored;
+`.env.example` is not.
+
+Sections in `.env.example`:
+
+- **Server token** — `MEETING_COMPANION_TOKEN` (the PWA passes this on
+  the WS query string).
+- **LLM provider** — `MEETING_COMPANION_LLM_PROVIDER` (`bedrock` |
+  `openai` | `anthropic`) plus provider-specific keys.
+- **STT** — `SONIOX_API_KEY`. Or `MEETING_COMPANION_STT_PROVIDER=mock`
+  for offline dev with canned chunks. `MEETING_COMPANION_AUDIO_DISABLED=1`
+  to skip audio capture (e.g., on Linux).
+- **mnemo** — `MEETING_COMPANION_MNEMO_URL` +
+  `MEETING_COMPANION_MNEMO_API_KEY`. Unset to disable.
 
 ## Run the integrated stack
 
@@ -68,31 +99,27 @@ terminals:
 just server-run
 ```
 
-(This sets `MEETING_COMPANION_TOKEN=dev` and runs the Rust server on `:7331`.)
-
 **Terminal 2 — PWA + simulator (combined):**
 
 ```bash
 just pwa-sim
 ```
 
-(This runs the Vite dev server + boots the EvenHub simulator pointed at it,
-both via `concurrently`. The simulator window pops up; click "Open simulator"
-or wait for the `app-ready` log line.)
+(The simulator window pops up; click "Open simulator" or wait for the
+`app-ready` log line.)
 
-On first run, the PWA settings modal opens. Enter:
+On first run, open the PWA settings (gear icon, top-right) and enter:
 
 - **Server URL:** `ws://localhost:7331`
 - **Server token:** `dev`
-- **Soniox API key:** your Soniox key (or leave blank to skip the
-  description-listening flow)
+- **Soniox API key:** your key (or leave blank to skip dictation)
 
-These persist across restarts via `bridge.setLocalStorage` (per
-[ADR-0003](docs/adr/0003-persistence-via-bridge.md)).
+These persist via `bridge.setLocalStorage` with browser `localStorage`
+fallback (per [ADR-0003](docs/adr/0003-persistence-via-bridge.md)).
 
 To skip retyping in development, copy `packages/pwa/.env.example` to
-`packages/pwa/.env.local` and fill in the `VITE_DEFAULT_*` variables — the
-PWA seeds first-run defaults from these.
+`packages/pwa/.env.local` and fill in the `VITE_DEFAULT_*` variables —
+the PWA seeds first-run defaults from these.
 
 ### Run the server alone
 
@@ -108,8 +135,9 @@ In a second terminal:
 ```bash
 websocat 'ws://localhost:7331/?token=dev'
 # Paste intents like:
-#   {"type":"start_meeting"}
+#   {"type":"start_meeting","description":"My meeting"}
 #   {"type":"set_mode","mode":"transcript"}
+#   {"type":"extract_metadata","description":"Helix demo with Tiago"}
 #   {"type":"stop_meeting"}
 ```
 
@@ -119,12 +147,13 @@ websocat 'ws://localhost:7331/?token=dev'
 just test
 ```
 
-Runs the Rust server tests (with `--test-threads=1` because heartbeat tests
-set a process-global env var) plus the PWA Vitest suite plus a strict
-TypeScript typecheck.
+Runs the Rust server tests (with `--test-threads=1` because heartbeat
+tests set a process-global env var), plus the PWA Vitest suite, plus a
+strict TypeScript typecheck.
 
-The PWA's integration tests in `packages/pwa/tests/integration/` require a
-running EvenHub simulator and are skipped by default. To run them:
+The PWA's integration tests in `packages/pwa/tests/integration/`
+require a running EvenHub simulator and are skipped by default. To run
+them:
 
 ```bash
 # In one terminal:
@@ -146,42 +175,25 @@ cargo fmt --all    # rustfmt on every .rs file
 
 ## Next steps
 
-Phase 0 is complete. The natural follow-ups, in rough order:
+Phase 0 and Phase 2 are complete. The remaining tracks:
 
 1. **Phase 1 hardware sideload** — the manual checklist in
-   [`packages/pwa/README.md`](packages/pwa/README.md). Walk through the
-   eleven items, including:
-   - **ADR-0001 follow-up**: log raw `bridge.onEvenHubEvent` payloads on
-     temple tap, ring tap, and swipe; identify which field carries the
-     [`EventSourceType`](docs/specs/pwa.md) source distinction (G2 left vs
-     right vs R1 ring); document findings in
-     [`docs/specs/pwa.md`](docs/specs/pwa.md) §10.4.
-   - **ADR-0003 follow-up**: confirm `bridge.setLocalStorage` actually
-     persists across a full Even Realities App restart (not just an in-app
-     reload).
-   - **Font-measurement recalibration** for `LINES_PER_SCREEN` and
-     `CHARS_PER_LINE` in `packages/pwa/src/glasses/layout-active-list.ts`,
-     using the [`everything-evenhub:font-measurement`](https://hub.evenrealities.com/docs/) skill.
-2. **Phase 2 real audio + extraction pipeline** —
-   [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) §10 steps 15-18:
-   - Wire `screencapturekit` audio capture in the Rust server.
-   - Wire real STT and summarization (current pipeline is mocked items every 3s).
-   - Wire real LLM metadata extraction (current is the deterministic stub
-     in [`docs/specs/server.md`](docs/specs/server.md) §8.4).
-   - Memory-system integration for project-aware modes.
-3. **Production deployment** —
-   [`docs/specs/pwa.md`](docs/specs/pwa.md) §11.4: TLS termination on the
-   server (Tailscale Funnel / cloudflared), `evenhub pack` to a `.ehpk`,
-   upload to the Even Hub developer portal.
-4. **Optional Phase 1 UX improvements** —
-   [ADR-0001](docs/adr/0001-gesture-map.md) leaves open whether to promote
-   `DOUBLE_CLICK_EVENT` to a lifecycle gesture (start meeting / confirm
-   stop) once hardware is in hand and accidental-trigger rates can be
-   characterized.
+   [`packages/pwa/README.md`](packages/pwa/README.md). Notable items:
+   the [ADR-0001](docs/adr/0001-gesture-map.md) source-field discovery
+   on real glasses, [ADR-0003](docs/adr/0003-persistence-via-bridge.md)
+   persistence-across-app-restart verification, and font-metrics
+   recalibration for the active-list layout.
+2. **Production deployment** — TLS termination (Tailscale Funnel /
+   cloudflared), `evenhub pack` to a `.ehpk`, upload to the Even Hub
+   developer portal.
+3. **Future** — meeting-specific mnemo namespace
+   (`/meetings/{actorId}/{meetingId}/`) when mnemo's strategy layer
+   can support it; multi-meeting browse / recap UI; calendar
+   integration.
 
 ## More
 
-- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — system topology, component split, end-to-end flow.
-- [`docs/specs/`](docs/specs/) — per-component specs (the contract for each implementation).
+- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — system topology and end-to-end flow.
+- [`docs/PROTOCOL.md`](docs/PROTOCOL.md) — WebSocket wire protocol reference.
+- [`docs/UX.md`](docs/UX.md) — PWA design system and interaction patterns.
 - [`docs/adr/`](docs/adr/) — Architecture Decision Records.
-- [`docs/superpowers/plans/`](docs/superpowers/plans/) — implementation plans (executed).

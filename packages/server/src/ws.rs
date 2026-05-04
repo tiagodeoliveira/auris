@@ -1,4 +1,4 @@
-//! WebSocket server. See `docs/specs/server.md` §2.1, §6.3, §7.
+//! WebSocket server.
 
 use anyhow::Result;
 use futures_util::{SinkExt, StreamExt};
@@ -26,6 +26,11 @@ pub struct ServerHandle {
     pub events_tx: broadcast::Sender<Event>,
     pub token: Arc<String>,
     pub meeting_cancel: Arc<StdMutex<Option<CancellationToken>>>,
+    /// Cancels in-flight metadata extraction. Independent of meeting_cancel
+    /// so idle-time extractions (Intent::ExtractMetadata) survive
+    /// start_meeting and so we can cancel a stale extraction when the
+    /// meeting is stopped.
+    pub extraction_cancel: Arc<StdMutex<Option<CancellationToken>>>,
     pub shutdown: CancellationToken,
     pub llm: Arc<LlmClient>,
 }
@@ -50,11 +55,21 @@ pub async fn run_server_with_listener(
 ) -> Result<()> {
     let (events_tx, _) = broadcast::channel::<Event>(64);
     let shutdown = CancellationToken::new();
+    let state = Arc::new(Mutex::new(ServerState::new()));
+    // Memory layer: spin up the ingestion pusher and the start-of-meeting
+    // recaller. Each gets its own broadcast subscription. No-op if mnemo
+    // env vars are not set.
+    crate::mnemo::spawn_tasks(
+        crate::mnemo::MnemoClient::from_env(),
+        state.clone(),
+        &events_tx,
+    );
     let handle = ServerHandle {
-        state: Arc::new(Mutex::new(ServerState::new())),
+        state,
         events_tx,
         token: Arc::new(token),
         meeting_cancel: Arc::new(StdMutex::new(None)),
+        extraction_cancel: Arc::new(StdMutex::new(None)),
         shutdown: shutdown.clone(),
         llm,
     };
@@ -263,6 +278,7 @@ async fn dispatch_intent(
         "resume",
         "set_mode",
         "set_metadata",
+        "extract_metadata",
         "mark_moment",
         "expand_item",
     ];
@@ -323,19 +339,29 @@ async fn dispatch_intent(
         }
     }
     if let Some(description) = outcome.start_extraction_for {
-        let token = handle
-            .meeting_cancel
-            .lock()
-            .unwrap()
-            .as_ref()
-            .map(|t| t.child_token());
-        if let Some(t) = token {
-            spawn_extraction(handle.clone(), description, t);
-        }
+        // Cancel any previous extraction; install a fresh token so this
+        // request can be canceled by stop_meeting or by the next extract.
+        let token = {
+            let mut slot = handle.extraction_cancel.lock().unwrap();
+            if let Some(prev) = slot.take() {
+                prev.cancel();
+            }
+            let t = CancellationToken::new();
+            *slot = Some(t.clone());
+            t
+        };
+        spawn_extraction(handle.clone(), description, token);
     }
     if outcome.stopped_meeting || outcome.paused_meeting {
         let prev = handle.meeting_cancel.lock().unwrap().take();
         if let Some(t) = prev {
+            t.cancel();
+        }
+    }
+    if outcome.stopped_meeting {
+        // Drop any in-flight extraction; otherwise its result would land
+        // in the now-empty idle metadata as if from a fresh request.
+        if let Some(t) = handle.extraction_cancel.lock().unwrap().take() {
             t.cancel();
         }
     }
@@ -407,15 +433,10 @@ fn spawn_extraction(handle: ServerHandle, description: String, cancel: Cancellat
             }
         };
 
-        // Re-acquire lock; abandon if meeting was stopped between extraction and lock.
+        // Re-acquire lock and merge. Idle is a valid state — extraction
+        // may have been requested before the meeting was started.
         let event = {
             let mut s = handle.state.lock().await;
-            if !matches!(
-                s.snapshot_meeting_state(),
-                crate::contract::MeetingState::Active | crate::contract::MeetingState::Paused
-            ) {
-                return;
-            }
             let manual = s.metadata_clone();
             let merged = crate::extraction::merge_manual_wins(extracted, &manual);
             s.set_metadata_full(merged.clone());

@@ -1,6 +1,6 @@
 /* ============================================
    PWA Design System — Industrial Blueprint
-   See docs/specs/pwa-ux-redesign.md §2
+   See ../../docs/UX.md
    ============================================ */
 
 :root {
@@ -424,7 +424,6 @@ button.cta:disabled {
 
 /* === COMPOSE === */
 .compose {
-  flex: 1;
   display: flex;
   flex-direction: column;
   gap: 24px;
@@ -484,9 +483,41 @@ button.cta:disabled {
   background: var(--rust-glow);
   animation: blink 1.2s ease-in-out infinite;
 }
+.compose-extract-row {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: -12px;
+}
+.compose-extract {
+  background: transparent;
+  border: 1px dashed var(--rust-warm);
+  color: var(--rust-warm);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 1px;
+  padding: 4px 12px;
+  border-radius: 999px;
+}
+.compose-extract:hover:not(:disabled) {
+  color: var(--text-light);
+  background: var(--rust-warm);
+  border-color: var(--rust-warm);
+  border-style: solid;
+}
+.compose-extract:disabled {
+  border-color: var(--border-light);
+  color: var(--text-muted);
+  opacity: 0.5;
+}
+.compose-start-wrap {
+  display: flex;
+  padding: 0 24px 32px;
+  max-width: 640px;
+  margin: 0 auto;
+  width: 100%;
+}
 .compose-start {
-  align-self: stretch;
-  margin-top: auto;
+  flex: 1;
   padding: 16px 24px;
 }
 
@@ -525,6 +556,7 @@ button.cta:disabled {
 .header-strip {
   padding: 24px 24px 16px;
   border-bottom: 1px solid var(--border-dark);
+  position: relative;
 }
 .header-title {
   font-family: var(--font-display);
@@ -538,6 +570,24 @@ button.cta:disabled {
 .header-subtitle {
   font-size: 12px;
   color: var(--text-muted);
+}
+/* Memory-context badge — pinned to the right of the strip, only visible
+   when mnemo recall populated prior context. Subdued by default; the
+   rust accent reads as "augmented context active." */
+.header-memory-badge {
+  position: absolute;
+  top: 24px;
+  right: 24px;
+  display: inline-flex;
+  align-items: center;
+  font-size: 10px;
+  letter-spacing: 1px;
+  padding: 3px 10px;
+  border: 1px solid var(--rust-warm);
+  color: var(--rust-warm);
+  border-radius: 999px;
+  cursor: help;
+  background: rgba(212, 96, 44, 0.08);
 }
 
 /* === MODE TABS === */
@@ -623,46 +673,108 @@ button.cta:disabled {
 
 /* === KV EDITOR === */
 .kv-editor {
-  padding: 16px 24px;
+  padding: 12px 24px;
   border-bottom: 1px solid var(--border-dark);
 }
-.kv-row {
-  display: grid;
-  grid-template-columns: 100px 1fr auto;
-  gap: 8px;
+.kv-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
   align-items: center;
-  margin-bottom: 6px;
 }
-.kv-row .label-mono {
-  text-align: left;
+.kv-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 6px 3px 10px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-light);
+  border-radius: 999px;
+  font-size: 13px;
 }
-.kv-row input {
-  padding: 6px 10px;
-  font-size: 14px;
+.kv-chip:focus-within {
+  border-color: var(--rust-warm);
 }
-.kv-delete {
+.kv-chip-key {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--text-muted);
+}
+.kv-chip-val {
+  background: transparent;
+  border: none;
+  padding: 2px 0;
+  margin: 0;
+  color: var(--text-light);
+  font-family: var(--font-body);
+  font-size: 13px;
+  outline: none;
+  width: auto;
+  min-width: 32px;
+}
+.kv-chip-val:focus {
+  outline: none;
+  border: none;
+}
+.kv-chip-x {
   background: transparent;
   border: none;
   color: var(--text-muted);
-  padding: 4px 8px;
-  font-size: 14px;
+  padding: 0 4px;
+  font-size: 16px;
+  line-height: 1;
+  border-radius: 50%;
+  opacity: 0.4;
+  transition: opacity 0.15s ease, color 0.15s ease;
 }
-.kv-delete:hover {
+.kv-chip:hover .kv-chip-x {
+  opacity: 1;
+}
+.kv-chip-x:hover {
   color: var(--error);
+  border-color: transparent;
 }
-.kv-add {
-  display: grid;
-  grid-template-columns: 100px 1fr auto;
-  gap: 8px;
-  margin-top: 12px;
+.kv-add-toggle {
+  background: transparent;
+  border: 1px dashed var(--border-light);
+  color: var(--text-muted);
+  padding: 3px 10px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 1px;
+  border-radius: 999px;
 }
-.kv-add input {
-  padding: 6px 10px;
-  font-size: 14px;
+.kv-add-toggle:hover {
+  color: var(--rust-warm);
+  border-color: var(--rust-warm);
 }
-.kv-add button {
-  padding: 6px 14px;
-  font-size: 13px;
+.kv-chip-new {
+  border-style: dashed;
+  border-color: var(--rust-warm);
+}
+.kv-chip-new:focus-within {
+  border-style: solid;
+}
+.kv-chip-key-input {
+  background: transparent;
+  border: none;
+  padding: 2px 0;
+  margin: 0;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  outline: none;
+  width: auto;
+  min-width: 32px;
+}
+.kv-chip-key-input::placeholder,
+.kv-chip-val::placeholder {
+  color: var(--text-muted);
+  opacity: 0.5;
 }
 
 /* === LISTENING BANNER === */

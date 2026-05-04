@@ -3,6 +3,7 @@ import type {
   Intent,
   Item,
   ModeOption,
+  PriorContextSummary,
   Status as ServerStatus,
   MeetingState,
 } from "./contract";
@@ -42,6 +43,9 @@ export interface AppState {
   displayTag: string | null;
   metadata: Record<string, string>;
   itemsByMode: Record<string, Item[]>;
+  composeDescription: string;
+  extractingMetadata: boolean;
+  priorContext: PriorContextSummary | null;
   liveTranscriptInterim: string;
   status: ServerStatus;
   glassesView: GlassesView;
@@ -80,6 +84,9 @@ export function defaultAppState(): AppState {
     displayTag: null,
     metadata: {},
     itemsByMode: {},
+    composeDescription: "",
+    extractingMetadata: false,
+    priorContext: null,
     liveTranscriptInterim: "",
     status: { listening: false, paused: false },
     glassesView: "idle",

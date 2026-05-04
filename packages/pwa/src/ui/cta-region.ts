@@ -8,6 +8,9 @@ export interface CtaActions {
   /// Stops dictation but keeps the listeningTranscript intact so the
   /// user can edit it in the textarea before pressing Start Meeting.
   stopListening(): void;
+  /// Sends an extract_metadata intent so the user can review/edit chips
+  /// before starting the meeting.
+  extractMetadata(description: string): void;
   startMeeting(description: string): void;
   pauseMeeting(): void;
   resumeMeeting(): void;

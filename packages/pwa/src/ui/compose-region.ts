@@ -1,10 +1,11 @@
-//! Idle-state composition surface.
-//! See `docs/specs/pwa-ux-redesign.md` §3.2.
+//! Idle-state composition surface (input + mic toggle + Extract Tags).
 //!
-//! Title + multiline description input (with embedded mic toggle for the
-//! Soniox voice flow) + rust-gradient Start button. The metadata strip is
-//! rendered separately by mountKvEditor at the top level so it's visible
-//! in both idle and active states.
+//! Title + multiline description input with embedded mic toggle for the
+//! Soniox voice flow + an Extract Tags affordance. The Start button
+//! lives in a separate component (mountComposeStart) so it can render
+//! below the metadata strip. The metadata strip is rendered separately
+//! by mountKvEditor at the top level so it's visible in both idle and
+//! active states.
 
 import type { Store } from "../store";
 import type { CtaActions } from "./cta-region";
@@ -26,6 +27,10 @@ export function mountComposeRegion(parent: HTMLElement, store: Store, actions: C
   const textarea = document.createElement("textarea");
   textarea.placeholder = "What's this meeting about?";
   textarea.rows = 3;
+  textarea.value = store.get().composeDescription;
+  textarea.addEventListener("input", () => {
+    store.update({ composeDescription: textarea.value });
+  });
   inputArea.appendChild(textarea);
 
   const mic = document.createElement("button");
@@ -43,30 +48,76 @@ export function mountComposeRegion(parent: HTMLElement, store: Store, actions: C
   });
   inputArea.appendChild(mic);
 
-  const startBtn = document.createElement("button");
-  startBtn.className = "btn-primary compose-start";
-  startBtn.textContent = "Start Meeting";
-  startBtn.addEventListener("click", () => actions.startMeeting(textarea.value.trim()));
-  wrap.appendChild(startBtn);
+  // Extract Tags affordance — runs metadata extraction without starting the
+  // meeting so the user can review/edit the chips first. Cmd/Ctrl+Enter on
+  // the textarea is the keyboard shortcut.
+  const extractRow = document.createElement("div");
+  extractRow.className = "compose-extract-row";
+  const extractBtn = document.createElement("button");
+  extractBtn.type = "button";
+  extractBtn.className = "compose-extract";
+  extractBtn.textContent = "▸ EXTRACT TAGS";
+  function triggerExtract() {
+    const s = store.get();
+    const desc = s.composeDescription.trim();
+    if (!desc || s.extractingMetadata) return;
+    actions.extractMetadata(desc);
+  }
+  extractBtn.addEventListener("click", triggerExtract);
+  extractRow.appendChild(extractBtn);
+  wrap.appendChild(extractRow);
+
+  textarea.addEventListener("keydown", (e) => {
+    if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+      e.preventDefault();
+      triggerExtract();
+    }
+  });
+
+  // Reflect extracting state + empty-description disable on the button.
+  // Reads from composeDescription so dictation updates (which set
+  // textarea.value programmatically without firing 'input') still flip
+  // the button enabled.
+  function syncExtractBtn() {
+    const s = store.get();
+    const hasDesc = s.composeDescription.trim().length > 0;
+    extractBtn.disabled = !hasDesc || s.extractingMetadata;
+    extractBtn.textContent = s.extractingMetadata ? "▸ EXTRACTING…" : "▸ EXTRACT TAGS";
+  }
+  store.subscribe((s) => `${s.composeDescription}|${s.extractingMetadata}`, syncExtractBtn);
+  syncExtractBtn();
 
   // When the listening flow runs, populate the textarea with the live
   // transcript. After commit, the listening reducer puts the final text
-  // back into listeningTranscript; we copy it into the textarea so the
-  // user can review/edit before pressing Start.
+  // back into listeningTranscript; we copy it into the textarea (and the
+  // store-backed description) so Start sends the right thing.
   store.subscribe(
     (s) => `${s.glassesView}|${s.listeningTranscript}|${s.listeningInterim}`,
     () => {
       const s = store.get();
       if (s.glassesView === "listening") {
-        textarea.value = s.listeningTranscript + s.listeningInterim;
+        const live = s.listeningTranscript + s.listeningInterim;
+        textarea.value = live;
+        store.update({ composeDescription: live });
         mic.classList.add("active");
       } else {
         mic.classList.remove("active");
-        // After listening commits, the listeningTranscript holds the final
-        // text; sync it into the textarea so Start button sends the right thing.
         if (s.listeningTranscript && !textarea.value) {
           textarea.value = s.listeningTranscript;
+          store.update({ composeDescription: s.listeningTranscript });
         }
+      }
+    },
+  );
+
+  // Reset textarea when description is cleared externally (e.g. after
+  // start_meeting commits and we drop back to idle on stop).
+  store.subscribe(
+    (s) => s.composeDescription,
+    () => {
+      const s = store.get();
+      if (s.composeDescription !== textarea.value) {
+        textarea.value = s.composeDescription;
       }
     },
   );

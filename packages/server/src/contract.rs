@@ -1,5 +1,5 @@
 //! WebSocket message contract. Mirrors `packages/pwa/src/contract.ts`.
-//! See `docs/specs/server.md` §2.6.
+//! See `docs/PROTOCOL.md` for the wire reference.
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -47,6 +47,23 @@ pub struct Status {
     pub error: Option<String>,
 }
 
+/// Counts of memories recalled from mnemo for the current meeting.
+/// Drives a PWA badge so the user can confirm the LLM extractors have
+/// prior context available.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct PriorContextSummary {
+    pub preferences: usize,
+    pub facts: usize,
+    pub episodes: usize,
+    pub project_memories: usize,
+}
+
+impl PriorContextSummary {
+    pub fn is_empty(&self) -> bool {
+        self.preferences == 0 && self.facts == 0 && self.episodes == 0 && self.project_memories == 0
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Intent {
@@ -65,6 +82,12 @@ pub enum Intent {
     SetMetadata {
         key: String,
         value: Option<String>,
+    },
+    /// Extract metadata from a description without starting the meeting.
+    /// Runs the same extraction pipeline as `start_meeting` but in idle
+    /// state, so the user can review/edit chips before starting.
+    ExtractMetadata {
+        description: String,
     },
     MarkMoment {
         t: u64,
@@ -89,6 +112,8 @@ pub enum Event {
         metadata: HashMap<String, String>,
         items: Vec<Item>,
         status: Status,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        prior_context: Option<PriorContextSummary>,
     },
     MeetingStateChanged {
         meeting_state: MeetingState,
@@ -108,6 +133,9 @@ pub enum Event {
     },
     MetadataChanged {
         metadata: HashMap<String, String>,
+    },
+    PriorContextChanged {
+        summary: PriorContextSummary,
     },
     ItemsUpdate {
         mode: String,
@@ -228,6 +256,7 @@ mod tests {
                 paused: false,
                 error: None,
             },
+            prior_context: None,
         };
         assert_eq!(round_trip(&e), e);
     }

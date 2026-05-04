@@ -57,6 +57,7 @@ export function handleServerEvent(event: ServerEvent, store: Store): void {
         metadata: event.metadata,
         itemsByMode: { ...store.get().itemsByMode, [event.mode]: event.items },
         status: event.status,
+        priorContext: event.prior_context ?? null,
         glassesView: nextGlassesView,
         highlightIndex: 0,
         viewportStart: 0,
@@ -87,6 +88,11 @@ export function handleServerEvent(event: ServerEvent, store: Store): void {
         update.metadata = {};
         update.itemsByMode = {};
         update.liveTranscriptInterim = "";
+        update.composeDescription = "";
+        update.listeningTranscript = "";
+        update.listeningInterim = "";
+        update.extractingMetadata = false;
+        update.priorContext = null;
       }
       update.meetingStartedAt = meetingStartedAt;
       store.update(update);
@@ -108,8 +114,17 @@ export function handleServerEvent(event: ServerEvent, store: Store): void {
       store.update({ displayTag: event.tag ?? null });
       return;
     case "metadata_changed":
-      store.update({ metadata: event.metadata });
+      store.update({ metadata: event.metadata, extractingMetadata: false });
       return;
+    case "prior_context_changed": {
+      // The server emits `summary: 0/0/0/0` to mean "cleared" (e.g.,
+      // after stop). Normalize to null so UI conditionals can stay simple.
+      const s = event.summary;
+      const empty =
+        s.preferences === 0 && s.facts === 0 && s.episodes === 0 && s.project_memories === 0;
+      store.update({ priorContext: empty ? null : s });
+      return;
+    }
     case "items_update": {
       const modeOpt = store.get().availableModes.find((m) => m.id === event.mode);
       if (!modeOpt) return;
@@ -126,6 +141,7 @@ export function handleServerEvent(event: ServerEvent, store: Store): void {
       return;
     case "error":
       pushToast(store, `${event.code}: ${event.message}`, "warn");
+      if (store.get().extractingMetadata) store.update({ extractingMetadata: false });
       return;
   }
 }

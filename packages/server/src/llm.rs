@@ -1,5 +1,4 @@
 //! LLM-based metadata extraction via rig + rig-bedrock.
-//! See `docs/specs/phase-2-llm-extraction.md`.
 
 use std::collections::HashMap;
 use std::sync::Arc;

@@ -60,11 +60,18 @@ async function start() {
       store.update({ glassesView: "listening" });
       void listening.start();
     },
+    extractMetadata: (description: string) => {
+      const d = description.trim();
+      if (!d) return;
+      store.update({ extractingMetadata: true });
+      sock.send({ type: "extract_metadata", description: d });
+    },
+    // Don't send `metadata` — the server preserves whatever it has in state
+    // (extracted chips, manual edits) when the intent omits the field.
     startMeeting: (description: string) =>
       sock.send({
         type: "start_meeting",
         description: description || undefined,
-        metadata: store.get().settings.lastMetadata,
       }),
     pauseMeeting: () => sock.send({ type: "pause" }),
     resumeMeeting: () => sock.send({ type: "resume" }),

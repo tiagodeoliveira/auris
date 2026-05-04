@@ -1,8 +1,6 @@
 //! Highlights summarizer — rig Extractor on a 20s heartbeat.
 //! Produces 3-5 key points from the rolling transcript; replaces the
 //! highlights-mode buffer each cycle.
-//!
-//! See `docs/specs/phase-2-step-15-live-pipeline.md` §8.3.
 
 use crate::contract::{Event, Item};
 use crate::llm::{ExtractionError, LlmClient};
@@ -55,6 +53,10 @@ pub async fn run_highlights_summarizer(
                     debug!("LLM disabled; skipping highlights cycle");
                     continue;
                 }
+                // Highlights intentionally do not consume mnemo prior
+                // context: each meeting's highlights are local to its own
+                // discussion, and pulling in cross-meeting noise dilutes
+                // the "most decisive points so far" signal.
                 let transcript = {
                     let s = state.lock().await;
                     s.rolling_transcript_text()

@@ -1,4 +1,4 @@
-//! ServerState — owns all meeting state. See `docs/specs/server.md` §3.
+//! ServerState — owns all meeting state.
 
 use crate::contract::{
     Event, Intent, Item, MeetingState, ModeOption, Status, UpdateStrategy, PROTOCOL_VERSION,
@@ -64,6 +64,10 @@ pub struct ServerState {
     pub(crate) metadata: HashMap<String, String>,
     pub(crate) meeting_started_at: Option<Instant>,
     pub(crate) rolling_transcript: Vec<TranscriptChunk>,
+    /// Memories recalled from mnemo at the start of the current meeting,
+    /// shared with the LLM summarizers as a "Prior context" preamble.
+    /// `None` until recall completes (or if mnemo is disabled / failed).
+    pub(crate) recalled_context: Option<crate::mnemo::RecalledContext>,
 }
 
 impl ServerState {
@@ -79,6 +83,7 @@ impl ServerState {
             metadata: HashMap::new(),
             meeting_started_at: None,
             rolling_transcript: Vec::new(),
+            recalled_context: None,
         };
         s.assert_invariants();
         s
@@ -102,6 +107,7 @@ impl ServerState {
                 paused: matches!(self.meeting_state, MeetingState::Paused),
                 error: None,
             },
+            prior_context: self.recalled_context.as_ref().map(|c| c.summary()),
         }
     }
 
@@ -127,6 +133,9 @@ impl ServerState {
             Intent::SetMetadata { key, value } => {
                 self.handle_set_metadata(key, value, &mut outcome)
             }
+            Intent::ExtractMetadata { description } => {
+                self.handle_extract_metadata(description, &mut outcome)
+            }
             Intent::MarkMoment { t, note } => self.handle_mark_moment(t, note, &mut outcome),
             Intent::ExpandItem { item_id } => self.handle_expand_item(item_id, &mut outcome),
         }
@@ -146,7 +155,12 @@ impl ServerState {
         }
         self.meeting_state = MeetingState::Active;
         self.meeting_started_at = Some(Instant::now());
-        self.metadata = metadata.unwrap_or_default();
+        // Preserve any metadata extracted while idle (via ExtractMetadata) when
+        // the intent doesn't supply its own. If the intent supplies metadata,
+        // it wins (treating the client as the source of truth at start time).
+        if let Some(m) = metadata {
+            self.metadata = m;
+        }
         self.current_mode = DEFAULT_MODE_ID.to_string();
 
         outcome.events.push(Event::MeetingStateChanged {
@@ -179,6 +193,7 @@ impl ServerState {
         self.meeting_started_at = None;
         self.current_mode = DEFAULT_MODE_ID.to_string();
         self.rolling_transcript.clear();
+        self.recalled_context = None;
 
         outcome.events.push(Event::MeetingStateChanged {
             meeting_state: MeetingState::Idle,
@@ -244,6 +259,17 @@ impl ServerState {
         outcome.events.push(Event::MetadataChanged {
             metadata: self.metadata.clone(),
         });
+    }
+
+    /// Trigger metadata extraction without changing meeting state. The
+    /// extraction runs asynchronously (ws.rs spawns it via
+    /// `outcome.start_extraction_for`); the resulting metadata is merged
+    /// with any manual edits and pushed back via `MetadataChanged`.
+    fn handle_extract_metadata(&mut self, description: String, outcome: &mut IntentOutcome) {
+        if description.is_empty() {
+            return;
+        }
+        outcome.start_extraction_for = Some(description);
     }
 
     fn handle_mark_moment(&mut self, t: u64, note: Option<String>, outcome: &mut IntentOutcome) {
@@ -375,11 +401,22 @@ impl ServerState {
         self.metadata.clone()
     }
 
+    /// Snapshot the recalled context (cheap clone — `RecalledContext`
+    /// holds owned strings/vecs already).
+    pub fn recalled_context_clone(&self) -> Option<crate::mnemo::RecalledContext> {
+        self.recalled_context.clone()
+    }
+
+    pub fn set_recalled_context(&mut self, ctx: Option<crate::mnemo::RecalledContext>) {
+        self.recalled_context = ctx;
+    }
+
     pub fn set_metadata_full(&mut self, metadata: HashMap<String, String>) {
-        if matches!(self.meeting_state, MeetingState::Idle) {
-            // Don't apply extraction results to idle state — meeting was stopped mid-extraction.
-            return;
-        }
+        // Idle is a valid state for metadata: extraction can run before
+        // start_meeting via Intent::ExtractMetadata. The previous
+        // "abandon if idle" guard was meant to drop in-flight results when
+        // the meeting was stopped mid-extraction; that case is now covered
+        // by the cancellation token in spawn_extraction.
         self.metadata = metadata;
     }
 
@@ -497,6 +534,7 @@ mod tests {
                 metadata,
                 items,
                 status,
+                prior_context,
             } => {
                 assert_eq!(protocol_version, PROTOCOL_VERSION);
                 assert!(matches!(meeting_state, MeetingState::Idle));
@@ -505,6 +543,7 @@ mod tests {
                 assert!(display_tag.is_none());
                 assert!(metadata.is_empty());
                 assert!(items.is_empty());
+                assert!(prior_context.is_none());
                 assert!(!status.listening);
                 assert!(!status.paused);
                 assert!(status.error.is_none());

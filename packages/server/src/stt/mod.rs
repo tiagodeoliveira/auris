@@ -1,8 +1,7 @@
-//! STT module — see `docs/specs/phase-2-step-15-live-pipeline.md` §7.
+//! Streaming speech-to-text adapters.
 //!
-//! This module ships incrementally. Task 2 only defines the shared
-//! TranscriptChunk type; the actual STT clients land in tasks 3 (mock)
-//! and 10 (Soniox).
+//! Defines the `SttAdapter` trait and the shared `TranscriptChunk`
+//! type. Production adapter is `soniox`; offline / CI uses `mock`.
 
 use std::future::Future;
 use std::pin::Pin;

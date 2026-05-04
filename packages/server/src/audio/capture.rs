@@ -1,5 +1,4 @@
 //! macOS audio capture via ScreenCaptureKit.
-//! See `docs/specs/phase-2-step-15-live-pipeline.md` §6.
 //!
 //! Mixes two SCKit output streams (system audio + microphone) into a single
 //! 16 kHz mono S16LE PCM stream feeding Soniox. Both sources fire at ~50 fps;

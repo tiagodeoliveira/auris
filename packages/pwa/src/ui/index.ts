@@ -2,6 +2,7 @@ import type { Store } from "../store";
 import type { Intent } from "../types";
 import { mountTopBar } from "./top-bar";
 import { mountComposeRegion } from "./compose-region";
+import { mountComposeStart } from "./compose-start";
 import { mountHeaderStrip } from "./header-strip";
 import { mountKvEditor } from "./kv-editor";
 import { mountModeTabs } from "./mode-tabs";
@@ -32,6 +33,9 @@ export function mountUI(root: HTMLElement, ctx: UiContext): void {
   // Active-meeting surface — components self-hide outside active/paused.
   mountHeaderStrip(root, ctx.store);
   mountKvEditor(root, ctx.store, ctx.send); // visible in both idle and active
+  // Start button sits below the metadata strip in idle so the visual flow
+  // is: input → metadata → start. Self-hides outside idle.
+  mountComposeStart(root, ctx.store, ctx.actions);
   mountModeTabs(root, ctx.store, ctx.send);
   mountItemsMirror(root, ctx.store);
 

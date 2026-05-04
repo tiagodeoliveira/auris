@@ -1,5 +1,4 @@
 //! Soniox streaming STT client.
-//! See `docs/specs/phase-2-step-15-live-pipeline.md` §7.
 //! Wire-format reference: `packages/pwa/src/stt/soniox.ts` (TypeScript impl,
 //! confirmed working with the user's Soniox account).
 

@@ -1,11 +1,11 @@
-//! Meeting Companion server library.
-//!
-//! See `docs/specs/server.md` for the component specification.
+//! Meeting Companion server library. See `docs/ARCHITECTURE.md` for
+//! the system overview.
 
 pub mod audio;
 pub mod contract;
 pub mod extraction;
 pub mod llm;
+pub mod mnemo;
 pub mod state;
 pub mod stt;
 pub mod summarizer;

@@ -1,4 +1,4 @@
-//! Items pane for the active meeting. See `docs/specs/pwa-ux-redesign.md` §3.4.
+//! Items pane for the active meeting.
 
 import type { Store } from "../store";
 import type { Item } from "../types";

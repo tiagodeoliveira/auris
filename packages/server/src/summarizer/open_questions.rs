@@ -10,8 +10,6 @@
 //!
 //! Append strategy with server-side dedupe by exact question text. Same
 //! shape as the actions summarizer; treat that as the template.
-//!
-//! Follow-on to `docs/specs/phase-2-step-15-live-pipeline.md` §16.5(6).
 
 use crate::contract::{Event, Item};
 use crate::llm::LlmClient;
@@ -36,7 +34,10 @@ questions you haven't seen yet. Two flavors:\n\
 Each question must be phrased as a question and end with '?'. Each ≤ 120 characters. \
 Use empty string for context if not needed; otherwise ≤ 80 characters of brief context \
 (e.g., 'speaker mentioned but didn't explain'). Do not repeat existing questions even \
-if rephrased.";
+if rephrased. \
+If a 'Prior context' section is provided, treat it as background from past meetings: \
+do NOT re-raise questions that were already answered there, and prefer questions that \
+explicitly conflict with or refine prior facts.";
 
 pub const HEARTBEAT_DEFAULT_MS: u64 = 15000;
 
@@ -74,20 +75,25 @@ pub async fn run_open_questions_summarizer(
                     debug!("LLM disabled; skipping open_questions cycle");
                     continue;
                 }
-                let (transcript, existing_questions) = {
+                let (transcript, existing_questions, prior_context) = {
                     let s = state.lock().await;
                     let existing: Vec<String> = s
                         .items_per_mode
                         .get("open_questions")
                         .map(|v| v.iter().map(|i| i.text.clone()).collect())
                         .unwrap_or_default();
-                    (s.rolling_transcript_text(), existing)
+                    let prior = s
+                        .recalled_context_clone()
+                        .map(|c| c.format_for_prompt())
+                        .unwrap_or_default();
+                    (s.rolling_transcript_text(), existing, prior)
                 };
                 if transcript.is_empty() {
                     continue;
                 }
                 let user_input = format!(
-                    "Existing open questions (do not repeat):\n{}\n\nTranscript:\n{}",
+                    "{}Existing open questions (do not repeat):\n{}\n\nTranscript:\n{}",
+                    prior_context,
                     existing_questions.join("\n"),
                     transcript,
                 );

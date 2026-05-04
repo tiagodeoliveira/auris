@@ -1,0 +1,372 @@
+//! Background task that subscribes to the WS event broadcast and pushes
+//! relevant events to mnemo.
+//!
+//! Lifecycle, per meeting:
+//!   - `MeetingStateChanged { Active }`: start a new mnemo session (uuid),
+//!     reset transcript-pushed count and per-mode item cache. Metadata
+//!     cache is intentionally preserved so a pre-meeting `ExtractMetadata`
+//!     run carries through.
+//!   - `MetadataChanged`: refresh the metadata cache. Applied even outside
+//!     active meetings (Extract-before-Start populates this).
+//!   - `ItemsUpdate { mode: "transcript", items }`: push each new item
+//!     (since the last push) as a `user`-role turn. Each push is a
+//!     spawned tokio task so a slow HTTP call doesn't stall the loop.
+//!   - `ItemsUpdate { mode: <other>, items }`: cache for the end-of-meeting
+//!     summary push. Replace strategy mirrors how mnemo will see the
+//!     final state.
+//!   - `MeetingStateChanged { Idle }`: push one `assistant`-role event
+//!     bundling actions / highlights / open-questions, then reset.
+//!   - `MeetingStateChanged { Paused }`: no-op; keep accumulating.
+//!
+//! All HTTP calls are best-effort. Failure logs at warn but never aborts
+//! the loop.
+
+use std::collections::HashMap;
+
+use chrono::{DateTime, Utc};
+use tokio::sync::broadcast;
+use tracing::{debug, info, warn};
+use uuid::Uuid;
+
+use crate::contract::{Event, Item, MeetingState};
+
+use super::client::MnemoClient;
+use super::payload::{build_sentence_event, build_summary_event};
+
+#[derive(Debug, Default)]
+struct PusherState {
+    session_id: Option<String>,
+    started_at: Option<DateTime<Utc>>,
+    /// Number of transcript items already pushed in this session.
+    transcript_pushed: usize,
+    /// Per-mode item cache (excluding transcript). Populated as
+    /// `ItemsUpdate` events fire so the end-of-meeting summary can be
+    /// built without re-querying state.
+    items_by_mode: HashMap<String, Vec<Item>>,
+    /// Latest metadata snapshot. Survives across the
+    /// `ExtractMetadata` → `start_meeting` boundary.
+    metadata: HashMap<String, String>,
+}
+
+pub fn spawn(client: MnemoClient, events_rx: broadcast::Receiver<Event>) {
+    if !client.is_enabled() {
+        info!("mnemo pusher not spawning — client disabled");
+        return;
+    }
+    tokio::spawn(async move { pusher_loop(client, events_rx).await });
+}
+
+async fn pusher_loop(client: MnemoClient, mut rx: broadcast::Receiver<Event>) {
+    let mut state = PusherState::default();
+    info!("mnemo pusher started");
+    loop {
+        match rx.recv().await {
+            Ok(event) => handle_event(&client, &mut state, event).await,
+            Err(broadcast::error::RecvError::Lagged(n)) => {
+                warn!(lagged = n, "mnemo pusher fell behind broadcast channel");
+            }
+            Err(broadcast::error::RecvError::Closed) => {
+                debug!("mnemo pusher: broadcast closed, exiting");
+                return;
+            }
+        }
+    }
+}
+
+async fn handle_event(client: &MnemoClient, state: &mut PusherState, event: Event) {
+    match event {
+        Event::MeetingStateChanged {
+            meeting_state: MeetingState::Active,
+        } => {
+            if state.session_id.is_none() {
+                let id = Uuid::new_v4().to_string();
+                info!(session_id = %id, "mnemo: new meeting session");
+                state.session_id = Some(id);
+                state.started_at = Some(Utc::now());
+                state.transcript_pushed = 0;
+                state.items_by_mode.clear();
+                // Keep metadata cache — ExtractMetadata may have populated it.
+            }
+        }
+        Event::MeetingStateChanged {
+            meeting_state: MeetingState::Idle,
+        } => {
+            flush_summary(client, state).await;
+            *state = PusherState::default();
+        }
+        Event::MeetingStateChanged {
+            meeting_state: MeetingState::Paused,
+        } => {
+            // pause is a transient signal; nothing to do.
+        }
+        Event::MetadataChanged { metadata } => {
+            state.metadata = metadata;
+        }
+        Event::ItemsUpdate { mode, items } => {
+            if mode == "transcript" {
+                push_new_transcript(client, state, &items);
+            } else {
+                state.items_by_mode.insert(mode, items);
+            }
+        }
+        // No-ops for memory purposes.
+        Event::Snapshot { .. }
+        | Event::AvailableModesChanged { .. }
+        | Event::ModeChanged { .. }
+        | Event::DisplayTagChanged { .. }
+        | Event::PriorContextChanged { .. }
+        | Event::TranscriptInterim { .. }
+        | Event::Status { .. }
+        | Event::Error { .. } => {}
+    }
+}
+
+fn push_new_transcript(client: &MnemoClient, state: &mut PusherState, items: &[Item]) {
+    let (Some(session_id), Some(started_at)) = (state.session_id.as_deref(), state.started_at)
+    else {
+        // Transcript items can arrive before MeetingStateChanged{Active}
+        // in theory; ignore them rather than push without a session.
+        return;
+    };
+    if state.transcript_pushed >= items.len() {
+        return;
+    }
+    let workstation = client.workstation().to_string();
+    let metadata = state.metadata.clone();
+    let session_id = session_id.to_string();
+    for item in &items[state.transcript_pushed..] {
+        let payload =
+            build_sentence_event(&session_id, &workstation, &metadata, started_at, &item.text);
+        let client = client.clone();
+        tokio::spawn(async move {
+            if let Err(e) = client.push_event(&payload).await {
+                warn!(error = %e, "mnemo: sentence push failed");
+            }
+        });
+    }
+    state.transcript_pushed = items.len();
+}
+
+async fn flush_summary(client: &MnemoClient, state: &PusherState) {
+    let (Some(session_id), Some(started_at)) = (state.session_id.as_deref(), state.started_at)
+    else {
+        return;
+    };
+    let Some(payload) = build_summary_event(
+        session_id,
+        client.workstation(),
+        &state.metadata,
+        started_at,
+        &state.items_by_mode,
+    ) else {
+        debug!(session_id = %session_id, "mnemo: nothing to summarize, skipping final push");
+        return;
+    };
+    if let Err(e) = client.push_event(&payload).await {
+        warn!(error = %e, "mnemo: final summary push failed");
+    } else {
+        info!(session_id = %session_id, "mnemo: final summary pushed");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::contract::Item;
+
+    fn item(id: &str, text: &str) -> Item {
+        Item {
+            id: id.into(),
+            text: text.into(),
+            detail: None,
+            t: 0,
+            meta: None,
+        }
+    }
+
+    fn meta(pairs: &[(&str, &str)]) -> HashMap<String, String> {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    }
+
+    fn run<F: std::future::Future<Output = ()>>(f: F) {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(f);
+    }
+
+    /// Smoke test: a full meeting lifecycle drives the state correctly,
+    /// even when the client is disabled (push_event is a no-op).
+    #[test]
+    fn lifecycle_drives_state_correctly() {
+        run(async {
+            let client = MnemoClient::Disabled;
+            let mut state = PusherState::default();
+
+            // Pre-meeting metadata extraction.
+            handle_event(
+                &client,
+                &mut state,
+                Event::MetadataChanged {
+                    metadata: meta(&[("project", "helix")]),
+                },
+            )
+            .await;
+            assert_eq!(state.metadata.get("project"), Some(&"helix".to_string()));
+            assert!(state.session_id.is_none());
+
+            // Meeting starts.
+            handle_event(
+                &client,
+                &mut state,
+                Event::MeetingStateChanged {
+                    meeting_state: MeetingState::Active,
+                },
+            )
+            .await;
+            assert!(state.session_id.is_some());
+            assert!(state.started_at.is_some());
+            // Metadata survived.
+            assert_eq!(state.metadata.get("project"), Some(&"helix".to_string()));
+
+            // Server confirms metadata after start.
+            handle_event(
+                &client,
+                &mut state,
+                Event::MetadataChanged {
+                    metadata: meta(&[("project", "helix"), ("title", "demo")]),
+                },
+            )
+            .await;
+            assert_eq!(state.metadata.len(), 2);
+
+            // First three transcript items.
+            handle_event(
+                &client,
+                &mut state,
+                Event::ItemsUpdate {
+                    mode: "transcript".into(),
+                    items: vec![item("t1", "first."), item("t2", "second.")],
+                },
+            )
+            .await;
+            assert_eq!(state.transcript_pushed, 2);
+
+            // One more.
+            handle_event(
+                &client,
+                &mut state,
+                Event::ItemsUpdate {
+                    mode: "transcript".into(),
+                    items: vec![
+                        item("t1", "first."),
+                        item("t2", "second."),
+                        item("t3", "third."),
+                    ],
+                },
+            )
+            .await;
+            assert_eq!(state.transcript_pushed, 3);
+
+            // Other modes get cached.
+            handle_event(
+                &client,
+                &mut state,
+                Event::ItemsUpdate {
+                    mode: "actions".into(),
+                    items: vec![item("a1", "Send recap")],
+                },
+            )
+            .await;
+            assert_eq!(state.items_by_mode.get("actions").unwrap().len(), 1);
+
+            // Pause: state unchanged.
+            let snap_before_pause = state.transcript_pushed;
+            handle_event(
+                &client,
+                &mut state,
+                Event::MeetingStateChanged {
+                    meeting_state: MeetingState::Paused,
+                },
+            )
+            .await;
+            assert_eq!(state.transcript_pushed, snap_before_pause);
+            assert!(state.session_id.is_some());
+
+            // Stop: state resets.
+            handle_event(
+                &client,
+                &mut state,
+                Event::MeetingStateChanged {
+                    meeting_state: MeetingState::Idle,
+                },
+            )
+            .await;
+            assert!(state.session_id.is_none());
+            assert!(state.metadata.is_empty());
+            assert!(state.items_by_mode.is_empty());
+            assert_eq!(state.transcript_pushed, 0);
+        });
+    }
+
+    #[test]
+    fn transcript_before_meeting_active_is_ignored() {
+        run(async {
+            let client = MnemoClient::Disabled;
+            let mut state = PusherState::default();
+            handle_event(
+                &client,
+                &mut state,
+                Event::ItemsUpdate {
+                    mode: "transcript".into(),
+                    items: vec![item("t1", "stray.")],
+                },
+            )
+            .await;
+            assert_eq!(state.transcript_pushed, 0);
+        });
+    }
+
+    #[test]
+    fn second_active_after_active_is_noop() {
+        // Server should never emit Active twice without an Idle in between,
+        // but if it does we must not generate a fresh session_id and lose
+        // the in-flight transcript count.
+        run(async {
+            let client = MnemoClient::Disabled;
+            let mut state = PusherState::default();
+            handle_event(
+                &client,
+                &mut state,
+                Event::MeetingStateChanged {
+                    meeting_state: MeetingState::Active,
+                },
+            )
+            .await;
+            let first_id = state.session_id.clone();
+            handle_event(
+                &client,
+                &mut state,
+                Event::ItemsUpdate {
+                    mode: "transcript".into(),
+                    items: vec![item("t1", "x.")],
+                },
+            )
+            .await;
+            handle_event(
+                &client,
+                &mut state,
+                Event::MeetingStateChanged {
+                    meeting_state: MeetingState::Active,
+                },
+            )
+            .await;
+            assert_eq!(state.session_id, first_id);
+            assert_eq!(state.transcript_pushed, 1);
+        });
+    }
+}

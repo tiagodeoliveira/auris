@@ -1,4 +1,4 @@
-//! Per-mode summarizer tasks. See `docs/specs/phase-2-step-15-live-pipeline.md` §8.
+//! Per-mode summarizer tasks.
 //!
 //! Four summarizers run in parallel during an active meeting:
 //! - transcript: pass-through, no LLM (this task — task 4)

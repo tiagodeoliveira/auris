@@ -1,6 +1,5 @@
 //! Mock STT backend — emits canned transcript chunks at a fixed cadence.
-//! Enabled via `MEETING_COMPANION_STT_MOCK=1` (or `STT_PROVIDER=mock`).
-//! See `docs/specs/phase-2-step-15-live-pipeline.md` §7.4.
+//! Enabled via `MEETING_COMPANION_STT_PROVIDER=mock`.
 
 use crate::stt::TranscriptChunk;
 use std::time::Duration;

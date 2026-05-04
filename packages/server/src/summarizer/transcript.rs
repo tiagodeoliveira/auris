@@ -2,8 +2,6 @@
 //! Each TranscriptChunk arriving on the broadcast channel becomes a single
 //! Item appended to the transcript-mode buffer; the resulting payload is
 //! broadcast to all WS clients via Event::ItemsUpdate.
-//!
-//! See `docs/specs/phase-2-step-15-live-pipeline.md` §8.2.
 
 use crate::contract::{Event, Item};
 use crate::state::ServerState;

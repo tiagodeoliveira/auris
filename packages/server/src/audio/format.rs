@@ -6,8 +6,6 @@
 //!
 //! The resampler is a simple linear interpolator. For human speech (≤ 8 kHz)
 //! aliasing from skipping the anti-alias low-pass is inaudible to STT models.
-//!
-//! See `docs/specs/phase-2-step-15-live-pipeline.md` §6.4.
 
 /// Mix to mono and resample to 16 kHz. Returns Float32 samples.
 pub fn to_mono_16k_f32(src: &[f32], src_sample_rate: u32, src_channels: u16) -> Vec<f32> {

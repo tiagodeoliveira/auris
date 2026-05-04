@@ -8,9 +8,6 @@
 //!
 //! Usage:
 //!   cargo run -p meeting-companion-server --example screencapturekit_spike
-//!
-//! This is a one-off spike for Task 9b1 — see plan
-//! docs/superpowers/plans/2026-05-03-phase-2-step-15.md.
 
 #[cfg(target_os = "macos")]
 fn main() {

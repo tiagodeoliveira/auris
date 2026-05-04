@@ -1,5 +1,4 @@
 //! Always-visible top status row + settings gear.
-//! See `docs/specs/pwa-ux-redesign.md` §3.1, §4.3.
 
 import type { Store } from "../store";
 

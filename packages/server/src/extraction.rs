@@ -1,6 +1,5 @@
-//! Metadata extraction from meeting descriptions.
-//! Phase 2 step 16: thin wrapper that delegates to LlmClient.
-//! See `docs/specs/phase-2-llm-extraction.md`.
+//! Metadata extraction from meeting descriptions. Thin wrapper that
+//! delegates to `LlmClient`.
 
 use std::collections::HashMap;
 

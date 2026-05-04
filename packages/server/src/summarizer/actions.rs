@@ -1,8 +1,6 @@
 //! Actions summarizer — rig Extractor on a 15s heartbeat.
 //! Detects action items from the rolling transcript; appends new ones to
 //! the actions-mode buffer with server-side dedupe by exact text equality.
-//!
-//! See `docs/specs/phase-2-step-15-live-pipeline.md` §8.4.
 
 use crate::contract::{Event, Item};
 use crate::llm::LlmClient;
@@ -19,7 +17,10 @@ use tracing::{debug, warn};
 pub const SYSTEM_PROMPT: &str = "You are a meeting action-item detector. \
 Given the rolling transcript and the action items already detected, return only NEW \
 action items. Each must be an imperative-mood statement. Do not repeat existing items \
-even if rephrased. Use empty string for owner/due if not stated explicitly. Each ≤ 120 chars.";
+even if rephrased. Use empty string for owner/due if not stated explicitly. Each ≤ 120 chars. \
+If a 'Prior context' section is provided, treat it as background from past meetings: \
+do NOT re-extract actions that were already completed or recorded there, but use it to \
+sharpen owner/due inference for genuinely new items.";
 
 pub const HEARTBEAT_DEFAULT_MS: u64 = 15000;
 
@@ -56,20 +57,25 @@ pub async fn run_actions_summarizer(
                     debug!("LLM disabled; skipping actions cycle");
                     continue;
                 }
-                let (transcript, existing_actions) = {
+                let (transcript, existing_actions, prior_context) = {
                     let s = state.lock().await;
                     let existing: Vec<String> = s
                         .items_per_mode
                         .get("actions")
                         .map(|v| v.iter().map(|i| i.text.clone()).collect())
                         .unwrap_or_default();
-                    (s.rolling_transcript_text(), existing)
+                    let prior = s
+                        .recalled_context_clone()
+                        .map(|c| c.format_for_prompt())
+                        .unwrap_or_default();
+                    (s.rolling_transcript_text(), existing, prior)
                 };
                 if transcript.is_empty() {
                     continue;
                 }
                 let user_input = format!(
-                    "Existing action items (do not repeat):\n{}\n\nTranscript:\n{}",
+                    "{}Existing action items (do not repeat):\n{}\n\nTranscript:\n{}",
+                    prior_context,
                     existing_actions.join("\n"),
                     transcript,
                 );

@@ -1,5 +1,4 @@
 //! Segmented control for switching between modes.
-//! See `docs/specs/pwa-ux-redesign.md` §3.4.
 
 import type { Store } from "../store";
 import type { Intent } from "../types";
