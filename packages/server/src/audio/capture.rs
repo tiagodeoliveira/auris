@@ -17,7 +17,6 @@ use thiserror::Error;
 use tokio::sync::mpsc;
 use tokio::time::MissedTickBehavior;
 use tokio_util::sync::CancellationToken;
-use tracing::info;
 
 #[derive(Debug, Error)]
 pub enum AudioInitError {
@@ -129,12 +128,14 @@ pub async fn spawn_audio_task(
         .map_err(|e| AudioInitError::Init(format!("{e}")))?;
 
     // 6. Mixer task — drains both rings at MIXER_INTERVAL and forwards mixed PCM.
+    // Per-frame counters are intentionally absent: the operator-meaningful
+    // signal is the actual transcribed text (logged in the Soniox flush path),
+    // not "PCM frames flowed". Sustained backpressure still surfaces via the
+    // drop warning below.
     let mixer_cancel = cancel.clone();
     let mixer_tx = tx.clone();
     let mixer_system = Arc::clone(&system_ring);
     let mixer_mic = Arc::clone(&mic_ring);
-    let mixer_frame_count = Arc::new(AtomicU64::new(0));
-    let mixer_frame_count_h = Arc::clone(&mixer_frame_count);
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(MIXER_INTERVAL);
         ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
@@ -148,25 +149,11 @@ pub async fn spawn_audio_task(
                         .map(|i| (sys_samples[i] + mic_samples[i]).clamp(-1.0, 1.0))
                         .collect();
                     let pcm = floats_to_s16le_bytes(&mixed);
-                    let pcm_len = pcm.len();
                     match mixer_tx.try_send(pcm) {
-                        Ok(()) => {
-                            let n = mixer_frame_count_h.fetch_add(1, Ordering::Relaxed) + 1;
-                            if n % 50 == 0 {
-                                let sys_depth = mixer_system.lock().map(|r| r.len()).unwrap_or(0);
-                                let mic_depth = mixer_mic.lock().map(|r| r.len()).unwrap_or(0);
-                                info!(
-                                    frames = n,
-                                    last_pcm_bytes = pcm_len,
-                                    sys_ring_depth = sys_depth,
-                                    mic_ring_depth = mic_depth,
-                                    "audio: mixer forwarded PCM frames"
-                                );
-                            }
-                        }
+                        Ok(()) => {}
                         Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
                             // Output channel back-pressured; drop frame silently.
-                            // Logged once per 50 drops so we notice sustained issues.
+                            // Logged once + every 50 drops so sustained issues surface.
                             static DROPPED: AtomicU64 = AtomicU64::new(0);
                             let d = DROPPED.fetch_add(1, Ordering::Relaxed) + 1;
                             if d == 1 || d % 50 == 0 {

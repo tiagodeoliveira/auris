@@ -228,11 +228,21 @@ fn flush_buffer(
         return;
     }
     let elapsed_ms = session_started.elapsed().as_millis() as u64;
+    let t_start = buffer_first_start_ms.unwrap_or_else(|| elapsed_ms.saturating_sub(2000));
+    let t_end = buffer_last_end_ms.unwrap_or(elapsed_ms);
+    // One info log per finalized utterance — operator-meaningful signal that
+    // the live pipeline is producing transcripts. Replaces the per-frame
+    // PCM/response counters that were too noisy to be useful.
+    info!(
+        ms = t_end.saturating_sub(t_start),
+        text = %trimmed,
+        "transcript"
+    );
     let chunk = TranscriptChunk {
         id: uuid::Uuid::new_v4().to_string(),
         text: trimmed.to_string(),
-        t_start_ms: buffer_first_start_ms.unwrap_or_else(|| elapsed_ms.saturating_sub(2000)),
-        t_end_ms: buffer_last_end_ms.unwrap_or(elapsed_ms),
+        t_start_ms: t_start,
+        t_end_ms: t_end,
         speaker: None,
     };
     let _ = transcript_tx.send(chunk);
@@ -277,9 +287,6 @@ async fn try_one_session(
     // Clear any prior reconnecting/unavailable status now that we're connected.
     emit_status_clear(events_tx);
 
-    let mut pcm_forward_count: u64 = 0;
-    let mut response_count: u64 = 0;
-
     // Buffer finalized tokens into utterance-shaped chunks. Soniox's
     // stt-rt-preview emits sub-word tokens (e.g. "Hell", "o,", "how",
     // "are", "y", "ou"); rendering each as its own Item produces a
@@ -316,17 +323,8 @@ async fn try_one_session(
             } => {
                 match pcm {
                     Some(bytes) => {
-                        let bytes_len = bytes.len();
                         if let Err(e) = writer.send(Message::Binary(bytes)).await {
                             return Err(format!("send pcm: {e}"));
-                        }
-                        pcm_forward_count += 1;
-                        if pcm_forward_count % 50 == 0 {
-                            info!(
-                                frames = pcm_forward_count,
-                                last_bytes = bytes_len,
-                                "soniox: forwarded PCM frames to WS"
-                            );
                         }
                     }
                     None => {
@@ -352,15 +350,6 @@ async fn try_one_session(
             msg = reader.next() => {
                 match msg {
                     Some(Ok(Message::Text(t))) => {
-                        response_count += 1;
-                        if response_count == 1 || response_count % 20 == 0 {
-                            info!(
-                                count = response_count,
-                                bytes = t.len(),
-                                preview = %t.chars().take(200).collect::<String>(),
-                                "soniox: received response"
-                            );
-                        }
                         match serde_json::from_str::<TokenResponse>(&t) {
                             Ok(resp) => {
                                 // Auth error?
