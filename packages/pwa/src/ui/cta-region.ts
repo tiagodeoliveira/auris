@@ -30,8 +30,14 @@ export function mountCtaRegion(
     wrap.innerHTML = "";
 
     if (s.glassesView === "listening") {
-      // Listening UI — task 5 will polish styling. For now, keep the existing
-      // shape with class names instead of inline styles.
+      // Banner with pulsing rust dot + LISTENING label.
+      const banner = document.createElement("div");
+      banner.className = "listening-banner";
+      const bannerLabel = document.createElement("div");
+      bannerLabel.className = "listening-banner-label";
+      bannerLabel.textContent = "Listening";
+      banner.appendChild(bannerLabel);
+
       const transcript = document.createElement("div");
       transcript.className = "listening-transcript";
       const finalSpan = document.createElement("span");
@@ -40,11 +46,16 @@ export function mountCtaRegion(
       interimSpan.className = "interim";
       interimSpan.textContent = s.listeningInterim;
       transcript.append(finalSpan, interimSpan);
-      wrap.appendChild(transcript);
+      banner.appendChild(transcript);
+      wrap.appendChild(banner);
 
-      const cancel = button("Cancel", "btn-ghost", actions.cancelListening);
-      const commit = button("Commit", "btn-primary", actions.commitListening);
-      wrap.append(cancel, commit);
+      const actionsRow = document.createElement("div");
+      actionsRow.className = "listening-actions";
+      actionsRow.append(
+        button("Cancel", "btn-ghost", actions.cancelListening),
+        button("Commit", "btn-primary", actions.commitListening),
+      );
+      wrap.appendChild(actionsRow);
       wrap.style.display = "flex";
       return;
     }

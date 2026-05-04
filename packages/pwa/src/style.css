@@ -659,3 +659,39 @@ button.cta:disabled {
   padding: 6px 14px;
   font-size: 13px;
 }
+
+/* === LISTENING BANNER === */
+.listening-banner {
+  padding: 12px 16px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-dark);
+  border-radius: var(--radius);
+  margin-bottom: 12px;
+}
+.listening-banner-label {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  color: var(--rust-warm);
+  margin-bottom: 8px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.listening-banner-label::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--rust-warm);
+  box-shadow: 0 0 8px var(--rust-glow);
+  animation: blink 1.2s ease-in-out infinite;
+}
+.listening-actions {
+  display: flex;
+  gap: 12px;
+}
+.listening-actions button {
+  flex: 1;
+}
