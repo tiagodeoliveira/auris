@@ -989,7 +989,7 @@ fixture updates without adding tests).
 
 ### 16.5 Follow-up enhancements (out of v0 scope)
 
-1. ~~**Audio mixer**~~ — **shipped** (commit TBD). Sample-buffer
+1. ~~**Audio mixer**~~ — **shipped** (`76471b8`). Sample-buffer
    summer combines system audio + mic at fixed 50fps via per-source
    ring buffers in `audio/capture.rs`.
 2. **Live interim transcripts** — plumb `Event::TranscriptInterim`
