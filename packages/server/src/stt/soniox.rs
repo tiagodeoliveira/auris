@@ -177,26 +177,37 @@ fn ends_with_terminator(s: &str) -> bool {
 
 /// Flush the accumulated finalized-token buffer as a single TranscriptChunk
 /// and clear it. No-op if the buffer is empty after trimming.
+///
+/// `buffer_first_start_ms` / `buffer_last_end_ms` hold the first and last
+/// token timestamps across the buffer's lifetime. When present (non-zero
+/// from Soniox), they become the chunk's `t_start_ms` / `t_end_ms`.
+/// Falls back to session-elapsed wall-clock if tokens have zero timestamps.
 fn flush_buffer(
     buffer: &mut String,
+    buffer_first_start_ms: &mut Option<u64>,
+    buffer_last_end_ms: &mut Option<u64>,
     transcript_tx: &broadcast::Sender<TranscriptChunk>,
     session_started: std::time::Instant,
 ) {
     let trimmed = buffer.trim();
     if trimmed.is_empty() {
         buffer.clear();
+        *buffer_first_start_ms = None;
+        *buffer_last_end_ms = None;
         return;
     }
     let elapsed_ms = session_started.elapsed().as_millis() as u64;
     let chunk = TranscriptChunk {
         id: uuid::Uuid::new_v4().to_string(),
         text: trimmed.to_string(),
-        t_start_ms: elapsed_ms.saturating_sub(2000),
-        t_end_ms: elapsed_ms,
+        t_start_ms: buffer_first_start_ms.unwrap_or_else(|| elapsed_ms.saturating_sub(2000)),
+        t_end_ms: buffer_last_end_ms.unwrap_or(elapsed_ms),
         speaker: None,
     };
     let _ = transcript_tx.send(chunk);
     buffer.clear();
+    *buffer_first_start_ms = None;
+    *buffer_last_end_ms = None;
 }
 
 /// One WS session attempt. Returns Ok on cancellation, Err on protocol failure
@@ -247,6 +258,8 @@ async fn try_one_session(
     //   3. Idle timeout >= IDLE_FLUSH_MS (user paused; emit what we have)
     //   4. Session end (cancel or WS close): flush whatever's in flight
     let mut buffer = String::new();
+    let mut buffer_first_start_ms: Option<u64> = None;
+    let mut buffer_last_end_ms: Option<u64> = None;
     let mut last_token_at: Option<std::time::Instant> = None;
     const MAX_BUFFER_LEN: usize = 240;
     const IDLE_FLUSH_MS: u64 = 1000;
@@ -257,7 +270,7 @@ async fn try_one_session(
     loop {
         tokio::select! {
             _ = cancel.cancelled() => {
-                flush_buffer(&mut buffer, transcript_tx, session_started);
+                flush_buffer(&mut buffer, &mut buffer_first_start_ms, &mut buffer_last_end_ms, transcript_tx, session_started);
                 let _ = writer.close().await;
                 return Ok(());
             }
@@ -285,7 +298,7 @@ async fn try_one_session(
                     }
                     None => {
                         // Audio source ended — close the session
-                        flush_buffer(&mut buffer, transcript_tx, session_started);
+                        flush_buffer(&mut buffer, &mut buffer_first_start_ms, &mut buffer_last_end_ms, transcript_tx, session_started);
                         let _ = writer.close().await;
                         return Ok(());
                     }
@@ -296,7 +309,7 @@ async fn try_one_session(
                 if !buffer.is_empty() {
                     if let Some(t) = last_token_at {
                         if t.elapsed().as_millis() as u64 >= IDLE_FLUSH_MS {
-                            flush_buffer(&mut buffer, transcript_tx, session_started);
+                            flush_buffer(&mut buffer, &mut buffer_first_start_ms, &mut buffer_last_end_ms, transcript_tx, session_started);
                             last_token_at = None;
                         }
                     }
@@ -332,6 +345,12 @@ async fn try_one_session(
                                         if tok.text.is_empty() {
                                             continue;
                                         }
+                                        if buffer_first_start_ms.is_none() && tok.start_ms > 0 {
+                                            buffer_first_start_ms = Some(tok.start_ms);
+                                        }
+                                        if tok.end_ms > 0 {
+                                            buffer_last_end_ms = Some(tok.end_ms);
+                                        }
                                         buffer.push_str(&tok.text);
                                         got_final = true;
                                     } else {
@@ -351,7 +370,7 @@ async fn try_one_session(
                                 if ends_with_terminator(&buffer)
                                     || buffer.len() >= MAX_BUFFER_LEN
                                 {
-                                    flush_buffer(&mut buffer, transcript_tx, session_started);
+                                    flush_buffer(&mut buffer, &mut buffer_first_start_ms, &mut buffer_last_end_ms, transcript_tx, session_started);
                                     last_token_at = None;
                                 }
                             }
@@ -361,7 +380,7 @@ async fn try_one_session(
                         }
                     }
                     Some(Ok(Message::Close(_))) | None => {
-                        flush_buffer(&mut buffer, transcript_tx, session_started);
+                        flush_buffer(&mut buffer, &mut buffer_first_start_ms, &mut buffer_last_end_ms, transcript_tx, session_started);
                         return Err("Soniox closed connection".into());
                     }
                     Some(Ok(_)) => {} // ignore Pong/Ping/Binary
@@ -441,14 +460,11 @@ mod tests {
                 .expect("recv");
 
         // Buffered finalization preserves the trailing punctuation and emits
-        // the trimmed accumulated text. Timestamps come from session-elapsed
-        // time (not token start/end) because a chunk may span multiple
-        // tokens; we only sanity-check they're present and sane.
+        // the trimmed accumulated text. Timestamps now reflect the token's
+        // actual start_ms / end_ms from the Soniox response.
         assert_eq!(chunk.text, "hello world.");
-        assert!(
-            chunk.t_end_ms < 5_000,
-            "session was short, t_end_ms shouldn't be huge"
-        );
+        assert_eq!(chunk.t_start_ms, 100);
+        assert_eq!(chunk.t_end_ms, 800);
 
         // Cancel the client; let it shut down cleanly.
         cancel.cancel();
