@@ -154,6 +154,40 @@ async fn run_soniox(
     }
 }
 
+/// True if `s` (after trimming trailing whitespace) ends with a sentence
+/// terminator. Covers ASCII (.?!) and CJK fullwidth (。？！).
+fn ends_with_terminator(s: &str) -> bool {
+    let trimmed = s.trim_end();
+    match trimmed.chars().next_back() {
+        Some(c) => matches!(c, '.' | '?' | '!' | '。' | '？' | '！'),
+        None => false,
+    }
+}
+
+/// Flush the accumulated finalized-token buffer as a single TranscriptChunk
+/// and clear it. No-op if the buffer is empty after trimming.
+fn flush_buffer(
+    buffer: &mut String,
+    transcript_tx: &broadcast::Sender<TranscriptChunk>,
+    session_started: std::time::Instant,
+) {
+    let trimmed = buffer.trim();
+    if trimmed.is_empty() {
+        buffer.clear();
+        return;
+    }
+    let elapsed_ms = session_started.elapsed().as_millis() as u64;
+    let chunk = TranscriptChunk {
+        id: uuid::Uuid::new_v4().to_string(),
+        text: trimmed.to_string(),
+        t_start_ms: elapsed_ms.saturating_sub(2000),
+        t_end_ms: elapsed_ms,
+        speaker: None,
+    };
+    let _ = transcript_tx.send(chunk);
+    buffer.clear();
+}
+
 /// One WS session attempt. Returns Ok on cancellation, Err on protocol failure
 /// or WS disconnect. The caller decides whether to retry.
 async fn try_one_session(
@@ -190,10 +224,28 @@ async fn try_one_session(
     let mut pcm_forward_count: u64 = 0;
     let mut response_count: u64 = 0;
 
+    // Buffer finalized tokens into utterance-shaped chunks. Soniox's
+    // stt-rt-preview emits sub-word tokens (e.g. "Hell", "o,", "how",
+    // "are", "y", "ou"); rendering each as its own Item produces a
+    // letter-stack column in the PWA. Instead we accumulate finalized
+    // tokens and flush a single TranscriptChunk on:
+    //   1. Sentence-terminator punctuation (`.`, `?`, `!`, CJK equivalents)
+    //   2. Buffer length >= MAX_BUFFER_LEN (avoid unbounded growth on
+    //      monologues without punctuation)
+    //   3. Idle timeout >= IDLE_FLUSH_MS (user paused; emit what we have)
+    //   4. Session end (cancel or WS close): flush whatever's in flight
+    let mut buffer = String::new();
+    let mut last_token_at: Option<std::time::Instant> = None;
+    const MAX_BUFFER_LEN: usize = 240;
+    const IDLE_FLUSH_MS: u64 = 1000;
+    let mut idle_ticker = tokio::time::interval(Duration::from_millis(500));
+    idle_ticker.tick().await; // discard immediate tick
+
     // 2. Pump loop: forward audio, parse transcripts
     loop {
         tokio::select! {
             _ = cancel.cancelled() => {
+                flush_buffer(&mut buffer, transcript_tx, session_started);
                 let _ = writer.close().await;
                 return Ok(());
             }
@@ -221,8 +273,20 @@ async fn try_one_session(
                     }
                     None => {
                         // Audio source ended — close the session
+                        flush_buffer(&mut buffer, transcript_tx, session_started);
                         let _ = writer.close().await;
                         return Ok(());
+                    }
+                }
+            }
+            // Idle flush: every 500ms, check if buffer is stale.
+            _ = idle_ticker.tick() => {
+                if !buffer.is_empty() {
+                    if let Some(t) = last_token_at {
+                        if t.elapsed().as_millis() as u64 >= IDLE_FLUSH_MS {
+                            flush_buffer(&mut buffer, transcript_tx, session_started);
+                            last_token_at = None;
+                        }
                     }
                 }
             }
@@ -247,36 +311,27 @@ async fn try_one_session(
                                 {
                                     return Err("auth: invalid API key".into());
                                 }
-                                // Forward final tokens as TranscriptChunks
+                                // Accumulate finalized tokens; drop interim tokens for now.
+                                let mut got_final = false;
                                 for tok in resp.tokens {
                                     if !tok.is_final {
-                                        // Interim tokens — could optionally emit
-                                        // TranscriptInterim event; for v0, drop.
                                         continue;
                                     }
-                                    let trimmed = tok.text.trim();
-                                    if trimmed.is_empty() {
+                                    if tok.text.is_empty() {
                                         continue;
                                     }
-                                    // If Soniox didn't return start_ms/end_ms,
-                                    // use elapsed time since session start.
-                                    let elapsed_ms = session_started.elapsed().as_millis() as u64;
-                                    let chunk = TranscriptChunk {
-                                        id: uuid::Uuid::new_v4().to_string(),
-                                        text: trimmed.to_string(),
-                                        t_start_ms: if tok.start_ms > 0 {
-                                            tok.start_ms
-                                        } else {
-                                            elapsed_ms.saturating_sub(2000)
-                                        },
-                                        t_end_ms: if tok.end_ms > 0 {
-                                            tok.end_ms
-                                        } else {
-                                            elapsed_ms
-                                        },
-                                        speaker: tok.speaker,
-                                    };
-                                    let _ = transcript_tx.send(chunk);
+                                    buffer.push_str(&tok.text);
+                                    got_final = true;
+                                }
+                                if got_final {
+                                    last_token_at = Some(std::time::Instant::now());
+                                }
+                                // Flush on punctuation or length cap.
+                                if ends_with_terminator(&buffer)
+                                    || buffer.len() >= MAX_BUFFER_LEN
+                                {
+                                    flush_buffer(&mut buffer, transcript_tx, session_started);
+                                    last_token_at = None;
                                 }
                             }
                             Err(e) => {
@@ -285,6 +340,7 @@ async fn try_one_session(
                         }
                     }
                     Some(Ok(Message::Close(_))) | None => {
+                        flush_buffer(&mut buffer, transcript_tx, session_started);
                         return Err("Soniox closed connection".into());
                     }
                     Some(Ok(_)) => {} // ignore Pong/Ping/Binary
@@ -332,7 +388,7 @@ mod tests {
             // Send a canned response with a final token
             let resp = serde_json::json!({
                 "tokens": [
-                    { "text": "hello world", "is_final": true, "start_ms": 100, "end_ms": 800 }
+                    { "text": "hello world.", "is_final": true, "start_ms": 100, "end_ms": 800 }
                 ]
             });
             ws.send(tokio_tungstenite::tungstenite::Message::Text(
@@ -360,9 +416,15 @@ mod tests {
                 .expect("timeout waiting for transcript")
                 .expect("recv");
 
-        assert_eq!(chunk.text, "hello world");
-        assert_eq!(chunk.t_start_ms, 100);
-        assert_eq!(chunk.t_end_ms, 800);
+        // Buffered finalization preserves the trailing punctuation and emits
+        // the trimmed accumulated text. Timestamps come from session-elapsed
+        // time (not token start/end) because a chunk may span multiple
+        // tokens; we only sanity-check they're present and sane.
+        assert_eq!(chunk.text, "hello world.");
+        assert!(
+            chunk.t_end_ms < 5_000,
+            "session was short, t_end_ms shouldn't be huge"
+        );
 
         // Cancel the client; let it shut down cleanly.
         cancel.cancel();
@@ -406,5 +468,71 @@ mod tests {
         cancel.cancel();
         let _ = tokio::time::timeout(std::time::Duration::from_secs(1), task).await;
         let _ = tokio::time::timeout(std::time::Duration::from_secs(1), server).await;
+    }
+
+    #[tokio::test]
+    async fn soniox_buffers_subword_tokens_until_punctuation() {
+        // Simulates Soniox stt-rt-preview's subword token stream:
+        // sends "Hell", "o,", " how", " are", " you", "?" — each as a
+        // separate finalized token. Expects ONE TranscriptChunk with the
+        // concatenated text, flushed by the trailing "?".
+        let (url, server) = spawn_mock_server(|mut ws| async move {
+            let _config = ws.next().await.unwrap().unwrap();
+            let resp = serde_json::json!({
+                "tokens": [
+                    { "text": "Hell",  "is_final": true },
+                    { "text": "o,",    "is_final": true },
+                    { "text": " how",  "is_final": true },
+                    { "text": " are",  "is_final": true },
+                    { "text": " you",  "is_final": true },
+                    { "text": "?",     "is_final": true },
+                ]
+            });
+            ws.send(tokio_tungstenite::tungstenite::Message::Text(
+                resp.to_string(),
+            ))
+            .await
+            .unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        })
+        .await;
+
+        let (transcript_tx, mut transcript_rx) = broadcast::channel::<TranscriptChunk>(16);
+        let cancel = CancellationToken::new();
+        let provider = Box::new(SonioxStt::new_with_url("test_key".into(), url));
+        let task_cancel = cancel.clone();
+        let task = tokio::spawn(async move {
+            provider.run(None, transcript_tx, task_cancel).await;
+        });
+
+        let chunk =
+            tokio::time::timeout(std::time::Duration::from_millis(500), transcript_rx.recv())
+                .await
+                .expect("timeout waiting for buffered chunk")
+                .expect("recv");
+        assert_eq!(chunk.text, "Hello, how are you?");
+
+        // No further chunk should arrive (single response → single buffered emit).
+        let second =
+            tokio::time::timeout(std::time::Duration::from_millis(200), transcript_rx.recv()).await;
+        assert!(
+            second.is_err(),
+            "expected exactly one buffered chunk, got more"
+        );
+
+        cancel.cancel();
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(1), task).await;
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(1), server).await;
+    }
+
+    #[test]
+    fn ends_with_terminator_recognizes_ascii_and_cjk() {
+        assert!(ends_with_terminator("Hello."));
+        assert!(ends_with_terminator("How are you?"));
+        assert!(ends_with_terminator("Wow!"));
+        assert!(ends_with_terminator("Trailing space ends. "));
+        assert!(ends_with_terminator("Japanese 。"));
+        assert!(!ends_with_terminator("no punctuation here"));
+        assert!(!ends_with_terminator(""));
     }
 }
