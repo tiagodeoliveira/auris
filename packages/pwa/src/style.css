@@ -74,7 +74,12 @@ body {
 }
 
 #app {
-  min-height: 100vh;
+  /* height (not min-height) + overflow:hidden so the document doesn't
+     grow past the viewport — the .items-pane child is flex:1 and scrolls
+     internally instead. Keeps the header / metadata / mode tabs / action
+     bar pinned. */
+  height: 100vh;
+  overflow: hidden;
   display: flex;
   flex-direction: column;
 }

@@ -74,12 +74,22 @@ export function handleServerEvent(event: ServerEvent, store: Store): void {
         {},
       );
       let meetingStartedAt = store.get().meetingStartedAt;
+      const update: Partial<Parameters<typeof store.update>[0]> = {
+        meetingState: event.meeting_state,
+        glassesView: next,
+      };
       if (event.meeting_state === "active" && !meetingStartedAt) {
         meetingStartedAt = Date.now();
       } else if (event.meeting_state === "idle") {
+        // Mirror the server's handle_stop_meeting cleanup locally — clear
+        // meeting-specific state so the next compose surface starts fresh.
         meetingStartedAt = null;
+        update.metadata = {};
+        update.itemsByMode = {};
+        update.liveTranscriptInterim = "";
       }
-      store.update({ meetingState: event.meeting_state, glassesView: next, meetingStartedAt });
+      update.meetingStartedAt = meetingStartedAt;
+      store.update(update);
       return;
     }
     case "available_modes_changed":
