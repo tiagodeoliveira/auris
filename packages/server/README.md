@@ -105,6 +105,7 @@ three modes accumulate items continuously while the meeting is active.
 | Env var                                        | Required when         | Default                            |
 | ---------------------------------------------- | --------------------- | ---------------------------------- |
 | `SONIOX_API_KEY`                               | `STT_PROVIDER=soniox` | —                                  |
+| `MEETING_COMPANION_SONIOX_MODEL`               | no                    | `stt-rt-preview`                   |
 | `MEETING_COMPANION_STT_PROVIDER`               | no                    | `soniox`                           |
 | `MEETING_COMPANION_AUDIO_DISABLED`             | no                    | unset                              |
 | `MEETING_COMPANION_STT_MOCK`                   | no                    | unset (alias: `STT_PROVIDER=mock`) |

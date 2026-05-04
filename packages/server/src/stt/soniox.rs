@@ -36,10 +36,12 @@ impl SonioxStt {
                 "SONIOX_API_KEY is empty".to_string(),
             ));
         }
+        let model = std::env::var("MEETING_COMPANION_SONIOX_MODEL")
+            .unwrap_or_else(|_| MODEL_DEFAULT.to_string());
         Ok(Self {
             api_key,
             url: SONIOX_URL.to_string(),
-            model: MODEL_DEFAULT.to_string(),
+            model,
         })
     }
 
@@ -553,5 +555,31 @@ mod tests {
         assert!(ends_with_terminator("Japanese 。"));
         assert!(!ends_with_terminator("no punctuation here"));
         assert!(!ends_with_terminator(""));
+    }
+
+    #[test]
+    fn from_env_reads_model_override() {
+        // Save and restore env state
+        let prev_model = std::env::var("MEETING_COMPANION_SONIOX_MODEL").ok();
+        let prev_key = std::env::var("SONIOX_API_KEY").ok();
+
+        std::env::set_var("SONIOX_API_KEY", "test_key");
+        std::env::set_var("MEETING_COMPANION_SONIOX_MODEL", "custom-model");
+        let s = SonioxStt::from_env().unwrap();
+        assert_eq!(s.model, "custom-model");
+
+        std::env::remove_var("MEETING_COMPANION_SONIOX_MODEL");
+        let s = SonioxStt::from_env().unwrap();
+        assert_eq!(s.model, MODEL_DEFAULT);
+
+        // Restore
+        match prev_model {
+            Some(v) => std::env::set_var("MEETING_COMPANION_SONIOX_MODEL", v),
+            None => std::env::remove_var("MEETING_COMPANION_SONIOX_MODEL"),
+        }
+        match prev_key {
+            Some(v) => std::env::set_var("SONIOX_API_KEY", v),
+            None => std::env::remove_var("SONIOX_API_KEY"),
+        }
     }
 }
