@@ -130,6 +130,7 @@ async fn run_soniox(
         warn!("Soniox provider has no audio source; transcription will produce nothing");
     }
 
+    let mut consecutive_failures: u32 = 0;
     let mut backoff = RECONNECT_BASE;
     let session_started = std::time::Instant::now();
 
@@ -151,10 +152,18 @@ async fn run_soniox(
             Ok(()) => {
                 // Clean shutdown — don't reconnect
                 info!("Soniox session ended cleanly");
+                emit_status_clear(&events_tx);
                 return;
             }
             Err(e) => {
-                warn!(error = %e, backoff_ms = backoff.as_millis() as u64, "Soniox session failed; reconnecting");
+                consecutive_failures += 1;
+                warn!(error = %e, backoff_ms = backoff.as_millis() as u64, consecutive_failures, "Soniox session failed; reconnecting");
+                let code = if consecutive_failures >= 5 {
+                    "stt_unavailable"
+                } else {
+                    "stt_reconnecting"
+                };
+                emit_status_error(&events_tx, code);
                 tokio::select! {
                     _ = cancel.cancelled() => return,
                     _ = tokio::time::sleep(backoff) => {}
@@ -163,6 +172,28 @@ async fn run_soniox(
             }
         }
     }
+}
+
+/// Emit a `Status` event carrying an error code (e.g. "stt_reconnecting").
+fn emit_status_error(events_tx: &broadcast::Sender<crate::contract::Event>, code: &str) {
+    let _ = events_tx.send(crate::contract::Event::Status {
+        status: crate::contract::Status {
+            listening: true,
+            paused: false,
+            error: Some(code.to_string()),
+        },
+    });
+}
+
+/// Emit a `Status` event clearing any prior error (successful session open/close).
+fn emit_status_clear(events_tx: &broadcast::Sender<crate::contract::Event>) {
+    let _ = events_tx.send(crate::contract::Event::Status {
+        status: crate::contract::Status {
+            listening: true,
+            paused: false,
+            error: None,
+        },
+    });
 }
 
 /// True if `s` (after trimming trailing whitespace) ends with a sentence
@@ -243,6 +274,8 @@ async fn try_one_session(
         .map_err(|e| format!("send config: {e}"))?;
 
     info!(model = %cfg.model, "Soniox session opened");
+    // Clear any prior reconnecting/unavailable status now that we're connected.
+    emit_status_clear(events_tx);
 
     let mut pcm_forward_count: u64 = 0;
     let mut response_count: u64 = 0;
@@ -629,6 +662,54 @@ mod tests {
             }
         }
         assert!(saw_interim, "expected TranscriptInterim event");
+
+        cancel.cancel();
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(1), task).await;
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(1), server).await;
+    }
+
+    #[tokio::test]
+    async fn soniox_emits_status_error_on_reconnect() {
+        // Mock server that immediately closes — forces a reconnect
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let url = format!("ws://{}/", addr);
+        let server = tokio::spawn(async move {
+            // Accept and immediately drop without doing handshake
+            for _ in 0..2 {
+                let _ = listener.accept().await;
+            }
+        });
+
+        let (transcript_tx, _) = broadcast::channel::<TranscriptChunk>(16);
+        let (events_tx, mut events_rx) = broadcast::channel::<crate::contract::Event>(16);
+        let cancel = CancellationToken::new();
+        let provider = Box::new(SonioxStt::new_with_url("test_key".into(), url));
+        let task_cancel = cancel.clone();
+        let task = tokio::spawn(async move {
+            provider
+                .run(None, transcript_tx, events_tx, task_cancel)
+                .await;
+        });
+
+        // Wait for a Status event with non-None error
+        let mut saw_error = false;
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+        while tokio::time::Instant::now() < deadline && !saw_error {
+            if let Ok(Ok(evt)) =
+                tokio::time::timeout(std::time::Duration::from_millis(500), events_rx.recv()).await
+            {
+                if let crate::contract::Event::Status { status } = evt {
+                    if status.error.is_some() {
+                        saw_error = true;
+                    }
+                }
+            }
+        }
+        assert!(
+            saw_error,
+            "expected Status event with error during reconnect"
+        );
 
         cancel.cancel();
         let _ = tokio::time::timeout(std::time::Duration::from_secs(1), task).await;
