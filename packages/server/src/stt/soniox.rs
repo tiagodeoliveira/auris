@@ -323,17 +323,26 @@ async fn try_one_session(
                                 {
                                     return Err("auth: invalid API key".into());
                                 }
-                                // Accumulate finalized tokens; drop interim tokens for now.
+                                // Separate final and interim tokens; accumulate finals,
+                                // emit an interim event for in-flight display.
                                 let mut got_final = false;
+                                let mut interim_text = String::new();
                                 for tok in resp.tokens {
-                                    if !tok.is_final {
-                                        continue;
+                                    if tok.is_final {
+                                        if tok.text.is_empty() {
+                                            continue;
+                                        }
+                                        buffer.push_str(&tok.text);
+                                        got_final = true;
+                                    } else {
+                                        interim_text.push_str(&tok.text);
                                     }
-                                    if tok.text.is_empty() {
-                                        continue;
-                                    }
-                                    buffer.push_str(&tok.text);
-                                    got_final = true;
+                                }
+                                if !interim_text.trim().is_empty() {
+                                    let _ =
+                                        events_tx.send(crate::contract::Event::TranscriptInterim {
+                                            text: interim_text,
+                                        });
                                 }
                                 if got_final {
                                     last_token_at = Some(std::time::Instant::now());
@@ -555,6 +564,59 @@ mod tests {
         assert!(ends_with_terminator("Japanese 。"));
         assert!(!ends_with_terminator("no punctuation here"));
         assert!(!ends_with_terminator(""));
+    }
+
+    #[tokio::test]
+    async fn soniox_emits_interim_event_for_nonfinal_tokens() {
+        let (url, server) = spawn_mock_server(|mut ws| async move {
+            let _config = ws.next().await.unwrap().unwrap();
+            let resp = serde_json::json!({
+                "tokens": [
+                    { "text": "Hello,", "is_final": true },
+                    { "text": " how are you", "is_final": false },
+                ]
+            });
+            ws.send(tokio_tungstenite::tungstenite::Message::Text(
+                resp.to_string(),
+            ))
+            .await
+            .unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        })
+        .await;
+
+        let (transcript_tx, _) = broadcast::channel::<TranscriptChunk>(16);
+        let (events_tx, mut events_rx) = broadcast::channel::<crate::contract::Event>(16);
+        let cancel = CancellationToken::new();
+        let provider = Box::new(SonioxStt::new_with_url("test_key".into(), url));
+        let task_cancel = cancel.clone();
+        let task = tokio::spawn(async move {
+            provider
+                .run(None, transcript_tx, events_tx, task_cancel)
+                .await;
+        });
+
+        // Drain events; expect at least one TranscriptInterim with our interim text
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(500);
+        let mut saw_interim = false;
+        while tokio::time::Instant::now() < deadline && !saw_interim {
+            if let Ok(Ok(evt)) =
+                tokio::time::timeout(std::time::Duration::from_millis(200), events_rx.recv()).await
+            {
+                if let crate::contract::Event::TranscriptInterim { text } = evt {
+                    assert!(
+                        text.contains("how are you"),
+                        "unexpected interim text: {text}"
+                    );
+                    saw_interim = true;
+                }
+            }
+        }
+        assert!(saw_interim, "expected TranscriptInterim event");
+
+        cancel.cancel();
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(1), task).await;
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(1), server).await;
     }
 
     #[test]
