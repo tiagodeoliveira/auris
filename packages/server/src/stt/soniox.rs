@@ -206,6 +206,17 @@ fn ends_with_terminator(s: &str) -> bool {
     }
 }
 
+/// True if `s` ends at a "soft" boundary — whitespace, comma, semicolon,
+/// or another non-alphanumeric character. Used to gate the idle-timeout
+/// flush so we never split mid-word ("Hi, h" + "ello" instead of "Hi, hello").
+/// An empty string ends at no boundary.
+fn ends_at_soft_boundary(s: &str) -> bool {
+    match s.chars().next_back() {
+        None => false,
+        Some(c) => !c.is_alphanumeric(),
+    }
+}
+
 /// Flush the accumulated finalized-token buffer as a single TranscriptChunk
 /// and clear it. No-op if the buffer is empty after trimming.
 ///
@@ -302,7 +313,11 @@ async fn try_one_session(
     let mut buffer_last_end_ms: Option<u64> = None;
     let mut last_token_at: Option<std::time::Instant> = None;
     const MAX_BUFFER_LEN: usize = 240;
-    const IDLE_FLUSH_MS: u64 = 1000;
+    // 3s of no new tokens = a real conversational pause. Sub-3s gaps are
+    // mid-sentence (breath, thinking). Combined with the soft-boundary
+    // gate below, this prevents the "Hi, h" / "ello, how are you?"
+    // fragmentation that 1s + no-gating produced.
+    const IDLE_FLUSH_MS: u64 = 3000;
     let mut idle_ticker = tokio::time::interval(Duration::from_millis(500));
     idle_ticker.tick().await; // discard immediate tick
 
@@ -335,11 +350,15 @@ async fn try_one_session(
                     }
                 }
             }
-            // Idle flush: every 500ms, check if buffer is stale.
+            // Idle flush: every 500ms, check if the buffer is stale AND
+            // ends at a soft boundary (whitespace/punctuation). The
+            // soft-boundary gate prevents splitting mid-word when Soniox
+            // sub-word tokens straddle a long pause.
             _ = idle_ticker.tick() => {
                 if !buffer.is_empty() {
                     if let Some(t) = last_token_at {
-                        if t.elapsed().as_millis() as u64 >= IDLE_FLUSH_MS {
+                        let stale = t.elapsed().as_millis() as u64 >= IDLE_FLUSH_MS;
+                        if stale && ends_at_soft_boundary(&buffer) {
                             flush_buffer(&mut buffer, &mut buffer_first_start_ms, &mut buffer_last_end_ms, transcript_tx, session_started);
                             last_token_at = None;
                         }
@@ -602,6 +621,21 @@ mod tests {
         assert!(ends_with_terminator("Japanese 。"));
         assert!(!ends_with_terminator("no punctuation here"));
         assert!(!ends_with_terminator(""));
+    }
+
+    #[test]
+    fn ends_at_soft_boundary_gates_mid_word_idle_flush() {
+        // Soft boundaries — safe to idle-flush
+        assert!(ends_at_soft_boundary("Hi, "));
+        assert!(ends_at_soft_boundary("Hello,"));
+        assert!(ends_at_soft_boundary("Done."));
+        assert!(ends_at_soft_boundary("Wait;"));
+        // Mid-word — must NOT idle-flush, would split "Hi, h" / "ello..."
+        assert!(!ends_at_soft_boundary("Hi, h"));
+        assert!(!ends_at_soft_boundary("Hello"));
+        assert!(!ends_at_soft_boundary("123"));
+        // Empty
+        assert!(!ends_at_soft_boundary(""));
     }
 
     #[tokio::test]
