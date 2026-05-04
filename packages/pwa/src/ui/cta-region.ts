@@ -20,8 +20,7 @@ export function mountCtaRegion(
   actions: CtaActions,
 ): void {
   const wrap = document.createElement("div");
-  wrap.style.cssText =
-    "padding:16px;border-bottom:1px solid #25252a;display:flex;flex-direction:column;gap:8px;";
+  wrap.className = "cta-region";
   parent.appendChild(wrap);
 
   let stopArmedUntil = 0;
@@ -31,52 +30,49 @@ export function mountCtaRegion(
     wrap.innerHTML = "";
 
     if (s.glassesView === "listening") {
+      // Listening UI — task 5 will polish styling. For now, keep the existing
+      // shape with class names instead of inline styles.
       const transcript = document.createElement("div");
-      transcript.style.cssText =
-        "background:var(--bg-elev);padding:12px;border-radius:var(--radius);max-height:150px;overflow-y:auto;font-size:14px;line-height:1.5;min-height:60px;";
+      transcript.className = "listening-transcript";
       const finalSpan = document.createElement("span");
       finalSpan.textContent = s.listeningTranscript;
       const interimSpan = document.createElement("span");
+      interimSpan.className = "interim";
       interimSpan.textContent = s.listeningInterim;
-      interimSpan.style.color = "var(--fg-dim)";
       transcript.append(finalSpan, interimSpan);
       wrap.appendChild(transcript);
 
-      wrap.appendChild(button("Cancel", "secondary", actions.cancelListening));
-      wrap.appendChild(button("Commit", "", actions.commitListening));
-      return;
-    }
-
-    if (s.meetingState === "idle") {
-      const descInput = document.createElement("input");
-      descInput.type = "text";
-      descInput.placeholder = "Describe this meeting (optional)";
-      descInput.style.cssText =
-        "width:100%;box-sizing:border-box;background:var(--bg-elev);color:var(--fg);border:1px solid #25252a;padding:10px;border-radius:6px;font-size:14px;";
-      wrap.appendChild(descInput);
-
-      wrap.appendChild(button("Describe meeting", "secondary", actions.describeMeeting));
-      wrap.appendChild(
-        button("Start meeting", "", () => actions.startMeeting(descInput.value.trim())),
-      );
+      const cancel = button("Cancel", "btn-ghost", actions.cancelListening);
+      const commit = button("Commit", "btn-primary", actions.commitListening);
+      wrap.append(cancel, commit);
+      wrap.style.display = "flex";
       return;
     }
 
     if (s.meetingState === "active") {
-      wrap.appendChild(button("Pause", "secondary", actions.pauseMeeting));
-      wrap.appendChild(stopButton(actions.stopMeeting));
+      wrap.append(
+        button("Pause", "btn-ghost", actions.pauseMeeting),
+        stopButton(actions.stopMeeting),
+      );
+      wrap.style.display = "flex";
       return;
     }
 
     if (s.meetingState === "paused") {
-      wrap.appendChild(button("Resume", "", actions.resumeMeeting));
-      wrap.appendChild(stopButton(actions.stopMeeting));
+      wrap.append(
+        button("Resume", "btn-primary", actions.resumeMeeting),
+        stopButton(actions.stopMeeting),
+      );
+      wrap.style.display = "flex";
       return;
     }
+
+    // idle state: compose-region handles this; we render nothing.
+    wrap.style.display = "none";
   }
 
   function stopButton(onConfirm: () => void): HTMLButtonElement {
-    const btn = button("Stop", "danger", () => {
+    const btn = button("Stop", "btn-danger", () => {
       const now = Date.now();
       if (now < stopArmedUntil) {
         stopArmedUntil = 0;
@@ -85,7 +81,6 @@ export function mountCtaRegion(
       } else {
         stopArmedUntil = now + STOP_CONFIRM_WINDOW_MS;
         btn.textContent = "Tap again to confirm";
-        btn.style.animation = "pulse 0.4s ease-in-out 2";
         setTimeout(() => {
           if (Date.now() >= stopArmedUntil) {
             stopArmedUntil = 0;
@@ -99,13 +94,12 @@ export function mountCtaRegion(
 
   function button(
     text: string,
-    variant: "" | "secondary" | "danger",
+    variant: "btn-ghost" | "btn-primary" | "btn-danger",
     onClick: () => void,
   ): HTMLButtonElement {
     const b = document.createElement("button");
-    b.className = "cta" + (variant ? " " + variant : "");
+    b.className = variant;
     b.textContent = text;
-    b.style.width = "100%";
     b.addEventListener("click", onClick);
     return b;
   }

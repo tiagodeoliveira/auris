@@ -1,6 +1,7 @@
 import type { Store } from "../store";
 import type { Intent } from "../types";
 import { mountTopBar } from "./top-bar";
+import { mountComposeRegion } from "./compose-region";
 import { mountModeDropdown } from "./mode-dropdown";
 import { mountKvEditor } from "./kv-editor";
 import { mountCtaRegion, type CtaActions } from "./cta-region";
@@ -22,6 +23,7 @@ export interface UiContext {
 
 export function mountUI(root: HTMLElement, ctx: UiContext): void {
   mountTopBar(root, ctx.store, () => ctx.store.update({ settingsModalOpen: true }));
+  mountComposeRegion(root, ctx.store, ctx.actions); // NEW — idle state surface
   mountModeDropdown(root, ctx.store, ctx.send);
   mountKvEditor(root, ctx.store, ctx.send);
   mountCtaRegion(root, ctx.store, ctx.send, ctx.actions);
