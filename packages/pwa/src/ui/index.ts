@@ -1,6 +1,6 @@
 import type { Store } from "../store";
 import type { Intent } from "../types";
-import { mountStatusBar } from "./status-bar";
+import { mountTopBar } from "./top-bar";
 import { mountModeDropdown } from "./mode-dropdown";
 import { mountKvEditor } from "./kv-editor";
 import { mountCtaRegion, type CtaActions } from "./cta-region";
@@ -21,7 +21,7 @@ export interface UiContext {
 }
 
 export function mountUI(root: HTMLElement, ctx: UiContext): void {
-  mountStatusBar(root, ctx.store, () => ctx.store.update({ settingsModalOpen: true }));
+  mountTopBar(root, ctx.store, () => ctx.store.update({ settingsModalOpen: true }));
   mountModeDropdown(root, ctx.store, ctx.send);
   mountKvEditor(root, ctx.store, ctx.send);
   mountCtaRegion(root, ctx.store, ctx.send, ctx.actions);

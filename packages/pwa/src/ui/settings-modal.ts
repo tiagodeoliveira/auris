@@ -13,40 +13,46 @@ export function mountSettingsModal(
   onSave: () => void,
 ): void {
   const overlay = document.createElement("div");
-  overlay.className = "modal-overlay";
-  overlay.style.display = "none";
+  overlay.className = "settings-overlay";
   parent.appendChild(overlay);
 
   const modal = document.createElement("div");
-  modal.className = "modal";
+  modal.className = "settings-modal";
   overlay.appendChild(modal);
 
-  const header = document.createElement("div");
-  header.style.cssText =
-    "display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;";
-  header.innerHTML = `<h2 style="margin:0;font-size:18px;">Settings</h2>`;
-  const closeBtn = document.createElement("button");
-  closeBtn.textContent = "✕";
-  closeBtn.className = "cta secondary";
-  closeBtn.style.padding = "4px 8px";
-  closeBtn.addEventListener("click", () => store.update({ settingsModalOpen: false }));
-  header.appendChild(closeBtn);
-  modal.appendChild(header);
+  // Title
+  const title = document.createElement("h2");
+  title.className = "settings-title";
+  title.textContent = "Settings";
+  modal.appendChild(title);
 
-  const form = document.createElement("div");
-  form.style.cssText = "display:flex;flex-direction:column;gap:12px;";
+  // Connection status row
+  const statusRow = document.createElement("div");
+  statusRow.className = "settings-status-row";
+  const statusDot = document.createElement("span");
+  statusDot.className = "top-bar-dot";
+  const statusLabel = document.createElement("span");
+  statusLabel.className = "label-mono";
+  statusRow.append(statusDot, statusLabel);
+  modal.appendChild(statusRow);
+
+  // Form fields
   const urlInput = field("Server URL", "ws://localhost:7331", "text");
   const tokenInput = field("Server token", "", "password");
   const sonioxInput = field("Soniox API key", "", "password");
-  form.append(urlInput.wrap, tokenInput.wrap, sonioxInput.wrap);
-  modal.appendChild(form);
+  modal.append(urlInput.wrap, tokenInput.wrap, sonioxInput.wrap);
 
-  const footer = document.createElement("div");
-  footer.style.cssText = "display:flex;gap:8px;margin-top:16px;";
+  // Actions
+  const actions = document.createElement("div");
+  actions.className = "settings-actions";
+  const cancelBtn = document.createElement("button");
+  cancelBtn.className = "btn-ghost";
+  cancelBtn.textContent = "Close";
+  cancelBtn.addEventListener("click", () => store.update({ settingsModalOpen: false }));
   const saveBtn = document.createElement("button");
-  saveBtn.className = "cta";
-  saveBtn.textContent = "Save & Reconnect";
+  saveBtn.className = "btn-primary";
   saveBtn.style.flex = "1";
+  saveBtn.textContent = "Save & Reconnect";
   saveBtn.addEventListener("click", async () => {
     const settings = {
       serverUrl: urlInput.input.value,
@@ -62,33 +68,46 @@ export function mountSettingsModal(
     store.update({ settings, settingsModalOpen: false });
     onSave();
   });
-  footer.appendChild(saveBtn);
-  modal.appendChild(footer);
+  actions.append(cancelBtn, saveBtn);
+  modal.appendChild(actions);
 
   function syncFromStore() {
     const s = store.get();
-    overlay.style.display = s.settingsModalOpen ? "flex" : "none";
+    overlay.classList.toggle("open", s.settingsModalOpen);
     if (s.settingsModalOpen) {
       urlInput.input.value = s.settings.serverUrl;
       tokenInput.input.value = s.settings.serverToken;
       sonioxInput.input.value = s.settings.sonioxKey;
     }
+    // Update status row
+    const ws = s.wsStatus;
+    statusDot.dataset.state =
+      ws === "open" ? "ok" : ws === "connecting" || ws === "reconnecting" ? "pending" : "off";
+    if (ws === "open") {
+      statusLabel.textContent = `CONNECTED · ${s.settings.serverUrl || "ws://localhost:7331"}`;
+    } else if (ws === "connecting") {
+      statusLabel.textContent = "CONNECTING…";
+    } else if (ws === "reconnecting") {
+      statusLabel.textContent = "RECONNECTING…";
+    } else {
+      statusLabel.textContent = "DISCONNECTED";
+    }
   }
   syncFromStore();
   store.subscribe((s) => s.settingsModalOpen, syncFromStore);
+  store.subscribe((s) => s.wsStatus, syncFromStore);
+  store.subscribe((s) => s.settings.serverUrl, syncFromStore);
 }
 
 function field(labelText: string, placeholder: string, type: string) {
   const wrap = document.createElement("label");
-  wrap.style.cssText = "display:flex;flex-direction:column;gap:4px;";
+  wrap.className = "settings-field";
   const lab = document.createElement("span");
+  lab.className = "label-mono";
   lab.textContent = labelText;
-  lab.style.cssText = "font-size:13px;color:var(--fg-dim);";
   const input = document.createElement("input");
   input.type = type;
   input.placeholder = placeholder;
-  input.style.cssText =
-    "background:var(--bg-elev);color:var(--fg);border:1px solid #25252a;padding:10px;border-radius:6px;font-family:ui-monospace,monospace;";
   wrap.append(lab, input);
   return { wrap, input };
 }
