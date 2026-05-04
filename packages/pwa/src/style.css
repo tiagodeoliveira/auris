@@ -696,38 +696,6 @@ button.cta:disabled {
   flex: 1;
 }
 
-/* === SCAN LINE (live indicator) === */
-.scan-line {
-  position: absolute;
-  left: 0;
-  right: 0;
-  height: 1px;
-  background: linear-gradient(
-    90deg,
-    transparent 0%,
-    var(--rust-warm) 20%,
-    var(--spark-orange) 50%,
-    var(--rust-warm) 80%,
-    transparent 100%
-  );
-  opacity: 0.15;
-  pointer-events: none;
-  animation: scanVertical 12s ease-in-out infinite;
-  z-index: 1;
-}
-@keyframes scanVertical {
-  0%, 100% { top: -10%; opacity: 0; }
-  10% { opacity: 0.15; }
-  90% { opacity: 0.15; }
-  100% { top: 110%; opacity: 0; }
-}
-@media (prefers-reduced-motion: reduce) {
-  .scan-line {
-    animation: none;
-    opacity: 0;
-  }
-}
-
 /* === GLOBAL TRANSITIONS + FOCUS === */
 :focus-visible {
   outline: 1px solid var(--rust-warm);
