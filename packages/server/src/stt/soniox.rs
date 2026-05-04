@@ -187,6 +187,9 @@ async fn try_one_session(
 
     info!(model = %cfg.model, "Soniox session opened");
 
+    let mut pcm_forward_count: u64 = 0;
+    let mut response_count: u64 = 0;
+
     // 2. Pump loop: forward audio, parse transcripts
     loop {
         tokio::select! {
@@ -203,8 +206,17 @@ async fn try_one_session(
             } => {
                 match pcm {
                     Some(bytes) => {
+                        let bytes_len = bytes.len();
                         if let Err(e) = writer.send(Message::Binary(bytes)).await {
                             return Err(format!("send pcm: {e}"));
+                        }
+                        pcm_forward_count += 1;
+                        if pcm_forward_count % 50 == 0 {
+                            info!(
+                                frames = pcm_forward_count,
+                                last_bytes = bytes_len,
+                                "soniox: forwarded PCM frames to WS"
+                            );
                         }
                     }
                     None => {
@@ -218,6 +230,15 @@ async fn try_one_session(
             msg = reader.next() => {
                 match msg {
                     Some(Ok(Message::Text(t))) => {
+                        response_count += 1;
+                        if response_count == 1 || response_count % 20 == 0 {
+                            info!(
+                                count = response_count,
+                                bytes = t.len(),
+                                preview = %t.chars().take(200).collect::<String>(),
+                                "soniox: received response"
+                            );
+                        }
                         match serde_json::from_str::<TokenResponse>(&t) {
                             Ok(resp) => {
                                 // Auth error?

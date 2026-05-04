@@ -4,9 +4,12 @@
 #![cfg(target_os = "macos")]
 
 use crate::audio::format::convert_to_stt_pcm;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use thiserror::Error;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
+use tracing::info;
 
 #[derive(Debug, Error)]
 pub enum AudioInitError {
@@ -65,6 +68,10 @@ pub async fn spawn_audio_task(
     // 4. Stream + audio handler that converts and forwards
     let mut stream = SCStream::new(&filter, &config);
     let tx_audio = tx.clone();
+    let frame_count = Arc::new(AtomicU64::new(0));
+    let drop_count = Arc::new(AtomicU64::new(0));
+    let frame_count_h = Arc::clone(&frame_count);
+    let drop_count_h = Arc::clone(&drop_count);
     stream.add_output_handler(
         move |sample: CMSampleBuffer, output_type: SCStreamOutputType| {
             if output_type != SCStreamOutputType::Audio {
@@ -102,8 +109,28 @@ pub async fn spawn_audio_task(
             }
             // Convert to STT-ready PCM
             let pcm = convert_to_stt_pcm(&floats, sample_rate, channels);
+            let pcm_len = pcm.len();
             // Best-effort send; if the receiver is full or gone, we drop the frame
-            let _ = tx_audio.try_send(pcm);
+            match tx_audio.try_send(pcm) {
+                Ok(()) => {
+                    let n = frame_count_h.fetch_add(1, Ordering::Relaxed) + 1;
+                    if n % 50 == 0 {
+                        info!(
+                            frames = n,
+                            last_pcm_bytes = pcm_len,
+                            sample_rate,
+                            channels,
+                            "audio: forwarded PCM frames to mpsc"
+                        );
+                    }
+                }
+                Err(_) => {
+                    let d = drop_count_h.fetch_add(1, Ordering::Relaxed) + 1;
+                    if d == 1 || d % 50 == 0 {
+                        info!(dropped = d, "audio: mpsc full or closed; dropping frame");
+                    }
+                }
+            }
         },
         SCStreamOutputType::Audio,
     );
