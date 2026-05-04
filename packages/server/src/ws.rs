@@ -550,4 +550,26 @@ async fn spawn_live_pipeline(handle: ServerHandle, cancel: CancellationToken) {
             .await;
         });
     }
+
+    // Open-questions summarizer
+    {
+        let task_state = Arc::clone(&handle.state);
+        let task_llm = Arc::clone(&handle.llm);
+        let task_events = handle.events_tx.clone();
+        let task_cancel = cancel.child_token();
+        let interval_ms: u64 = std::env::var("MEETING_COMPANION_OPEN_QUESTIONS_INTERVAL_MS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(crate::summarizer::open_questions::HEARTBEAT_DEFAULT_MS);
+        tokio::spawn(async move {
+            crate::summarizer::open_questions::run_open_questions_summarizer(
+                task_state,
+                task_llm,
+                task_events,
+                task_cancel,
+                Duration::from_millis(interval_ms),
+            )
+            .await;
+        });
+    }
 }

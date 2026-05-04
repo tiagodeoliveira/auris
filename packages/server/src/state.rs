@@ -24,6 +24,11 @@ pub fn default_modes() -> Vec<ModeOption> {
             label: "Actions".into(),
             update_strategy: UpdateStrategy::Append,
         },
+        ModeOption {
+            id: "open_questions".into(),
+            label: "Open Questions".into(),
+            update_strategy: UpdateStrategy::Append,
+        },
     ]
 }
 
@@ -456,12 +461,13 @@ mod tests {
     }
 
     #[test]
-    fn new_has_three_default_modes() {
+    fn new_has_four_default_modes() {
         let s = ServerState::new();
-        assert_eq!(s.available_modes.len(), 3);
+        assert_eq!(s.available_modes.len(), 4);
         assert_eq!(s.available_modes[0].id, "highlights");
         assert_eq!(s.available_modes[1].id, "transcript");
         assert_eq!(s.available_modes[2].id, "actions");
+        assert_eq!(s.available_modes[3].id, "open_questions");
     }
 
     #[test]
@@ -494,7 +500,7 @@ mod tests {
             } => {
                 assert_eq!(protocol_version, PROTOCOL_VERSION);
                 assert!(matches!(meeting_state, MeetingState::Idle));
-                assert_eq!(available_modes.len(), 3);
+                assert_eq!(available_modes.len(), 4);
                 assert_eq!(mode, "transcript");
                 assert!(display_tag.is_none());
                 assert!(metadata.is_empty());

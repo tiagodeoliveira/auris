@@ -88,25 +88,30 @@ When a meeting is `Active`, the server runs four tokio tasks under
    on a bounded mpsc.
 2. **STT provider** — pluggable via `SttProvider` trait. `mock` for
    offline dev, `soniox` for production.
-3. **Three summarizers in parallel:**
+3. **Four summarizers in parallel:**
    - `transcript`: pass-through, no LLM. One Item per Soniox utterance.
    - `highlights`: rig Extractor on a 20 s heartbeat. Replace strategy.
    - `actions`: rig Extractor on a 15 s heartbeat. Append + dedupe.
+   - `open_questions`: rig Extractor on a 15 s heartbeat. Captures
+     pending questions (asked but unanswered) and clarification
+     opportunities (gaps user might have missed while multi-tasking).
+     Append + dedupe.
 
 PWA's `set_mode` is a _display filter_, not a producer switch — all
 three modes accumulate items continuously while the meeting is active.
 
 ### Configuration (additions over §LLM)
 
-| Env var                                    | Required when         | Default                            |
-| ------------------------------------------ | --------------------- | ---------------------------------- |
-| `SONIOX_API_KEY`                           | `STT_PROVIDER=soniox` | —                                  |
-| `MEETING_COMPANION_STT_PROVIDER`           | no                    | `soniox`                           |
-| `MEETING_COMPANION_AUDIO_DISABLED`         | no                    | unset                              |
-| `MEETING_COMPANION_STT_MOCK`               | no                    | unset (alias: `STT_PROVIDER=mock`) |
-| `MEETING_COMPANION_STT_MOCK_INTERVAL_MS`   | no                    | `3000`                             |
-| `MEETING_COMPANION_HIGHLIGHTS_INTERVAL_MS` | no                    | `20000`                            |
-| `MEETING_COMPANION_ACTIONS_INTERVAL_MS`    | no                    | `15000`                            |
+| Env var                                        | Required when         | Default                            |
+| ---------------------------------------------- | --------------------- | ---------------------------------- |
+| `SONIOX_API_KEY`                               | `STT_PROVIDER=soniox` | —                                  |
+| `MEETING_COMPANION_STT_PROVIDER`               | no                    | `soniox`                           |
+| `MEETING_COMPANION_AUDIO_DISABLED`             | no                    | unset                              |
+| `MEETING_COMPANION_STT_MOCK`                   | no                    | unset (alias: `STT_PROVIDER=mock`) |
+| `MEETING_COMPANION_STT_MOCK_INTERVAL_MS`       | no                    | `3000`                             |
+| `MEETING_COMPANION_HIGHLIGHTS_INTERVAL_MS`     | no                    | `20000`                            |
+| `MEETING_COMPANION_ACTIONS_INTERVAL_MS`        | no                    | `15000`                            |
+| `MEETING_COMPANION_OPEN_QUESTIONS_INTERVAL_MS` | no                    | `15000`                            |
 
 ### macOS one-time setup
 
