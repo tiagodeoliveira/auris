@@ -32,7 +32,10 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-screencapturekit = "1.5.4"
+# `macos_15_0` feature unlocks mic capture (`with_captures_microphone`) on
+# macOS 15+ SDKs. Without it, the Swift bridge's mic setter compiles to a
+# no-op even at runtime on macOS 15+.
+screencapturekit = { version = "1.5.4", features = ["macos_15_0"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }

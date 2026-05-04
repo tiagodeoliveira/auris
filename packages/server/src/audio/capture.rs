@@ -59,13 +59,30 @@ pub async fn spawn_audio_task(
         .with_width(2)
         .with_height(2)
         .with_captures_audio(true)
+        .with_captures_microphone(true)
         .with_sample_rate(48000)
         .with_channel_count(2);
 
     // 3. Channel for converted PCM frames
     let (tx, rx) = mpsc::channel::<Vec<u8>>(100);
 
-    // 4. Stream + audio handler that converts and forwards
+    // 4. Stream + microphone handler that converts and forwards.
+    //
+    // We capture the MICROPHONE output, not the system Audio output. Reasons:
+    //   - SCKit delivers Audio (system) and Microphone as two separate output
+    //     types, each at ~50fps. Naively forwarding both into one mpsc would
+    //     produce 100 fps of 20ms-each chunks, making the stream play at 2x
+    //     real time and confusing Soniox's transcription.
+    //   - Real-time mixing of the two streams (sample-buffer summer running
+    //     at fixed 50fps) is the proper fix; deferred to a follow-up.
+    //   - For most setups (laptop speakers, in-person meetings) the mic alone
+    //     captures both the user's voice AND remote audio bleeding back via
+    //     room acoustics — usable for STT.
+    //   - Headphone users get only their own voice transcribed; documented
+    //     limitation.
+    //
+    // A no-op Audio handler is still registered below — required by the
+    // SCKit stream config when `with_captures_audio(true)`.
     let mut stream = SCStream::new(&filter, &config);
     let tx_audio = tx.clone();
     let frame_count = Arc::new(AtomicU64::new(0));
@@ -74,7 +91,7 @@ pub async fn spawn_audio_task(
     let drop_count_h = Arc::clone(&drop_count);
     stream.add_output_handler(
         move |sample: CMSampleBuffer, output_type: SCStreamOutputType| {
-            if output_type != SCStreamOutputType::Audio {
+            if output_type != SCStreamOutputType::Microphone {
                 return;
             }
             // Pull format info
@@ -132,9 +149,15 @@ pub async fn spawn_audio_task(
                 }
             }
         },
+        SCStreamOutputType::Microphone,
+    );
+    // Discard system audio (required by stream config; future mixer task can
+    // consume both streams properly).
+    stream.add_output_handler(
+        |_sample: CMSampleBuffer, _output_type: SCStreamOutputType| {},
         SCStreamOutputType::Audio,
     );
-    // Discard video (required handler even for audio-only streams)
+    // Discard video (required handler even for audio-only streams).
     stream.add_output_handler(
         |_sample: CMSampleBuffer, _output_type: SCStreamOutputType| {},
         SCStreamOutputType::Screen,

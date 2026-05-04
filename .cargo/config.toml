@@ -5,13 +5,15 @@
 #
 #   dyld: Library not loaded: @rpath/libswift_Concurrency.dylib
 #
-# The path below points at Apple's back-deployed Swift 5.5+ Concurrency runtime
-# shipped with Xcode Command Line Tools. CLT is a prerequisite for Rust on
-# macOS, so this path is reliably present on any developer machine that can
-# compile this project.
+# We point at /usr/lib/swift — the dyld-shared-cache location for the
+# system-shipped Swift runtime on macOS 14+. This matches the rpath the
+# screencapturekit crate's bundled Swift dylib also uses, so both the main
+# binary and the Swift bridge resolve the same libswift_Concurrency.dylib;
+# no duplicate-class loads. (`ls /usr/lib/swift` may show empty because the
+# files live in the dyld shared cache; dyld resolves them at load time.)
 
 [target.'cfg(target_os = "macos")']
 rustflags = [
     "-C",
-    "link-arg=-Wl,-rpath,/Library/Developer/CommandLineTools/usr/lib/swift-5.5/macosx",
+    "link-arg=-Wl,-rpath,/usr/lib/swift",
 ]
