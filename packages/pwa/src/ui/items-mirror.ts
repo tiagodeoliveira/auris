@@ -40,6 +40,13 @@ export function mountItemsMirror(parent: HTMLElement, store: Store): void {
   pane.className = "items-pane";
   parent.appendChild(pane);
 
+  // Scan-line indicator that the meeting is "live" — purely decorative,
+  // animated entirely in CSS, gated by prefers-reduced-motion. Lives
+  // outside the items list so re-renders don't recreate it.
+  const scanLine = document.createElement("div");
+  scanLine.className = "scan-line";
+  pane.appendChild(scanLine);
+
   function render() {
     const s = store.get();
     if (s.meetingState !== "active" && s.meetingState !== "paused") {
@@ -47,8 +54,13 @@ export function mountItemsMirror(parent: HTMLElement, store: Store): void {
       return;
     }
     pane.style.display = "block";
+    // Show scan line only when actively capturing (not paused)
+    scanLine.style.display = s.meetingState === "active" ? "block" : "none";
     const items = activeItems(s);
-    pane.innerHTML = "";
+    // Clear all children EXCEPT the scan-line
+    while (pane.children.length > 1) {
+      pane.removeChild(pane.lastChild!);
+    }
 
     if (items.length === 0) {
       const empty = document.createElement("div");
