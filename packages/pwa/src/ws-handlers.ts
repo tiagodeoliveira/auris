@@ -42,9 +42,15 @@ export function handleServerEvent(event: ServerEvent, store: Store): void {
             : "active_list"; // paused -> stay in active_list
       // Discard listening state on snapshot per spec §5.1.3.
       const wasListening = store.get().glassesView === "listening";
+      const snapshotMeetingStartedAt =
+        (event.meeting_state === "active" || event.meeting_state === "paused") &&
+        !store.get().meetingStartedAt
+          ? Date.now()
+          : store.get().meetingStartedAt;
       store.update({
         protocolVersionMatched: true,
         meetingState: event.meeting_state,
+        meetingStartedAt: snapshotMeetingStartedAt,
         availableModes: event.available_modes,
         currentMode: event.mode,
         displayTag: event.display_tag ?? null,
@@ -67,7 +73,13 @@ export function handleServerEvent(event: ServerEvent, store: Store): void {
         { kind: "meeting_state_changed", state: event.meeting_state },
         {},
       );
-      store.update({ meetingState: event.meeting_state, glassesView: next });
+      let meetingStartedAt = store.get().meetingStartedAt;
+      if (event.meeting_state === "active" && !meetingStartedAt) {
+        meetingStartedAt = Date.now();
+      } else if (event.meeting_state === "idle") {
+        meetingStartedAt = null;
+      }
+      store.update({ meetingState: event.meeting_state, glassesView: next, meetingStartedAt });
       return;
     }
     case "available_modes_changed":

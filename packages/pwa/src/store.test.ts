@@ -9,6 +9,7 @@ function defaultState(): AppState {
     wsLastEventAt: null,
     protocolVersionMatched: false,
     meetingState: "idle",
+    meetingStartedAt: null,
     availableModes: [],
     currentMode: "highlights",
     displayTag: null,

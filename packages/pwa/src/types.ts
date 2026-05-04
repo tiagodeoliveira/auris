@@ -36,6 +36,7 @@ export interface AppState {
   wsLastEventAt: number | null;
   protocolVersionMatched: boolean;
   meetingState: MeetingState;
+  meetingStartedAt: number | null;
   availableModes: ModeOption[];
   currentMode: string;
   displayTag: string | null;
@@ -73,6 +74,7 @@ export function defaultAppState(): AppState {
     wsLastEventAt: null,
     protocolVersionMatched: false,
     meetingState: "idle",
+    meetingStartedAt: null,
     availableModes: [],
     currentMode: "transcript",
     displayTag: null,

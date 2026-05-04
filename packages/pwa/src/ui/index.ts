@@ -2,8 +2,9 @@ import type { Store } from "../store";
 import type { Intent } from "../types";
 import { mountTopBar } from "./top-bar";
 import { mountComposeRegion } from "./compose-region";
-import { mountModeDropdown } from "./mode-dropdown";
+import { mountHeaderStrip } from "./header-strip";
 import { mountKvEditor } from "./kv-editor";
+import { mountModeTabs } from "./mode-tabs";
 import { mountCtaRegion, type CtaActions } from "./cta-region";
 import { mountItemsMirror } from "./items-mirror";
 import { mountSettingsModal } from "./settings-modal";
@@ -22,12 +23,22 @@ export interface UiContext {
 }
 
 export function mountUI(root: HTMLElement, ctx: UiContext): void {
+  // Always-visible top status row + settings gear.
   mountTopBar(root, ctx.store, () => ctx.store.update({ settingsModalOpen: true }));
-  mountComposeRegion(root, ctx.store, ctx.actions); // NEW — idle state surface
-  mountModeDropdown(root, ctx.store, ctx.send);
-  mountKvEditor(root, ctx.store, ctx.send);
-  mountCtaRegion(root, ctx.store, ctx.send, ctx.actions);
+
+  // Idle-state composition surface (self-hides when meeting is active).
+  mountComposeRegion(root, ctx.store, ctx.actions);
+
+  // Active-meeting surface — components self-hide outside active/paused.
+  mountHeaderStrip(root, ctx.store);
+  mountKvEditor(root, ctx.store, ctx.send); // visible in both idle and active
+  mountModeTabs(root, ctx.store, ctx.send);
   mountItemsMirror(root, ctx.store);
+
+  // Sticky bottom action bar (Pause/Stop in active, listening UI when listening).
+  mountCtaRegion(root, ctx.store, ctx.send, ctx.actions);
+
+  // Overlays.
   mountSettingsModal(root, ctx.store, ctx.bridge, ctx.reconnect);
   mountToasts(root, ctx.store);
   mountErrorOverlay(root, ctx.store);
