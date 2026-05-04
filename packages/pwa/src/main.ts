@@ -36,7 +36,7 @@ async function start() {
     sock = makeSocket();
   };
 
-  const listening = new ListeningSession(bridge as any, store, (i) => sock.send(i));
+  const listening = new ListeningSession(bridge as any, store);
 
   bridge.onEvenHubEvent((e: unknown) => {
     const event = e as Record<string, unknown> & { audioEvent?: { audioPcm?: Uint8Array } };
@@ -69,7 +69,7 @@ async function start() {
     pauseMeeting: () => sock.send({ type: "pause" }),
     resumeMeeting: () => sock.send({ type: "resume" }),
     stopMeeting: () => sock.send({ type: "stop_meeting" }),
-    commitListening: () => void listening.commit(),
+    stopListening: () => void listening.finish(),
     cancelListening: () => void listening.cancel(),
   };
 

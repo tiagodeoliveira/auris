@@ -5,11 +5,13 @@ const STOP_CONFIRM_WINDOW_MS = 3000;
 
 export interface CtaActions {
   describeMeeting(): void;
+  /// Stops dictation but keeps the listeningTranscript intact so the
+  /// user can edit it in the textarea before pressing Start Meeting.
+  stopListening(): void;
   startMeeting(description: string): void;
   pauseMeeting(): void;
   resumeMeeting(): void;
   stopMeeting(): void;
-  commitListening(): void;
   cancelListening(): void;
 }
 
@@ -29,34 +31,12 @@ export function mountCtaRegion(
     const s = store.get();
     wrap.innerHTML = "";
 
+    // Listening view is rendered inline by compose-region (the textarea
+    // live-fills with the Soniox transcript and the mic icon shows active
+    // state). cta-region intentionally renders nothing during listening
+    // so the bottom action bar doesn't compete with the compose surface.
     if (s.glassesView === "listening") {
-      // Banner with pulsing rust dot + LISTENING label.
-      const banner = document.createElement("div");
-      banner.className = "listening-banner";
-      const bannerLabel = document.createElement("div");
-      bannerLabel.className = "listening-banner-label";
-      bannerLabel.textContent = "Listening";
-      banner.appendChild(bannerLabel);
-
-      const transcript = document.createElement("div");
-      transcript.className = "listening-transcript";
-      const finalSpan = document.createElement("span");
-      finalSpan.textContent = s.listeningTranscript;
-      const interimSpan = document.createElement("span");
-      interimSpan.className = "interim";
-      interimSpan.textContent = s.listeningInterim;
-      transcript.append(finalSpan, interimSpan);
-      banner.appendChild(transcript);
-      wrap.appendChild(banner);
-
-      const actionsRow = document.createElement("div");
-      actionsRow.className = "listening-actions";
-      actionsRow.append(
-        button("Cancel", "btn-ghost", actions.cancelListening),
-        button("Commit", "btn-primary", actions.commitListening),
-      );
-      wrap.appendChild(actionsRow);
-      wrap.style.display = "flex";
+      wrap.style.display = "none";
       return;
     }
 

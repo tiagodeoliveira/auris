@@ -1,7 +1,6 @@
 import type { Store } from "./store";
 import { Vad } from "./stt/vad";
 import { SonioxClient } from "./stt/soniox";
-import type { Intent } from "./types";
 
 interface BridgeLike {
   audioControl(open: boolean): Promise<boolean>;
@@ -19,7 +18,6 @@ export class ListeningSession {
   constructor(
     private bridge: BridgeLike,
     private store: Store,
-    private send: (i: Intent) => void,
   ) {
     this.vad = new Vad({
       silenceMs: VAD_SILENCE_MS,
@@ -90,26 +88,27 @@ export class ListeningSession {
       listeningInterim: "",
     });
 
-    this.timer = setTimeout(() => void this.commit(), FORCE_COMMIT_MS);
+    this.timer = setTimeout(() => void this.finish(), FORCE_COMMIT_MS);
   }
 
   feedAudio(pcm: Uint8Array): void {
     this.vad.feed(pcm, Date.now());
     this.soniox?.feed(pcm);
     if (this.vad.shouldCommit()) {
-      void this.commit();
+      void this.finish();
     }
   }
 
-  async commit(): Promise<void> {
+  /// Stop dictation and exit the listening view, KEEPING the transcript so
+  /// the user can review/edit it in the textarea before pressing Start. This
+  /// is what fires on:
+  ///   - the user clicking the mic icon a second time (toggle off)
+  ///   - VAD detecting sustained silence (auto-pause to save Soniox quota)
+  ///   - the FORCE_COMMIT_MS timeout (cap the streaming session length)
+  async finish(): Promise<void> {
     await this.cleanup();
-    const desc = this.store.get().listeningTranscript;
-    this.send({
-      type: "start_meeting",
-      description: desc,
-      metadata: this.store.get().settings.lastMetadata,
-    });
     this.store.update({ glassesView: "idle" });
+    // listeningTranscript intentionally preserved.
   }
 
   async cancel(): Promise<void> {
