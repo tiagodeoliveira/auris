@@ -50,7 +50,12 @@ export function mountItemsMirror(parent: HTMLElement, store: Store): void {
     const items = activeItems(s);
     pane.innerHTML = "";
 
-    if (items.length === 0) {
+    const showLive =
+      s.currentMode === "transcript" &&
+      s.meetingState === "active" &&
+      s.liveTranscriptInterim.trim().length > 0;
+
+    if (items.length === 0 && !showLive) {
       const empty = document.createElement("div");
       empty.className = "items-empty label-mono";
       empty.textContent = `─ no ${s.currentMode.replace("_", " ")} yet`;
@@ -83,6 +88,23 @@ export function mountItemsMirror(parent: HTMLElement, store: Store): void {
       pane.appendChild(row);
     }
 
+    // "Live" row showing the in-flight transcript before sentence-end
+    // promotes it to a real Item. Only visible in transcript mode while
+    // the meeting is actively capturing audio.
+    if (showLive) {
+      const live = document.createElement("article");
+      live.className = "item item-live";
+      const liveTime = document.createElement("div");
+      liveTime.className = "item-time";
+      liveTime.textContent = "[ ⋯ ]";
+      live.appendChild(liveTime);
+      const liveBody = document.createElement("div");
+      liveBody.className = "item-body";
+      liveBody.textContent = s.liveTranscriptInterim;
+      live.appendChild(liveBody);
+      pane.appendChild(live);
+    }
+
     // Auto-scroll to bottom for transcript mode (live append).
     if (s.currentMode === "transcript") {
       pane.scrollTop = pane.scrollHeight;
@@ -92,6 +114,7 @@ export function mountItemsMirror(parent: HTMLElement, store: Store): void {
   render();
   store.subscribe((s) => s.meetingState, render);
   store.subscribe((s) => s.currentMode, render);
+  store.subscribe((s) => s.liveTranscriptInterim, render);
   store.subscribe(
     (s) =>
       `${s.itemsByMode[s.currentMode]?.length ?? 0}|${s.itemsByMode[s.currentMode]?.[s.itemsByMode[s.currentMode].length - 1]?.id ?? ""}`,

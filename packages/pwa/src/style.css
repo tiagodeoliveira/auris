@@ -713,3 +713,19 @@ textarea {
     opacity 0.2s ease,
     box-shadow 0.2s ease;
 }
+
+/* Live in-flight transcript row — Soniox tokens not yet promoted to a
+   real Item by a sentence-break flush. Dim italic to read as
+   "still being captured." */
+.item-live {
+  border-bottom: none;
+  opacity: 0.6;
+}
+.item-live .item-body {
+  font-style: italic;
+  color: var(--text-muted);
+}
+.item-live .item-body::before {
+  content: "▸ ";
+  color: var(--steel-gray);
+}

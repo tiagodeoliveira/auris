@@ -185,6 +185,18 @@ fn emit_status_error(events_tx: &broadcast::Sender<crate::contract::Event>, code
     });
 }
 
+/// Emit a `TranscriptInterim` event carrying the live "in-flight" preview
+/// text — the accumulated finalized buffer awaiting flush, plus the latest
+/// per-response interim. PWA renders this as a dim italic row at the bottom
+/// of transcript mode. Pass empty buffer + empty interim to clear the row
+/// (e.g., after flush, on cancel, on session close).
+fn emit_live(events_tx: &broadcast::Sender<crate::contract::Event>, buffer: &str, interim: &str) {
+    let mut text = String::with_capacity(buffer.len() + interim.len());
+    text.push_str(buffer);
+    text.push_str(interim);
+    let _ = events_tx.send(crate::contract::Event::TranscriptInterim { text });
+}
+
 /// Emit a `Status` event clearing any prior error (successful session open/close).
 fn emit_status_clear(events_tx: &broadcast::Sender<crate::contract::Event>) {
     let _ = events_tx.send(crate::contract::Event::Status {
@@ -326,6 +338,7 @@ async fn try_one_session(
         tokio::select! {
             _ = cancel.cancelled() => {
                 flush_buffer(&mut buffer, &mut buffer_first_start_ms, &mut buffer_last_end_ms, transcript_tx, session_started);
+                emit_live(events_tx, "", "");
                 let _ = writer.close().await;
                 return Ok(());
             }
@@ -345,6 +358,7 @@ async fn try_one_session(
                     None => {
                         // Audio source ended — close the session
                         flush_buffer(&mut buffer, &mut buffer_first_start_ms, &mut buffer_last_end_ms, transcript_tx, session_started);
+                        emit_live(events_tx, "", "");
                         let _ = writer.close().await;
                         return Ok(());
                     }
@@ -361,6 +375,7 @@ async fn try_one_session(
                         if stale && ends_at_soft_boundary(&buffer) {
                             flush_buffer(&mut buffer, &mut buffer_first_start_ms, &mut buffer_last_end_ms, transcript_tx, session_started);
                             last_token_at = None;
+                            emit_live(events_tx, "", "");
                         }
                     }
                 }
@@ -378,7 +393,9 @@ async fn try_one_session(
                                     return Err("auth: invalid API key".into());
                                 }
                                 // Separate final and interim tokens; accumulate finals,
-                                // emit an interim event for in-flight display.
+                                // emit a live preview combining the accumulated buffer
+                                // and the per-response interim text. The PWA renders this
+                                // as a dim "live" row at the bottom of the transcript pane.
                                 let mut got_final = false;
                                 let mut interim_text = String::new();
                                 for tok in resp.tokens {
@@ -398,22 +415,22 @@ async fn try_one_session(
                                         interim_text.push_str(&tok.text);
                                     }
                                 }
-                                if !interim_text.trim().is_empty() {
-                                    let _ =
-                                        events_tx.send(crate::contract::Event::TranscriptInterim {
-                                            text: interim_text,
-                                        });
-                                }
                                 if got_final {
                                     last_token_at = Some(std::time::Instant::now());
                                 }
-                                // Flush on punctuation or length cap.
+                                // Flush on punctuation or length cap. After flush the
+                                // buffer is empty and the live row should clear.
                                 if ends_with_terminator(&buffer)
                                     || buffer.len() >= MAX_BUFFER_LEN
                                 {
                                     flush_buffer(&mut buffer, &mut buffer_first_start_ms, &mut buffer_last_end_ms, transcript_tx, session_started);
                                     last_token_at = None;
                                 }
+                                // Emit a live preview AFTER any flush so the buffer
+                                // value reflects post-flush state. The live text is
+                                // what the user sees as the "in flight" row in the
+                                // PWA's transcript pane.
+                                emit_live(events_tx, &buffer, &interim_text);
                             }
                             Err(e) => {
                                 warn!(error = %e, raw = %t, "Soniox response parse error");
@@ -422,6 +439,7 @@ async fn try_one_session(
                     }
                     Some(Ok(Message::Close(_))) | None => {
                         flush_buffer(&mut buffer, &mut buffer_first_start_ms, &mut buffer_last_end_ms, transcript_tx, session_started);
+                        emit_live(events_tx, "", "");
                         return Err("Soniox closed connection".into());
                     }
                     Some(Ok(_)) => {} // ignore Pong/Ping/Binary
