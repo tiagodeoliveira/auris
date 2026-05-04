@@ -71,15 +71,27 @@ export function mountSettingsModal(
   actions.append(cancelBtn, saveBtn);
   modal.appendChild(actions);
 
-  function syncFromStore() {
+  // Two sync paths, deliberately split:
+  //   1. Modal open/close + initial input fill — fires only on open transition.
+  //      Filling inputs on every wsStatus change would clobber the user's
+  //      typing, since the WS retry cycle bumps wsStatus ~once a second.
+  //   2. Status row updates — fires on wsStatus / serverUrl changes, but does
+  //      NOT touch input values.
+  let wasOpen = false;
+  function syncOpenState() {
     const s = store.get();
-    overlay.classList.toggle("open", s.settingsModalOpen);
-    if (s.settingsModalOpen) {
+    const isOpen = s.settingsModalOpen;
+    overlay.classList.toggle("open", isOpen);
+    if (isOpen && !wasOpen) {
+      // Modal just opened — populate inputs from current store values.
       urlInput.input.value = s.settings.serverUrl;
       tokenInput.input.value = s.settings.serverToken;
       sonioxInput.input.value = s.settings.sonioxKey;
     }
-    // Update status row
+    wasOpen = isOpen;
+  }
+  function syncStatusRow() {
+    const s = store.get();
     const ws = s.wsStatus;
     statusDot.dataset.state =
       ws === "open" ? "ok" : ws === "connecting" || ws === "reconnecting" ? "pending" : "off";
@@ -93,10 +105,11 @@ export function mountSettingsModal(
       statusLabel.textContent = "DISCONNECTED";
     }
   }
-  syncFromStore();
-  store.subscribe((s) => s.settingsModalOpen, syncFromStore);
-  store.subscribe((s) => s.wsStatus, syncFromStore);
-  store.subscribe((s) => s.settings.serverUrl, syncFromStore);
+  syncOpenState();
+  syncStatusRow();
+  store.subscribe((s) => s.settingsModalOpen, syncOpenState);
+  store.subscribe((s) => s.wsStatus, syncStatusRow);
+  store.subscribe((s) => s.settings.serverUrl, syncStatusRow);
 }
 
 function field(labelText: string, placeholder: string, type: string) {
