@@ -83,9 +83,9 @@ rig was chosen over direct provider SDKs for: provider-pluggable via env var (v3
 When a meeting is `Active`, the server runs four tokio tasks under
 `meeting_cancel`'s child tokens:
 
-1. **Audio capture** — macOS ScreenCaptureKit, microphone-only for now
-   (see _Known limitations_ below). Emits 16 kHz mono S16LE PCM frames
-   on a bounded mpsc.
+1. **Audio capture** — macOS ScreenCaptureKit captures both system
+   audio and microphone. A 50 fps tokio mixer sums them sample-by-sample
+   and emits 16 kHz mono S16LE PCM frames on a bounded mpsc.
 2. **STT provider** — pluggable via `SttProvider` trait. `mock` for
    offline dev, `soniox` for production.
 3. **Four summarizers in parallel:**
@@ -161,15 +161,13 @@ Useful for iterating on PWA UI without burning Soniox credits.
 
 ### Known limitations
 
-- **Mic-only audio capture.** SCKit delivers system audio and mic as
-  two independent ~50 fps streams. Concatenating produces 2x-time
-  playback; proper mixing requires a sample-buffer summer running at
-  fixed 50 fps. Deferred to a follow-up. For now:
-  - On laptop **speakers**: mic picks up both your voice AND any
-    Zoom/Meet audio bleeding through speakers (room acoustics). Both
-    sides of the conversation get transcribed.
-  - On **headphones**: only your own voice is captured. The remote
-    side of a Zoom call won't appear in transcripts.
+- **Audio mixing is naive.** System audio + mic are sample-summed and
+  clamped; loudness can clip if both peak simultaneously. STT-quality is
+  unaffected (Soniox doesn't care). Phase-correctness across the two
+  sources is best-effort (per-source ring buffers absorb timing jitter
+  but don't align by SCKit timestamps). For meeting-summarization use
+  this is fine; if we ever expose audio playback, a proper mixer would
+  matter.
 
 - **Sub-word tokenization from Soniox.** `stt-rt-preview` emits tokens
   at sub-word granularity. The client buffers finalized tokens until a
@@ -182,18 +180,6 @@ Useful for iterating on PWA UI without burning Soniox credits.
   would give "currently speaking…" feedback at the cost of plumbing
   changes through the `SttProvider` trait. Wire shape already exists
   in `contract.rs`; provider integration is a follow-up.
-
-### Why mic-only is acceptable for v0
-
-Two real use cases:
-
-1. **In-person at a desk** — mic picks up everyone within audible range.
-2. **On a video call with laptop speakers** — mic captures both your
-   voice and the remote audio coming through speakers (slightly
-   compressed by the speaker→air→mic path, but Soniox handles it).
-
-Headphone users on remote calls hit the limitation, but it's a known
-follow-up not a v0 blocker.
 
 ## Manual smoke
 

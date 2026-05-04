@@ -9,10 +9,9 @@
 //!
 //! See `docs/specs/phase-2-step-15-live-pipeline.md` §6.4.
 
-/// Convert interleaved Float32 PCM at `src_sample_rate` to mono S16LE PCM
-/// at 16 kHz. Returns the converted byte buffer.
-pub fn convert_to_stt_pcm(src: &[f32], src_sample_rate: u32, src_channels: u16) -> Vec<u8> {
-    // 1. Mix to mono
+/// Mix to mono and resample to 16 kHz. Returns Float32 samples.
+pub fn to_mono_16k_f32(src: &[f32], src_sample_rate: u32, src_channels: u16) -> Vec<f32> {
+    // 1. Mono mix (avg if multi-channel)
     let mono: Vec<f32> = if src_channels == 1 {
         src.to_vec()
     } else {
@@ -24,15 +23,8 @@ pub fn convert_to_stt_pcm(src: &[f32], src_sample_rate: u32, src_channels: u16) 
     // 2. Resample to 16 kHz (linear interpolation)
     let target_rate = 16000_u32;
     if src_sample_rate == target_rate {
-        // No resample needed
-        let mut out = Vec::with_capacity(mono.len() * 2);
-        for s in mono {
-            let v = (s.clamp(-1.0, 1.0) * i16::MAX as f32) as i16;
-            out.extend_from_slice(&v.to_le_bytes());
-        }
-        return out;
+        return mono;
     }
-
     let ratio = src_sample_rate as f32 / target_rate as f32;
     let target_len = (mono.len() as f32 / ratio) as usize;
     let mut resampled = Vec::with_capacity(target_len);
@@ -44,19 +36,32 @@ pub fn convert_to_stt_pcm(src: &[f32], src_sample_rate: u32, src_channels: u16) 
         let s = mono[lo] * (1.0 - frac) + mono[hi] * frac;
         resampled.push(s);
     }
+    resampled
+}
 
-    // 3. Convert Float32 → S16LE
-    let mut out = Vec::with_capacity(resampled.len() * 2);
-    for s in resampled {
+/// Convert Float32 mono samples to S16LE byte PCM (clamped to [-1.0, 1.0]).
+pub fn floats_to_s16le_bytes(src: &[f32]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(src.len() * 2);
+    for &s in src {
         let v = (s.clamp(-1.0, 1.0) * i16::MAX as f32) as i16;
         out.extend_from_slice(&v.to_le_bytes());
     }
     out
 }
 
+/// Composition: mono-mix + resample + S16LE encode. Kept for backward-compat;
+/// callers that need an intermediate Float32 representation should call
+/// `to_mono_16k_f32` and `floats_to_s16le_bytes` directly.
+pub fn convert_to_stt_pcm(src: &[f32], src_sample_rate: u32, src_channels: u16) -> Vec<u8> {
+    let mono = to_mono_16k_f32(src, src_sample_rate, src_channels);
+    floats_to_s16le_bytes(&mono)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── existing tests (backward-compat) ────────────────────────────────────
 
     #[test]
     fn convert_mono_48k_to_mono_16k_is_3_to_1() {
@@ -96,6 +101,53 @@ mod tests {
     #[test]
     fn convert_empty_input_returns_empty() {
         let out = convert_to_stt_pcm(&[], 48000, 2);
+        assert!(out.is_empty());
+    }
+
+    // ── new tests for split functions ────────────────────────────────────────
+
+    #[test]
+    fn to_mono_16k_f32_passes_through_at_target_rate() {
+        let src = vec![0.5_f32; 16000];
+        let out = to_mono_16k_f32(&src, 16000, 1);
+        assert_eq!(out.len(), 16000);
+        assert!(out.iter().all(|&s| (s - 0.5).abs() < 1e-6));
+    }
+
+    #[test]
+    fn to_mono_16k_f32_decimates_3_to_1_for_48k_mono() {
+        let src = vec![0.5_f32; 48000];
+        let out = to_mono_16k_f32(&src, 48000, 1);
+        assert!(
+            (out.len() as i32 - 16000_i32).abs() <= 4,
+            "expected ≈16000 samples, got {}",
+            out.len()
+        );
+    }
+
+    #[test]
+    fn to_mono_16k_f32_mixes_stereo_to_zero_when_inverted() {
+        let src = vec![1.0_f32, -1.0_f32].repeat(48000);
+        let out = to_mono_16k_f32(&src, 48000, 2);
+        assert!(
+            out.iter().all(|&s| s.abs() < 1e-6),
+            "expected near-zero mono samples after mixing L+R/2"
+        );
+    }
+
+    #[test]
+    fn floats_to_s16le_bytes_clamps_overflow() {
+        let src = vec![2.5_f32, -2.5_f32];
+        let out = floats_to_s16le_bytes(&src);
+        let v0 = i16::from_le_bytes([out[0], out[1]]);
+        let v1 = i16::from_le_bytes([out[2], out[3]]);
+        assert_eq!(v0, i16::MAX);
+        assert_eq!(v1, i16::MIN + 1); // -i16::MAX (clamps to -1.0 * MAX)
+    }
+
+    #[test]
+    fn floats_to_s16le_bytes_empty_input_yields_empty_output() {
+        let out = floats_to_s16le_bytes(&[]);
         assert!(out.is_empty());
     }
 }

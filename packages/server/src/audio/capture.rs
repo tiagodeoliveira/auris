@@ -1,13 +1,21 @@
 //! macOS audio capture via ScreenCaptureKit.
 //! See `docs/specs/phase-2-step-15-live-pipeline.md` §6.
+//!
+//! Mixes two SCKit output streams (system audio + microphone) into a single
+//! 16 kHz mono S16LE PCM stream feeding Soniox. Both sources fire at ~50 fps;
+//! per-source ring buffers absorb the inevitable timing jitter and a tokio
+//! mixer task wakes at 20 ms intervals to sum and forward.
 
 #![cfg(target_os = "macos")]
 
-use crate::audio::format::convert_to_stt_pcm;
+use crate::audio::format::{floats_to_s16le_bytes, to_mono_16k_f32};
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use thiserror::Error;
 use tokio::sync::mpsc;
+use tokio::time::MissedTickBehavior;
 use tokio_util::sync::CancellationToken;
 use tracing::info;
 
@@ -19,14 +27,22 @@ pub enum AudioInitError {
     Init(String),
 }
 
-/// Spawn the audio capture task. PCM frames (16 kHz mono S16LE, ~20 ms each)
-/// land on the returned mpsc receiver. Cancel the token to stop capture.
-///
-/// Errors at init time only — frame-delivery errors are silent (the SCKit
-/// handler closure can't propagate them; they'd be ignored by the kernel
-/// anyway). If the capture stream silently dies mid-meeting, the receiver
-/// will simply stop yielding values; the consumer should detect that via
-/// timeout if it cares.
+/// 1 second of 16 kHz mono Float32 = 16,000 samples per ring. Drop-oldest
+/// when full. With both sources at ~50 fps and the mixer also at 50 fps,
+/// rings stay near-empty in steady state; the cap protects against drift
+/// (e.g., one source briefly stalls).
+const RING_CAP_SAMPLES: usize = 16_000;
+
+/// 20 ms of 16 kHz mono Float32 = 320 samples per mixer tick. Matches the
+/// frame size SCKit delivers per source, so steady-state has each ring
+/// holding 0-1 frames.
+const MIXER_FRAME_SAMPLES: usize = 320;
+
+const MIXER_INTERVAL: Duration = Duration::from_millis(20);
+
+/// Spawn the audio capture pipeline. Mixed PCM frames (16 kHz mono S16LE,
+/// ~20 ms each, ~640 bytes each) land on the returned mpsc receiver. Cancel
+/// the token to stop capture.
 pub async fn spawn_audio_task(
     cancel: CancellationToken,
 ) -> Result<mpsc::Receiver<Vec<u8>>, AudioInitError> {
@@ -50,7 +66,7 @@ pub async fn spawn_audio_task(
         .first()
         .ok_or_else(|| AudioInitError::Init("no displays available".into()))?;
 
-    // 2. Filter + config (audio-only, width=2/height=2 workaround per spike)
+    // 2. Filter + config (audio + mic, both enabled; width=2/height=2 audio-only workaround)
     let filter = SCContentFilter::create()
         .with_display(display)
         .with_excluding_windows(&[])
@@ -63,118 +79,174 @@ pub async fn spawn_audio_task(
         .with_sample_rate(48000)
         .with_channel_count(2);
 
-    // 3. Channel for converted PCM frames
+    // 3. Output mpsc + per-source ring buffers
     let (tx, rx) = mpsc::channel::<Vec<u8>>(100);
+    let system_ring: Arc<Mutex<VecDeque<f32>>> =
+        Arc::new(Mutex::new(VecDeque::with_capacity(RING_CAP_SAMPLES)));
+    let mic_ring: Arc<Mutex<VecDeque<f32>>> =
+        Arc::new(Mutex::new(VecDeque::with_capacity(RING_CAP_SAMPLES)));
 
-    // 4. Stream + microphone handler that converts and forwards.
-    //
-    // We capture the MICROPHONE output, not the system Audio output. Reasons:
-    //   - SCKit delivers Audio (system) and Microphone as two separate output
-    //     types, each at ~50fps. Naively forwarding both into one mpsc would
-    //     produce 100 fps of 20ms-each chunks, making the stream play at 2x
-    //     real time and confusing Soniox's transcription.
-    //   - Real-time mixing of the two streams (sample-buffer summer running
-    //     at fixed 50fps) is the proper fix; deferred to a follow-up.
-    //   - For most setups (laptop speakers, in-person meetings) the mic alone
-    //     captures both the user's voice AND remote audio bleeding back via
-    //     room acoustics — usable for STT.
-    //   - Headphone users get only their own voice transcribed; documented
-    //     limitation.
-    //
-    // A no-op Audio handler is still registered below — required by the
-    // SCKit stream config when `with_captures_audio(true)`.
+    // 4. Stream + handlers
     let mut stream = SCStream::new(&filter, &config);
-    let tx_audio = tx.clone();
-    let frame_count = Arc::new(AtomicU64::new(0));
-    let drop_count = Arc::new(AtomicU64::new(0));
-    let frame_count_h = Arc::clone(&frame_count);
-    let drop_count_h = Arc::clone(&drop_count);
-    stream.add_output_handler(
-        move |sample: CMSampleBuffer, output_type: SCStreamOutputType| {
-            if output_type != SCStreamOutputType::Microphone {
-                return;
-            }
-            // Pull format info
-            let (sample_rate, channels) = match sample.format_description() {
-                Some(fd) => (
-                    fd.audio_sample_rate().unwrap_or(48000.0) as u32,
-                    fd.audio_channel_count().unwrap_or(2) as u16,
-                ),
-                None => (48000, 2),
-            };
-            // Pull raw Float32 bytes
-            let abl = match sample.audio_buffer_list() {
-                Some(a) => a,
-                None => return,
-            };
-            // Concat all AudioBuffers' data into a single Float32 slice
-            let mut floats = Vec::<f32>::new();
-            for ab in abl.iter() {
-                let count = ab.data_byte_size() / std::mem::size_of::<f32>();
-                if count == 0 {
-                    continue;
+
+    // System audio handler — pushes Float32 mono 16k samples to system_ring.
+    {
+        let ring = Arc::clone(&system_ring);
+        stream.add_output_handler(
+            move |sample: CMSampleBuffer, output_type: SCStreamOutputType| {
+                if output_type != SCStreamOutputType::Audio {
+                    return;
                 }
-                let bytes = ab.data();
-                // SAFETY: SCKit guarantees Float32 LPCM in the buffer per
-                // the format description we asked for.
-                let slice =
-                    unsafe { std::slice::from_raw_parts(bytes.as_ptr() as *const f32, count) };
-                floats.extend_from_slice(slice);
-            }
-            if floats.is_empty() {
-                return;
-            }
-            // Convert to STT-ready PCM
-            let pcm = convert_to_stt_pcm(&floats, sample_rate, channels);
-            let pcm_len = pcm.len();
-            // Best-effort send; if the receiver is full or gone, we drop the frame
-            match tx_audio.try_send(pcm) {
-                Ok(()) => {
-                    let n = frame_count_h.fetch_add(1, Ordering::Relaxed) + 1;
-                    if n % 50 == 0 {
-                        info!(
-                            frames = n,
-                            last_pcm_bytes = pcm_len,
-                            sample_rate,
-                            channels,
-                            "audio: forwarded PCM frames to mpsc"
-                        );
-                    }
+                push_into_ring(&sample, &ring);
+            },
+            SCStreamOutputType::Audio,
+        );
+    }
+
+    // Microphone handler — same shape, into mic_ring.
+    {
+        let ring = Arc::clone(&mic_ring);
+        stream.add_output_handler(
+            move |sample: CMSampleBuffer, output_type: SCStreamOutputType| {
+                if output_type != SCStreamOutputType::Microphone {
+                    return;
                 }
-                Err(_) => {
-                    let d = drop_count_h.fetch_add(1, Ordering::Relaxed) + 1;
-                    if d == 1 || d % 50 == 0 {
-                        info!(dropped = d, "audio: mpsc full or closed; dropping frame");
-                    }
-                }
-            }
-        },
-        SCStreamOutputType::Microphone,
-    );
-    // Discard system audio (required by stream config; future mixer task can
-    // consume both streams properly).
-    stream.add_output_handler(
-        |_sample: CMSampleBuffer, _output_type: SCStreamOutputType| {},
-        SCStreamOutputType::Audio,
-    );
+                push_into_ring(&sample, &ring);
+            },
+            SCStreamOutputType::Microphone,
+        );
+    }
+
     // Discard video (required handler even for audio-only streams).
     stream.add_output_handler(
         |_sample: CMSampleBuffer, _output_type: SCStreamOutputType| {},
         SCStreamOutputType::Screen,
     );
 
-    // 5. Start
+    // 5. Start capture.
     stream
         .start_capture()
         .map_err(|e| AudioInitError::Init(format!("{e}")))?;
 
-    // 6. Spawn supervisor task: when cancel fires, stop the stream.
-    // SCStream is !Send, so we use std::thread to avoid a Send bound.
-    let handle = tokio::runtime::Handle::current();
+    // 6. Mixer task — drains both rings at MIXER_INTERVAL and forwards mixed PCM.
+    let mixer_cancel = cancel.clone();
+    let mixer_tx = tx.clone();
+    let mixer_system = Arc::clone(&system_ring);
+    let mixer_mic = Arc::clone(&mic_ring);
+    let mixer_frame_count = Arc::new(AtomicU64::new(0));
+    let mixer_frame_count_h = Arc::clone(&mixer_frame_count);
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(MIXER_INTERVAL);
+        ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
+        loop {
+            tokio::select! {
+                _ = mixer_cancel.cancelled() => break,
+                _ = ticker.tick() => {
+                    let sys_samples = drain_n(&mixer_system, MIXER_FRAME_SAMPLES);
+                    let mic_samples = drain_n(&mixer_mic, MIXER_FRAME_SAMPLES);
+                    let mixed: Vec<f32> = (0..MIXER_FRAME_SAMPLES)
+                        .map(|i| (sys_samples[i] + mic_samples[i]).clamp(-1.0, 1.0))
+                        .collect();
+                    let pcm = floats_to_s16le_bytes(&mixed);
+                    let pcm_len = pcm.len();
+                    match mixer_tx.try_send(pcm) {
+                        Ok(()) => {
+                            let n = mixer_frame_count_h.fetch_add(1, Ordering::Relaxed) + 1;
+                            if n % 50 == 0 {
+                                let sys_depth = mixer_system.lock().map(|r| r.len()).unwrap_or(0);
+                                let mic_depth = mixer_mic.lock().map(|r| r.len()).unwrap_or(0);
+                                info!(
+                                    frames = n,
+                                    last_pcm_bytes = pcm_len,
+                                    sys_ring_depth = sys_depth,
+                                    mic_ring_depth = mic_depth,
+                                    "audio: mixer forwarded PCM frames"
+                                );
+                            }
+                        }
+                        Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                            // Output channel back-pressured; drop frame silently.
+                            // Logged once per 50 drops so we notice sustained issues.
+                            static DROPPED: AtomicU64 = AtomicU64::new(0);
+                            let d = DROPPED.fetch_add(1, Ordering::Relaxed) + 1;
+                            if d == 1 || d % 50 == 0 {
+                                tracing::warn!(
+                                    dropped = d,
+                                    "audio: mixer output mpsc full; dropping frame"
+                                );
+                            }
+                        }
+                        Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                            // Receiver gone (e.g. session ended). Stop the loop.
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    });
+
+    // 7. Spawn supervisor: stop SCStream when cancel fires. SCStream is !Send,
+    // so we use a std::thread to bridge from sync to the cancel future.
+    let stop_handle = tokio::runtime::Handle::current();
     std::thread::spawn(move || {
-        handle.block_on(cancel.cancelled());
+        stop_handle.block_on(cancel.cancelled());
         let _ = stream.stop_capture();
     });
 
     Ok(rx)
+}
+
+/// Convert a CMSampleBuffer's Float32 samples to mono 16k Float32 and append
+/// to `ring`. Drops oldest samples if the ring exceeds `RING_CAP_SAMPLES`.
+/// Called from SCKit's GCD thread (no tokio context here).
+fn push_into_ring(sample: &screencapturekit::cm::CMSampleBuffer, ring: &Mutex<VecDeque<f32>>) {
+    let (sample_rate, channels) = match sample.format_description() {
+        Some(fd) => (
+            fd.audio_sample_rate().unwrap_or(48000.0) as u32,
+            fd.audio_channel_count().unwrap_or(2) as u16,
+        ),
+        None => (48000, 2),
+    };
+    let abl = match sample.audio_buffer_list() {
+        Some(a) => a,
+        None => return,
+    };
+    let mut floats = Vec::<f32>::new();
+    for ab in abl.iter() {
+        let count = ab.data_byte_size() / std::mem::size_of::<f32>();
+        if count == 0 {
+            continue;
+        }
+        let bytes = ab.data();
+        // SAFETY: SCKit guarantees Float32 LPCM in the buffer per the format
+        // description we asked for.
+        let slice = unsafe { std::slice::from_raw_parts(bytes.as_ptr() as *const f32, count) };
+        floats.extend_from_slice(slice);
+    }
+    if floats.is_empty() {
+        return;
+    }
+    let mono = to_mono_16k_f32(&floats, sample_rate, channels);
+    if let Ok(mut r) = ring.lock() {
+        r.extend(mono);
+        // Cap at RING_CAP_SAMPLES; drop oldest when full.
+        while r.len() > RING_CAP_SAMPLES {
+            r.pop_front();
+        }
+    }
+}
+
+/// Drain `n` samples from `ring`. Pads with zeros if fewer than `n` are
+/// available (silence from this source for that frame).
+fn drain_n(ring: &Mutex<VecDeque<f32>>, n: usize) -> Vec<f32> {
+    let mut out = Vec::with_capacity(n);
+    if let Ok(mut r) = ring.lock() {
+        let take = n.min(r.len());
+        out.extend(r.drain(..take));
+    }
+    if out.len() < n {
+        out.resize(n, 0.0);
+    }
+    out
 }

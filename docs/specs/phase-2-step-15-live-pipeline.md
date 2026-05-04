@@ -945,7 +945,7 @@ discovered during execution.
 
 | Spec section | Spec said | Actually shipped | Why |
 |---|---|---|---|
-| §6.1 Audio source | "system audio + mic mixed by SCKit" | mic only (system audio captured but discarded) | SCKit delivers Audio + Mic as two separate ~50fps output types. Naive concatenation = 2x-time playback. Proper mixer is a deferred follow-up. |
+| §6.1 Audio source | "system audio + mic mixed by SCKit" | both captured; mixed via per-source ring buffers in `audio/capture.rs` | SCKit delivers Audio + Mic as two separate ~50fps output types. Naive concatenation = 2x-time playback. Resolved by the tokio mixer task (shipped). |
 | §7.1 Soniox protocol | endpoint detection / start_ms+end_ms | per-token sub-word fragments; we buffer to sentence boundaries | `stt-rt-preview` emits sub-word tokens; we buffer finalized tokens until terminator punctuation or 1s idle. Per-token timestamps lost in the process; chunk t_start/t_end come from session-elapsed time. |
 | §5.2 TranscriptInterim | optional MVP; emit interim text | wire shape exists, but provider doesn't emit | Plumbing through the SttProvider trait would require a second sender. Deferred. |
 
@@ -989,8 +989,9 @@ fixture updates without adding tests).
 
 ### 16.5 Follow-up enhancements (out of v0 scope)
 
-1. **Audio mixer** — sample-buffer summer that combines system audio +
-   mic at fixed 50fps. Lifts the headphone-user limitation. ~80 LOC.
+1. ~~**Audio mixer**~~ — **shipped** (commit TBD). Sample-buffer
+   summer combines system audio + mic at fixed 50fps via per-source
+   ring buffers in `audio/capture.rs`.
 2. **Live interim transcripts** — plumb `Event::TranscriptInterim`
    through the SttProvider trait; emit per Soniox response.
 3. **Per-token timestamps** — track buffer's first-token start_ms +
