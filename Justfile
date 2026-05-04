@@ -66,3 +66,22 @@ llm-smoke-anthropic description="Q1 budget review for helix product launch":
 # Run the env-gated LLM integration test (provider selected via MEETING_COMPANION_LLM_PROVIDER, defaults to bedrock).
 llm-integration:
     RUN_LLM_INTEGRATION=1 cargo test -p meeting-companion-server --test llm_integration -- --nocapture
+
+# --- Live pipeline ---------------------------------------------------------
+
+# Run the server with mock STT + LLM disabled — full pipeline shape, no
+# external services. Mock STT emits canned chunks every 2s; transcript
+# items appear; highlights/actions stay empty (LLM disabled).
+live-smoke:
+    MEETING_COMPANION_STT_MOCK=1 \
+    MEETING_COMPANION_STT_MOCK_INTERVAL_MS=2000 \
+    MEETING_COMPANION_LLM_DISABLED=1 \
+    MEETING_COMPANION_AUDIO_DISABLED=1 \
+    MEETING_COMPANION_TOKEN=dev \
+    cargo run -p meeting-companion-server -- --port 7331
+
+# Sanity-check SCKit audio capture + format conversion. Captures 5s of
+# microphone audio and writes /tmp/spike-audio.wav. Listen with
+# `afplay /tmp/spike-audio.wav` to verify the audio path is healthy.
+audio-spike:
+    cargo run -p meeting-companion-server --example screencapturekit_spike

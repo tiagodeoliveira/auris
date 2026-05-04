@@ -21,7 +21,16 @@ display. Iterates against the Even Hub simulator before touching real hardware.
     App restart (ADR-0003 follow-up).
   - Recalibrate `LINES_PER_SCREEN` / `CHARS_PER_LINE` in `layout-active-list`
     against the real LVGL font metrics.
-- **Phase 2 (real audio + extraction pipeline) — partially shipped.** Step 16 (LLM metadata extraction via rig + Sonnet 4.7) is complete and supports AWS Bedrock, OpenAI, and Anthropic-direct as runtime-selectable providers; see [`docs/specs/phase-2-llm-extraction.md`](specs/phase-2-llm-extraction.md). Remaining Phase 2 work: step 15 (real audio + STT/summarizer), step 17 (dynamic mode catalog), step 18 (memory-system enrichment via mnemo).
+- **Phase 2 (real audio + extraction pipeline) — step 16 + step 15 shipped.**
+  - Step 16 (LLM metadata extraction): rig + provider-selectable Bedrock /
+    OpenAI / Anthropic-direct. See [`docs/specs/phase-2-llm-extraction.md`](specs/phase-2-llm-extraction.md).
+  - Step 15 (live audio + STT + parallel mode summarizers): macOS
+    ScreenCaptureKit microphone capture → Soniox WS streaming STT →
+    transcript / highlights / actions summarizers running in parallel
+    while a meeting is active. See [`docs/specs/phase-2-step-15-live-pipeline.md`](specs/phase-2-step-15-live-pipeline.md).
+    macOS-only; mic-only capture (system audio mixer is a follow-up).
+  - Remaining Phase 2 work: step 17 (dynamic mode catalog), step 18
+    (memory-system enrichment via mnemo).
 
 The §6 wire contract is identical across phases — only internals evolve.
 

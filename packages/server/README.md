@@ -78,6 +78,118 @@ just llm-integration
 
 rig was chosen over direct provider SDKs for: provider-pluggable via env var (v3 ships Bedrock + OpenAI + Anthropic-direct; adding more rig-supported providers is a one-arm-on-the-enum change), agent abstractions for future Phase 2 step 18 work, retry/backoff embedded in rig's transport, and `cortex-mem` for the memory layer (Phase 2 step 18 wires this to mnemo).
 
+## Live audio + STT + parallel mode summarizers (Phase 2 step 15)
+
+When a meeting is `Active`, the server runs four tokio tasks under
+`meeting_cancel`'s child tokens:
+
+1. **Audio capture** — macOS ScreenCaptureKit, microphone-only for now
+   (see _Known limitations_ below). Emits 16 kHz mono S16LE PCM frames
+   on a bounded mpsc.
+2. **STT provider** — pluggable via `SttProvider` trait. `mock` for
+   offline dev, `soniox` for production.
+3. **Three summarizers in parallel:**
+   - `transcript`: pass-through, no LLM. One Item per Soniox utterance.
+   - `highlights`: rig Extractor on a 20 s heartbeat. Replace strategy.
+   - `actions`: rig Extractor on a 15 s heartbeat. Append + dedupe.
+
+PWA's `set_mode` is a _display filter_, not a producer switch — all
+three modes accumulate items continuously while the meeting is active.
+
+### Configuration (additions over §LLM)
+
+| Env var                                    | Required when         | Default                            |
+| ------------------------------------------ | --------------------- | ---------------------------------- |
+| `SONIOX_API_KEY`                           | `STT_PROVIDER=soniox` | —                                  |
+| `MEETING_COMPANION_STT_PROVIDER`           | no                    | `soniox`                           |
+| `MEETING_COMPANION_AUDIO_DISABLED`         | no                    | unset                              |
+| `MEETING_COMPANION_STT_MOCK`               | no                    | unset (alias: `STT_PROVIDER=mock`) |
+| `MEETING_COMPANION_STT_MOCK_INTERVAL_MS`   | no                    | `3000`                             |
+| `MEETING_COMPANION_HIGHLIGHTS_INTERVAL_MS` | no                    | `20000`                            |
+| `MEETING_COMPANION_ACTIONS_INTERVAL_MS`    | no                    | `15000`                            |
+
+### macOS one-time setup
+
+Two TCC permissions are required by the parent terminal process:
+
+1. **Screen Recording** — System Settings → Privacy & Security → Screen
+   Recording → enable your terminal app (Ghostty, iTerm2, Terminal.app).
+2. **Microphone** — System Settings → Privacy & Security → Microphone →
+   enable your terminal app.
+
+After granting, **restart your terminal**. macOS doesn't propagate
+permission changes to already-running processes.
+
+If a build fails with `Library not loaded: @rpath/libswift_Concurrency.dylib`,
+the workspace `.cargo/config.toml` rpath fix isn't being applied — check
+that file exists and points at `/usr/lib/swift` (it does in the repo;
+just confirming for non-standard setups).
+
+### Sanity-check the audio path
+
+Before going through the full server flow, run the SCKit spike:
+
+```bash
+cargo run -p meeting-companion-server --example screencapturekit_spike
+```
+
+Speak for 5 seconds, then:
+
+```bash
+afplay /tmp/spike-audio.wav
+```
+
+If you can hear yourself clearly at correct speed, the entire audio
+capture + format conversion path is healthy and any transcription
+issues lie downstream (Soniox API, summarizer prompts).
+
+### Live smoke (mock STT, no external services)
+
+```bash
+just live-smoke
+```
+
+Boots the server with `MEETING_COMPANION_STT_MOCK=1` +
+`MEETING_COMPANION_LLM_DISABLED=1`. Mock STT emits canned chunks every
+2 seconds; transcript items appear, highlights/actions stay empty.
+Useful for iterating on PWA UI without burning Soniox credits.
+
+### Known limitations
+
+- **Mic-only audio capture.** SCKit delivers system audio and mic as
+  two independent ~50 fps streams. Concatenating produces 2x-time
+  playback; proper mixing requires a sample-buffer summer running at
+  fixed 50 fps. Deferred to a follow-up. For now:
+  - On laptop **speakers**: mic picks up both your voice AND any
+    Zoom/Meet audio bleeding through speakers (room acoustics). Both
+    sides of the conversation get transcribed.
+  - On **headphones**: only your own voice is captured. The remote
+    side of a Zoom call won't appear in transcripts.
+
+- **Sub-word tokenization from Soniox.** `stt-rt-preview` emits tokens
+  at sub-word granularity. The client buffers finalized tokens until a
+  sentence terminator, a 240-char cap, or a 1 s idle pause, then emits
+  one TranscriptChunk per utterance. As a side effect, chunk timestamps
+  reflect session-elapsed time rather than per-token offsets.
+
+- **No live interim display.** Soniox's interim (non-final) tokens are
+  dropped today. Adding an `Event::TranscriptInterim` emission path
+  would give "currently speaking…" feedback at the cost of plumbing
+  changes through the `SttProvider` trait. Wire shape already exists
+  in `contract.rs`; provider integration is a follow-up.
+
+### Why mic-only is acceptable for v0
+
+Two real use cases:
+
+1. **In-person at a desk** — mic picks up everyone within audible range.
+2. **On a video call with laptop speakers** — mic captures both your
+   voice and the remote audio coming through speakers (slightly
+   compressed by the speaker→air→mic path, but Soniox handles it).
+
+Headphone users on remote calls hit the limitation, but it's a known
+follow-up not a v0 blocker.
+
 ## Manual smoke
 
 In one terminal:
