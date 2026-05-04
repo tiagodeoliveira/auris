@@ -43,6 +43,7 @@ impl crate::stt::SttProvider for MockStt {
         self: Box<Self>,
         _audio_rx: Option<tokio::sync::mpsc::Receiver<Vec<u8>>>,
         transcript_tx: broadcast::Sender<TranscriptChunk>,
+        _events_tx: broadcast::Sender<crate::contract::Event>,
         cancel: CancellationToken,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> {
         Box::pin(async move {

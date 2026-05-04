@@ -102,9 +102,16 @@ impl SttProvider for SonioxStt {
         self: Box<Self>,
         audio_rx: Option<mpsc::Receiver<Vec<u8>>>,
         transcript_tx: broadcast::Sender<TranscriptChunk>,
+        events_tx: broadcast::Sender<crate::contract::Event>,
         cancel: CancellationToken,
     ) -> Pin<Box<dyn Future<Output = ()> + Send>> {
-        Box::pin(run_soniox(*self, audio_rx, transcript_tx, cancel))
+        Box::pin(run_soniox(
+            *self,
+            audio_rx,
+            transcript_tx,
+            events_tx,
+            cancel,
+        ))
     }
 }
 
@@ -114,6 +121,7 @@ async fn run_soniox(
     cfg: SonioxStt,
     mut audio_rx: Option<mpsc::Receiver<Vec<u8>>>,
     transcript_tx: broadcast::Sender<TranscriptChunk>,
+    events_tx: broadcast::Sender<crate::contract::Event>,
     cancel: CancellationToken,
 ) {
     if audio_rx.is_none() {
@@ -132,6 +140,7 @@ async fn run_soniox(
             &cfg,
             audio_rx.as_mut(),
             &transcript_tx,
+            &events_tx,
             &cancel,
             session_started,
         )
@@ -194,6 +203,7 @@ async fn try_one_session(
     cfg: &SonioxStt,
     mut audio_rx: Option<&mut mpsc::Receiver<Vec<u8>>>,
     transcript_tx: &broadcast::Sender<TranscriptChunk>,
+    events_tx: &broadcast::Sender<crate::contract::Event>,
     cancel: &CancellationToken,
     session_started: std::time::Instant,
 ) -> Result<(), String> {
@@ -402,11 +412,14 @@ mod tests {
         .await;
 
         let (transcript_tx, mut transcript_rx) = broadcast::channel::<TranscriptChunk>(16);
+        let (events_tx, _events_rx) = broadcast::channel::<crate::contract::Event>(16);
         let cancel = CancellationToken::new();
         let provider = Box::new(SonioxStt::new_with_url("test_key".into(), url));
         let task_cancel = cancel.clone();
         let task = tokio::spawn(async move {
-            provider.run(None, transcript_tx, task_cancel).await;
+            provider
+                .run(None, transcript_tx, events_tx, task_cancel)
+                .await;
         });
 
         // Wait for the chunk
@@ -450,11 +463,14 @@ mod tests {
         .await;
 
         let (transcript_tx, mut transcript_rx) = broadcast::channel::<TranscriptChunk>(16);
+        let (events_tx, _events_rx) = broadcast::channel::<crate::contract::Event>(16);
         let cancel = CancellationToken::new();
         let provider = Box::new(SonioxStt::new_with_url("test_key".into(), url));
         let task_cancel = cancel.clone();
         let task = tokio::spawn(async move {
-            provider.run(None, transcript_tx, task_cancel).await;
+            provider
+                .run(None, transcript_tx, events_tx, task_cancel)
+                .await;
         });
 
         // Should NOT receive a chunk within 300ms
@@ -498,11 +514,14 @@ mod tests {
         .await;
 
         let (transcript_tx, mut transcript_rx) = broadcast::channel::<TranscriptChunk>(16);
+        let (events_tx, _events_rx) = broadcast::channel::<crate::contract::Event>(16);
         let cancel = CancellationToken::new();
         let provider = Box::new(SonioxStt::new_with_url("test_key".into(), url));
         let task_cancel = cancel.clone();
         let task = tokio::spawn(async move {
-            provider.run(None, transcript_tx, task_cancel).await;
+            provider
+                .run(None, transcript_tx, events_tx, task_cancel)
+                .await;
         });
 
         let chunk =

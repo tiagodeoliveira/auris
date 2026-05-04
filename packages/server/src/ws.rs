@@ -482,8 +482,9 @@ async fn spawn_live_pipeline(handle: ServerHandle, cancel: CancellationToken) {
         Ok(provider) => {
             let stt_cancel = cancel.child_token();
             let stt_tx = chunk_tx.clone();
+            let stt_events_tx = handle.events_tx.clone();
             tracing::info!(provider = provider.name(), "live pipeline STT spawning");
-            tokio::spawn(provider.run(audio_rx, stt_tx, stt_cancel));
+            tokio::spawn(provider.run(audio_rx, stt_tx, stt_events_tx, stt_cancel));
         }
         Err(e) => {
             tracing::error!(error = %e, provider = %provider_name, "STT provider init failed; meeting will run without transcription");

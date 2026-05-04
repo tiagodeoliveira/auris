@@ -51,10 +51,15 @@ pub enum SttInitError {
 ///   degrade silently with `tracing::warn!` logging.
 pub trait SttProvider: Send {
     /// Run the provider until cancelled. Consumes `self` for the meeting's lifetime.
+    ///
+    /// `events_tx` lets providers emit any server [`crate::contract::Event`] (e.g.
+    /// `Event::Status` for reconnect telemetry, `Event::TranscriptInterim` for
+    /// in-flight transcript display) without needing extra side-channels.
     fn run(
         self: Box<Self>,
         audio_rx: Option<mpsc::Receiver<Vec<u8>>>,
         transcript_tx: broadcast::Sender<TranscriptChunk>,
+        events_tx: broadcast::Sender<crate::contract::Event>,
         cancel: CancellationToken,
     ) -> Pin<Box<dyn Future<Output = ()> + Send>>;
 
