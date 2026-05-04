@@ -24,7 +24,7 @@ async fn start_stop_meeting_events() {
     assert_eq!(e1["meeting_state"], "active");
     assert_eq!(e2["type"], "metadata_changed");
     assert_eq!(e3["type"], "mode_changed");
-    assert_eq!(e3["mode"], "highlights");
+    assert_eq!(e3["mode"], "transcript");
 
     send_intent(&mut ws, json!({"type":"stop_meeting"})).await;
     let e4 = next_event(&mut ws, T).await;

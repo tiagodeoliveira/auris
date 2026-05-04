@@ -74,7 +74,7 @@ export function defaultAppState(): AppState {
     protocolVersionMatched: false,
     meetingState: "idle",
     availableModes: [],
-    currentMode: "highlights",
+    currentMode: "transcript",
     displayTag: null,
     metadata: {},
     itemsByMode: {},

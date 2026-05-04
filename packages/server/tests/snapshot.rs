@@ -13,7 +13,7 @@ async fn snapshot_initial_state() {
     assert_eq!(snap["protocol_version"], 1);
     assert_eq!(snap["meeting_state"], "idle");
     assert_eq!(snap["available_modes"].as_array().unwrap().len(), 3);
-    assert_eq!(snap["mode"], "highlights");
+    assert_eq!(snap["mode"], "transcript");
     assert!(snap["metadata"].as_object().unwrap().is_empty());
     assert!(snap["items"].as_array().unwrap().is_empty());
     assert_eq!(snap["status"]["listening"], false);

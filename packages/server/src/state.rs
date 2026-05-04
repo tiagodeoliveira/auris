@@ -27,7 +27,7 @@ pub fn default_modes() -> Vec<ModeOption> {
     ]
 }
 
-pub const DEFAULT_MODE_ID: &str = "highlights";
+pub const DEFAULT_MODE_ID: &str = "transcript";
 
 fn synthesize_detail(text: &str) -> String {
     format!(
@@ -473,9 +473,9 @@ mod tests {
     }
 
     #[test]
-    fn new_default_current_mode_is_highlights() {
+    fn new_default_current_mode_is_transcript() {
         let s = ServerState::new();
-        assert_eq!(s.current_mode, "highlights");
+        assert_eq!(s.current_mode, "transcript");
     }
 
     #[test]
@@ -495,7 +495,7 @@ mod tests {
                 assert_eq!(protocol_version, PROTOCOL_VERSION);
                 assert!(matches!(meeting_state, MeetingState::Idle));
                 assert_eq!(available_modes.len(), 3);
-                assert_eq!(mode, "highlights");
+                assert_eq!(mode, "transcript");
                 assert!(display_tag.is_none());
                 assert!(metadata.is_empty());
                 assert!(items.is_empty());
@@ -569,7 +569,7 @@ mod tests {
         assert!(matches!(s.meeting_state, MeetingState::Idle));
         assert!(s.metadata.is_empty());
         assert!(s.items_per_mode.values().all(|v| v.is_empty()));
-        assert_eq!(s.current_mode, "highlights");
+        assert_eq!(s.current_mode, "transcript");
         assert_eq!(out.events.len(), 1);
         assert!(out.stopped_meeting);
     }
@@ -665,7 +665,7 @@ mod tests {
         let out = s.apply_intent(Intent::SetMode {
             mode: "bogus".into(),
         });
-        assert_eq!(s.current_mode, "highlights");
+        assert_eq!(s.current_mode, "transcript");
         assert!(out.events.is_empty());
         match out.error {
             Some(Event::Error {
@@ -783,6 +783,9 @@ mod tests {
         s.apply_intent(Intent::StartMeeting {
             description: None,
             metadata: None,
+        });
+        s.apply_intent(Intent::SetMode {
+            mode: "highlights".into(),
         });
         push_item(&mut s, "highlights", "h1", "first");
         push_item(&mut s, "highlights", "h2", "second");
