@@ -1,70 +1,279 @@
+/* ============================================
+   PWA Design System — Industrial Blueprint
+   See docs/specs/pwa-ux-redesign.md §2
+   ============================================ */
+
 :root {
-  --bg: #0a0a0c;
-  --bg-elev: #15151a;
-  --fg: #e8e8ea;
-  --fg-dim: #8a8a90;
-  --accent: #4ea1ff;
+  /* Color palette */
+  --bg-primary: #1a1e23;
+  --bg-secondary: #141719;
+  --bg-card: #1e2328;
+  --text-primary: #a8b5bd;
+  --text-light: #e4e9ec;
+  --text-muted: #6b7a85;
+
+  --rust-warm: #d4602c;
+  --rust-light: #e87a3d;
+  --spark-orange: #f5853a;
+  --rust-glow: rgba(212, 96, 44, 0.4);
+
+  --link-blue: #4db5f5;
+  --accent-cyan: #38bdf8;
+
+  --steel-gray: #4a5660;
+  --oil-black: #0d0f11;
+
+  --border-dark: #2a3138;
+  --border-light: #3d4750;
+
+  --error: #f04747;
+
+  /* Typography */
+  --font-display: "Bebas Neue", sans-serif;
+  --font-body: "Space Grotesk", sans-serif;
+  --font-mono: "JetBrains Mono", monospace;
+
+  /* Layout */
+  --radius: 6px;
+
+  /* Legacy aliases — components not yet migrated still reference these.
+     Tasks 2-4 will replace inline-style usages of these with the new
+     tokens. Until then, keeping these aliased prevents the app from
+     rendering broken between intermediate commits. */
+  --bg: var(--bg-primary);
+  --bg-elev: var(--bg-card);
+  --fg: var(--text-light);
+  --fg-dim: var(--text-muted);
+  --accent: var(--rust-warm);
   --success: #4ec76e;
   --warn: #f0a020;
-  --error: #f04747;
-  --radius: 8px;
 }
 
-* { box-sizing: border-box; }
-html, body, #app {
-  margin: 0; padding: 0; height: 100%;
-  background: var(--bg); color: var(--fg);
-  font-family: system-ui, -apple-system, sans-serif;
-  font-size: 16px;
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
 }
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+}
+
+body {
+  font-family: var(--font-body);
+  font-size: 15px;
+  line-height: 1.6;
+  color: var(--text-primary);
+  background: var(--bg-primary);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  overflow-x: hidden;
+}
+
 #app {
-  display: flex; flex-direction: column; height: 100vh;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
 }
 
+/* === SCROLLBAR === */
+::-webkit-scrollbar {
+  width: 8px;
+}
+::-webkit-scrollbar-track {
+  background: var(--bg-secondary);
+}
+::-webkit-scrollbar-thumb {
+  background: var(--steel-gray);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--rust-warm);
+}
+::selection {
+  background: var(--rust-warm);
+  color: var(--text-light);
+}
+
+/* === BUTTONS === */
+button {
+  font-family: var(--font-body);
+  font-size: 14px;
+  cursor: pointer;
+  border: 1px solid var(--border-light);
+  background: var(--bg-card);
+  color: var(--text-light);
+  padding: 10px 16px;
+  border-radius: var(--radius);
+  transition: all 0.2s ease;
+}
+button:hover {
+  border-color: var(--rust-warm);
+}
+button:focus-visible {
+  outline: 1px solid var(--rust-warm);
+  outline-offset: 2px;
+}
+button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* Primary CTA — rust gradient */
+.btn-primary {
+  background: linear-gradient(90deg, var(--rust-warm), var(--spark-orange));
+  border-color: transparent;
+  color: var(--text-light);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  padding: 14px 24px;
+}
+.btn-primary:hover {
+  border-color: transparent;
+  filter: brightness(1.1);
+  box-shadow: 0 4px 16px var(--rust-glow);
+}
+
+/* Ghost — bordered, transparent bg */
+.btn-ghost {
+  background: transparent;
+  color: var(--text-primary);
+}
+
+/* Danger — red */
+.btn-danger {
+  background: var(--error);
+  border-color: transparent;
+  color: var(--text-light);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+}
+
+/* === INPUTS === */
+input[type="text"],
+input[type="password"],
+input[type="number"],
+textarea {
+  font-family: var(--font-body);
+  font-size: 15px;
+  background: var(--bg-card);
+  color: var(--text-light);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+  width: 100%;
+  transition: border-color 0.2s ease;
+}
+input:focus,
+textarea:focus {
+  outline: none;
+  border-color: var(--rust-warm);
+}
+textarea {
+  resize: vertical;
+  min-height: 80px;
+  font-family: var(--font-body);
+}
+
+/* === MONO LABEL UTILITY === */
+.label-mono {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+/* === LEGACY COMPONENT STYLES (kept until tasks 2-4 migrate them) === */
+/* status-bar — task 2 will replace this */
 .status-bar {
-  display: flex; align-items: center; gap: 12px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
   padding: 12px 16px;
   background: var(--bg-elev);
   border-bottom: 1px solid #25252a;
   height: 40px;
 }
 .status-bar .dot {
-  width: 8px; height: 8px; border-radius: 50%;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
   background: var(--fg-dim);
 }
-.status-bar .dot.green { background: var(--success); }
-.status-bar .dot.yellow { background: var(--warn); }
-.status-bar .dot.red { background: var(--error); }
+.status-bar .dot.green {
+  background: var(--success);
+}
+.status-bar .dot.yellow {
+  background: var(--warn);
+}
+.status-bar .dot.red {
+  background: var(--error);
+}
 .status-bar .pill {
-  font-size: 12px; padding: 2px 8px; border-radius: 12px;
-  background: #25252a; color: var(--fg);
+  font-size: 12px;
+  padding: 2px 8px;
+  border-radius: 12px;
+  background: #25252a;
+  color: var(--fg);
 }
 .status-bar .gear {
-  margin-left: auto; cursor: pointer; padding: 4px 8px;
-  background: none; border: none; color: var(--fg); font-size: 18px;
+  margin-left: auto;
+  cursor: pointer;
+  padding: 4px 8px;
+  background: none;
+  border: none;
+  color: var(--fg);
+  font-size: 18px;
 }
 
+/* legacy CTA buttons — task 3+4 will replace inline-styled buttons */
 button.cta {
   padding: 14px 16px;
   font-size: 16px;
-  border: none; border-radius: var(--radius);
-  background: var(--accent); color: white;
+  border: none;
+  border-radius: var(--radius);
+  background: var(--accent);
+  color: white;
   cursor: pointer;
 }
-button.cta.secondary { background: var(--bg-elev); color: var(--fg); }
-button.cta.danger { background: var(--error); }
-button.cta:disabled { opacity: 0.5; cursor: not-allowed; }
-
-@keyframes pulse {
-  0%, 100% { transform: scale(1); }
-  50% { transform: scale(1.03); }
+button.cta.secondary {
+  background: var(--bg-elev);
+  color: var(--fg);
+}
+button.cta.danger {
+  background: var(--error);
+}
+button.cta:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
+@keyframes pulse {
+  0%,
+  100% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.03);
+  }
+}
+
+/* legacy modal — task 2 will restyle */
 .modal-overlay {
   display: none;
-  position: fixed; inset: 0;
-  background: rgba(0,0,0,0.7);
-  align-items: center; justify-content: center;
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.7);
+  align-items: center;
+  justify-content: center;
   z-index: 150;
   padding: 16px;
 }
@@ -73,6 +282,8 @@ button.cta:disabled { opacity: 0.5; cursor: not-allowed; }
   border: 1px solid #25252a;
   border-radius: var(--radius);
   padding: 24px;
-  width: 100%; max-width: 480px;
-  max-height: 90vh; overflow-y: auto;
+  width: 100%;
+  max-width: 480px;
+  max-height: 90vh;
+  overflow-y: auto;
 }
