@@ -76,10 +76,33 @@ struct MenuBarContent: View {
 
         Divider()
 
+        // Debug: smoke-test audio capture without a server-bound
+        // meeting. Replaced by Phase 2g's proper Start/Stop Meeting
+        // flow once compose UI lands.
+        Button(audioCaptureMenuLabel) {
+            Task { await model.toggleAudioCapture() }
+        }
+        .disabled(!model.permissionMonitor.allGranted)
+
+        Divider()
+
         Button("Quit Meeting Companion") {
             NSApplication.shared.terminate(nil)
         }
         .keyboardShortcut("q")
+    }
+
+    /// Reflects the current AudioCapture state. While running, shows
+    /// a frame counter so the user can confirm SCKit is delivering.
+    private var audioCaptureMenuLabel: String {
+        switch model.audioCapture.state {
+        case .stopped, .error:
+            return "Test audio capture (debug)"
+        case .starting:
+            return "Starting audio capture…"
+        case .running:
+            return "Stop audio capture (\(model.audioCapture.frameCount) frames)"
+        }
     }
 
     private func openSettings() {

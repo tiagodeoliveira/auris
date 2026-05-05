@@ -39,7 +39,7 @@ What it is _not_:
 | **2c**    | Settings window + token-based server connection                | **✓ Done**         |
 | **2f₁**   | Mac registers as a device on connect; ownDevice + capabilities | **✓ Done**         |
 | **2d**    | Permissions onboarding (Microphone + Screen Recording)         | **✓ Done**         |
-| **2e**    | Audio capture in Swift (SCKit) + mixer parity with Rust        | Pending            |
+| **2e**    | Audio capture in Swift (SCKit) + mixer parity with Rust        | **✓ Done**         |
 | **2f₂**   | Stream PCM via `/audio` (depends on 2e)                        | Pending (after 2e) |
 | **2g**    | Compose window (description input + Start Meeting flow)        | Pending            |
 | **2h**    | Native Meetings browse window (depends on Phase 4 APIs)        | Deferred           |

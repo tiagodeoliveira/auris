@@ -1,0 +1,357 @@
+// AudioCapture.swift
+// macOS audio capture via ScreenCaptureKit. Mirrors the Rust
+// pipeline in packages/server/src/audio/capture.rs:
+//
+//   ┌────────────────┐      ┌──────────────┐      ┌──────────────┐
+//   │ SCStream       │      │ AVAudio      │      │ AudioRing    │
+//   │ (system audio) │─────▶│ Converter    │─────▶│ (system)     │─┐
+//   │ 48k stereo F32 │      │ 48k st F32 → │      │              │ │
+//   └────────────────┘      │ 16k mono F32 │      └──────────────┘ │
+//                           └──────────────┘                       │
+//   ┌────────────────┐      ┌──────────────┐      ┌──────────────┐ │
+//   │ SCStream       │      │ AVAudio      │      │ AudioRing    │ │
+//   │ (microphone)   │─────▶│ Converter    │─────▶│ (mic)        │─┤
+//   │ 48k stereo F32 │      │ 48k st F32 → │      │              │ │
+//   └────────────────┘      │ 16k mono F32 │      └──────────────┘ │
+//                           └──────────────┘                       │
+//                                                                  │
+//                ┌─────────────────────────────────────────────────┘
+//                ▼
+//   ┌─────────────────────────┐
+//   │ Mixer task (50 fps tick)│      AsyncStream<Data>
+//   │ • drain 320 samples each│ ────▶ frames of 640 bytes
+//   │ • sum + clamp           │       (16 kHz mono S16LE, 20 ms)
+//   │ • Float32 → S16LE bytes │
+//   └─────────────────────────┘
+//
+// Phase 2e produces frames into the AsyncStream; Phase 2f₂ wires the
+// AudioStreamer that ships them to the server's /audio endpoint.
+
+@preconcurrency import AVFoundation
+import Foundation
+import OSLog
+import Observation
+import ScreenCaptureKit
+
+@MainActor
+@Observable
+final class AudioCapture {
+    enum State: Equatable {
+        case stopped
+        case starting
+        case running
+        case error(String)
+    }
+
+    private(set) var state: State = .stopped
+
+    /// Frames emitted into the output stream so far. Surfaced in the
+    /// menu bar as a smoke-test signal.
+    private(set) var frameCount: UInt64 = 0
+
+    /// Output stream of mixed PCM frames. Set when start() succeeds;
+    /// finished and cleared when stop() runs. Each `Data` is exactly
+    /// `AudioFormat.mixerFrameBytes` bytes (640) of 16 kHz mono S16LE.
+    private(set) var output: AsyncStream<Data>?
+
+    private var stream: SCStream?
+    private var systemHandler: SCAudioHandler?
+    private var micHandler: SCAudioHandler?
+    private let systemRing = AudioRing(capacity: AudioConstants.ringCapacity)
+    private let micRing = AudioRing(capacity: AudioConstants.ringCapacity)
+    private var continuation: AsyncStream<Data>.Continuation?
+    private var mixerTask: Task<Void, Never>?
+
+    private static let log = Logger(
+        subsystem: "com.meeting-companion.mac", category: "AudioCapture")
+
+    /// Begin capture. Idempotent: returns immediately if already
+    /// running. Throws if SCKit setup fails (e.g., no display, missing
+    /// permissions).
+    func start() async throws {
+        guard state == .stopped else { return }
+        state = .starting
+
+        do {
+            let content = try await SCShareableContent.current
+            guard let display = content.displays.first else {
+                throw AudioCaptureError.noDisplay
+            }
+            let filter = SCContentFilter(
+                display: display,
+                excludingApplications: [],
+                exceptingWindows: [])
+            let config = SCStreamConfiguration()
+            // SCStream requires a video config even when we only want
+            // audio. 2x2 is the minimum that doesn't get rejected.
+            config.width = 2
+            config.height = 2
+            config.capturesAudio = true
+            // macOS 15+: pull microphone through the same SCStream.
+            config.captureMicrophone = true
+            config.sampleRate = 48000
+            config.channelCount = 2
+
+            let stream = SCStream(filter: filter, configuration: config, delegate: nil)
+
+            let systemHandler = SCAudioHandler(ring: systemRing, sourceLabel: "system")
+            let micHandler = SCAudioHandler(ring: micRing, sourceLabel: "mic")
+            try stream.addStreamOutput(
+                systemHandler, type: .audio,
+                sampleHandlerQueue: DispatchQueue(label: "audio.system", qos: .userInteractive))
+            try stream.addStreamOutput(
+                micHandler, type: .microphone,
+                sampleHandlerQueue: DispatchQueue(label: "audio.mic", qos: .userInteractive))
+
+            let (asyncStream, continuation) = AsyncStream<Data>.makeStream(
+                bufferingPolicy: .bufferingNewest(50))  // ~1 s of frames if the consumer lags
+            self.output = asyncStream
+            self.continuation = continuation
+
+            try await stream.startCapture()
+
+            self.stream = stream
+            self.systemHandler = systemHandler
+            self.micHandler = micHandler
+
+            mixerTask = Task { [weak self] in
+                await self?.runMixerLoop()
+            }
+
+            state = .running
+            Self.log.info("audio capture started")
+        } catch {
+            state = .error(error.localizedDescription)
+            try? await teardown()
+            throw error
+        }
+    }
+
+    /// Stop capture and finish the output stream.
+    func stop() {
+        guard state != .stopped else { return }
+        Task { try? await teardown() }
+    }
+
+    private func teardown() async throws {
+        mixerTask?.cancel()
+        mixerTask = nil
+        if let stream = stream {
+            try? await stream.stopCapture()
+        }
+        stream = nil
+        systemHandler = nil
+        micHandler = nil
+        continuation?.finish()
+        continuation = nil
+        output = nil
+        state = .stopped
+        Self.log.info("audio capture stopped (frames=\(self.frameCount, privacy: .public))")
+    }
+
+    /// 50 fps mixer: drain a 20 ms frame from each source, sum
+    /// sample-wise (clamped to [-1, 1]), pack as S16LE, emit.
+    private func runMixerLoop() async {
+        let interval: UInt64 = 20_000_000  // 20 ms in nanoseconds
+        var nextDeadline = DispatchTime.now().uptimeNanoseconds + interval
+
+        while !Task.isCancelled {
+            // Sleep until the next 20 ms tick. Drift-correcting: we
+            // recompute the deadline rather than sleeping a fixed
+            // duration each loop.
+            let now = DispatchTime.now().uptimeNanoseconds
+            if nextDeadline > now {
+                try? await Task.sleep(nanoseconds: nextDeadline - now)
+            }
+            nextDeadline += interval
+
+            let systemSamples = systemRing.drain(count: AudioFormat.mixerFrameSamples)
+            let micSamples = micRing.drain(count: AudioFormat.mixerFrameSamples)
+
+            // Mix sample-wise. Treat short/empty buffers as silence
+            // (zero-fill) so the output cadence stays steady even if
+            // one source briefly stalls.
+            var mixed = [Float](repeating: 0, count: AudioFormat.mixerFrameSamples)
+            for i in 0..<AudioFormat.mixerFrameSamples {
+                let s = i < systemSamples.count ? systemSamples[i] : 0
+                let m = i < micSamples.count ? micSamples[i] : 0
+                mixed[i] = max(-1.0, min(1.0, s + m))
+            }
+
+            // If both sources produced nothing, skip the emit. Avoids
+            // a constant silence stream when no audio is happening.
+            if systemSamples.isEmpty && micSamples.isEmpty {
+                continue
+            }
+
+            let frame = AudioFormat.packS16LE(mixed)
+            await MainActor.run {
+                self.frameCount &+= 1
+                _ = self.continuation?.yield(frame)
+            }
+        }
+    }
+}
+
+// MARK: - SCStreamOutput delegate
+
+/// One handler per source (system audio, microphone). Receives
+/// `CMSampleBuffer`s on a background queue, converts to 16 kHz mono
+/// Float32, appends to its `AudioRing`. Sendable because it's shared
+/// between SCKit's queue and the AudioCapture's main-actor context.
+final class SCAudioHandler: NSObject, SCStreamOutput, @unchecked Sendable {
+    private let ring: AudioRing
+    private let sourceLabel: String
+    private var converter: AVAudioConverter?
+    private var inputFormat: AVAudioFormat?
+    /// 16 kHz mono Float32 — the rings store this format.
+    private let outputFormat = AVAudioFormat(
+        commonFormat: .pcmFormatFloat32,
+        sampleRate: 16000,
+        channels: 1,
+        interleaved: true)!
+
+    init(ring: AudioRing, sourceLabel: String) {
+        self.ring = ring
+        self.sourceLabel = sourceLabel
+    }
+
+    nonisolated func stream(
+        _ stream: SCStream,
+        didOutputSampleBuffer sampleBuffer: CMSampleBuffer,
+        of type: SCStreamOutputType
+    ) {
+        // SCKit may deliver an `audio` callback to the mic handler if
+        // misrouted; we only honor matching types. Type set per-handler
+        // at addStreamOutput time, but be defensive.
+        guard sampleBuffer.isValid,
+            let pcm = pcmBuffer(from: sampleBuffer)
+        else {
+            return
+        }
+        // Lazy-initialize the converter on the first sample buffer
+        // (we need the input ASBD that SCKit actually delivers).
+        if converter == nil {
+            inputFormat = pcm.format
+            converter = AVAudioConverter(from: pcm.format, to: outputFormat)
+        }
+        guard let converter else { return }
+
+        // Allocate output buffer sized for resampled output. SCKit
+        // delivers ~1024 samples per callback at 48 kHz; converter
+        // produces ~341 at 16 kHz. Round up generously.
+        let outputCapacity = AVAudioFrameCount(
+            Double(pcm.frameLength) * (16000.0 / pcm.format.sampleRate) + 16)
+        guard let outputBuffer = AVAudioPCMBuffer(
+            pcmFormat: outputFormat,
+            frameCapacity: outputCapacity
+        ) else {
+            return
+        }
+
+        var consumed = false
+        var conversionError: NSError?
+        converter.convert(
+            to: outputBuffer,
+            error: &conversionError,
+            withInputFrom: { _, status in
+                if consumed {
+                    status.pointee = .endOfStream
+                    return nil
+                }
+                consumed = true
+                status.pointee = .haveData
+                return pcm
+            })
+
+        if let error = conversionError {
+            // Best-effort: log via os_log since we're nonisolated and
+            // the OSLog-style logger is fine off MainActor.
+            os_log("audio convert error", log: .default, type: .error)
+            _ = error
+            return
+        }
+
+        let frameLength = Int(outputBuffer.frameLength)
+        guard frameLength > 0,
+            let channelData = outputBuffer.floatChannelData
+        else {
+            return
+        }
+        let buffer = UnsafeBufferPointer(start: channelData[0], count: frameLength)
+        ring.append(ArraySlice(Array(buffer)))
+    }
+
+    /// Build an `AVAudioPCMBuffer` view of the SCKit `CMSampleBuffer`.
+    /// SCKit delivers Float32 stereo at 48 kHz (per our config).
+    private func pcmBuffer(from sampleBuffer: CMSampleBuffer) -> AVAudioPCMBuffer? {
+        guard let formatDesc = sampleBuffer.formatDescription,
+            let asbd = formatDesc.audioStreamBasicDescription
+        else {
+            return nil
+        }
+        let format = AVAudioFormat(streamDescription: withUnsafePointer(to: asbd) { $0 })
+        guard let format else { return nil }
+        let frameCount = AVAudioFrameCount(sampleBuffer.numSamples)
+        guard frameCount > 0,
+            let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount)
+        else {
+            return nil
+        }
+        buffer.frameLength = frameCount
+
+        // Copy the audio data out of the CMSampleBuffer's CMBlockBuffer
+        // into the PCMBuffer's audio buffer list.
+        var blockBuffer: CMBlockBuffer?
+        let audioBufferList = UnsafeMutablePointer<AudioBufferList>.allocate(capacity: 1)
+        defer { audioBufferList.deallocate() }
+        let status = CMSampleBufferGetAudioBufferListWithRetainedBlockBuffer(
+            sampleBuffer,
+            bufferListSizeNeededOut: nil,
+            bufferListOut: audioBufferList,
+            bufferListSize: MemoryLayout<AudioBufferList>.size,
+            blockBufferAllocator: nil,
+            blockBufferMemoryAllocator: nil,
+            flags: kCMSampleBufferFlag_AudioBufferList_Assure16ByteAlignment,
+            blockBufferOut: &blockBuffer
+        )
+        guard status == noErr,
+            let abl = audioBufferList.pointee.mBuffers.mData
+        else {
+            return nil
+        }
+
+        // We have the raw bytes in `abl`. Copy them into the PCMBuffer.
+        // For Float32 interleaved stereo, both channels live in the
+        // same single AudioBuffer.
+        let byteSize = Int(audioBufferList.pointee.mBuffers.mDataByteSize)
+        if let dst = buffer.floatChannelData?[0] {
+            // Interleaved stereo: PCMBuffer's channel data view treats
+            // it as one continuous block.
+            memcpy(dst, abl, byteSize)
+        }
+        return buffer
+    }
+}
+
+// MARK: - Constants
+
+enum AudioConstants {
+    /// Per-source ring capacity in Float32 samples. 1 s at 16 kHz.
+    /// In steady state rings hold 0–1 frames; this caps the worst-case
+    /// memory if one source briefly stalls.
+    static let ringCapacity = 16_000
+}
+
+// MARK: - Errors
+
+enum AudioCaptureError: Error, LocalizedError {
+    case noDisplay
+
+    var errorDescription: String? {
+        switch self {
+        case .noDisplay:
+            "ScreenCaptureKit reported no displays. (Is Screen Recording permission granted?)"
+        }
+    }
+}
