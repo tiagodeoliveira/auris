@@ -20,6 +20,12 @@ struct MeetingOverlayView: View {
     @State private var addingMetadata = false
     @FocusState private var descriptionFocused: Bool
 
+    /// IDs of items the user has expanded to reveal `detail`.
+    /// Persists across tab switches so re-selecting a tab restores
+    /// what was expanded; cleared when a new meeting begins (the
+    /// IDs change anyway, so the set goes stale naturally).
+    @State private var expandedItemIds: Set<String> = []
+
     init(model: AppModel) {
         self.model = model
         _mode = State(initialValue: model.isMeetingActive ? .live : .compose)
@@ -308,8 +314,11 @@ struct MeetingOverlayView: View {
                             .foregroundStyle(.secondary)
                     } else {
                         ForEach(items) { item in
-                            Text(item.text)
-                                .foregroundStyle(.primary)
+                            ItemRow(
+                                item: item,
+                                isExpanded: expandedItemIds.contains(item.id),
+                                onToggle: { toggleExpanded(item.id) }
+                            )
                         }
                         if !interim.isEmpty {
                             Text(interim)
@@ -339,6 +348,16 @@ struct MeetingOverlayView: View {
                 // than scrolling through unrelated content.
                 proxy.scrollTo("itemsEnd", anchor: .bottom)
             }
+        }
+    }
+
+    /// Toggle an item's expanded state. Called from `ItemRow` via
+    /// the chevron tap.
+    private func toggleExpanded(_ id: String) {
+        if expandedItemIds.contains(id) {
+            expandedItemIds.remove(id)
+        } else {
+            expandedItemIds.insert(id)
         }
     }
 
@@ -436,6 +455,62 @@ private enum OverlayMode: Equatable {
         case .compose: 315
         case .starting: 92
         case .live: 140
+        }
+    }
+}
+
+/// One line of a mode's items list. Decorates the raw `text` with
+/// a speaker chip (when `meta.speaker` is present) and a disclosure
+/// chevron (when `detail` is present), expanding inline to show
+/// `detail` when the chevron is clicked.
+///
+/// Text remains selectable via the surrounding `.textSelection`
+/// modifier; only the chevron handles the toggle gesture, so it
+/// doesn't fight with copy-paste.
+private struct ItemRow: View {
+    let item: Item
+    let isExpanded: Bool
+    let onToggle: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                if let speaker = item.meta?.speaker, !speaker.isEmpty {
+                    Text(speaker)
+                        .font(.system(size: 10, weight: .semibold))
+                        .tracking(0.3)
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 1)
+                        .background {
+                            RoundedRectangle(cornerRadius: 3)
+                                .fill(Color.white.opacity(0.10))
+                        }
+                }
+
+                Text(item.text)
+                    .foregroundStyle(.primary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                if item.detail != nil {
+                    Button(action: onToggle) {
+                        Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                            .frame(width: 14, height: 14)
+                    }
+                    .buttonStyle(.plain)
+                    .help(isExpanded ? "Hide detail" : "Show detail")
+                }
+            }
+
+            if isExpanded, let detail = item.detail, !detail.isEmpty {
+                Text(detail)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .padding(.leading, 8)
+                    .padding(.top, 1)
+            }
         }
     }
 }

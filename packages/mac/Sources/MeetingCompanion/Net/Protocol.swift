@@ -62,15 +62,26 @@ struct ModeOption: Codable, Sendable, Equatable, Identifiable {
     }
 }
 
-/// One row inside a mode's items list. `meta` is `serde_json::Value`
-/// server-side; we don't need to introspect it yet (speaker tagging
-/// is the only known consumer; deferred), so it stays out of this
-/// struct entirely. Adding it later is a non-breaking decode change.
+/// Open-ended metadata bag attached to an item. Server-side this is
+/// `serde_json::Value`, so future fields can land without breaking
+/// the decode. We only pluck the keys the Mac actually renders; the
+/// rest of the JSON is silently ignored.
+struct ItemMeta: Codable, Sendable, Equatable {
+    /// Speaker label from the STT provider (currently Soniox). Only
+    /// present on transcript-mode items. Used as a small chip-style
+    /// prefix in the overlay so multi-speaker meetings stay
+    /// readable.
+    let speaker: String?
+}
+
+/// One row inside a mode's items list. `meta` is decoded
+/// loosely — see `ItemMeta`.
 struct Item: Codable, Sendable, Equatable, Identifiable {
     let id: String
     let text: String
     let detail: String?
     let t: UInt64
+    let meta: ItemMeta?
 }
 
 // MARK: - Intents (Mac → Server)
