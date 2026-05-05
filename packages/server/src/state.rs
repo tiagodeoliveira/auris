@@ -149,6 +149,7 @@ impl ServerState {
         Event::Snapshot {
             protocol_version: PROTOCOL_VERSION,
             meeting_state: self.meeting_state,
+            meeting_id: self.current_meeting_id.clone(),
             available_modes: self.available_modes.clone(),
             mode: self.current_mode.clone(),
             display_tag: None,
@@ -271,6 +272,7 @@ impl ServerState {
 
         outcome.events.push(Event::MeetingStateChanged {
             meeting_state: MeetingState::Active,
+            meeting_id: self.current_meeting_id.clone(),
         });
         outcome.events.push(Event::MetadataChanged {
             metadata: self.metadata.clone(),
@@ -317,6 +319,7 @@ impl ServerState {
 
         outcome.events.push(Event::MeetingStateChanged {
             meeting_state: MeetingState::Idle,
+            meeting_id: None,
         });
         outcome.stopped_meeting = true;
         if let Some(id) = closing_id {
@@ -335,6 +338,7 @@ impl ServerState {
         self.meeting_state = MeetingState::Paused;
         outcome.events.push(Event::MeetingStateChanged {
             meeting_state: MeetingState::Paused,
+            meeting_id: self.current_meeting_id.clone(),
         });
         outcome.paused_meeting = true;
     }
@@ -347,6 +351,7 @@ impl ServerState {
         self.meeting_state = MeetingState::Active;
         outcome.events.push(Event::MeetingStateChanged {
             meeting_state: MeetingState::Active,
+            meeting_id: self.current_meeting_id.clone(),
         });
         outcome.resumed_meeting = true;
     }
@@ -666,6 +671,7 @@ mod tests {
             Event::Snapshot {
                 protocol_version,
                 meeting_state,
+                meeting_id,
                 available_modes,
                 mode,
                 display_tag,
@@ -678,6 +684,10 @@ mod tests {
             } => {
                 assert_eq!(protocol_version, PROTOCOL_VERSION);
                 assert!(matches!(meeting_state, MeetingState::Idle));
+                assert!(
+                    meeting_id.is_none(),
+                    "idle snapshot should not carry a meeting_id"
+                );
                 assert_eq!(available_modes.len(), 4);
                 assert_eq!(mode, "transcript");
                 assert!(display_tag.is_none());
@@ -707,7 +717,8 @@ mod tests {
         assert!(matches!(
             out.events[0],
             Event::MeetingStateChanged {
-                meeting_state: MeetingState::Active
+                meeting_state: MeetingState::Active,
+                meeting_id: Some(_),
             }
         ));
         assert!(matches!(out.events[1], Event::MetadataChanged { .. }));

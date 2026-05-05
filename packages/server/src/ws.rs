@@ -46,19 +46,21 @@ pub struct ServerHandle {
 }
 
 pub async fn run_server(
-    addr: SocketAddr,
+    ws_addr: SocketAddr,
+    api_addr: SocketAddr,
     token: String,
     llm: Arc<LlmClient>,
     shutdown_rx: oneshot::Receiver<()>,
 ) -> Result<()> {
-    let listener = TcpListener::bind(addr).await?;
-    let actual = listener.local_addr()?;
-    info!(addr = ?actual, "listening");
-    run_server_with_listener(listener, token, llm, shutdown_rx).await
+    let ws_listener = TcpListener::bind(ws_addr).await?;
+    let api_listener = TcpListener::bind(api_addr).await?;
+    info!(ws = ?ws_listener.local_addr()?, api = ?api_listener.local_addr()?, "listening");
+    run_server_with_listener(ws_listener, Some(api_listener), token, llm, shutdown_rx).await
 }
 
 pub async fn run_server_with_listener(
     listener: TcpListener,
+    api_listener: Option<TcpListener>,
     token: String,
     llm: Arc<LlmClient>,
     mut shutdown_rx: oneshot::Receiver<()>,
@@ -74,6 +76,11 @@ pub async fn run_server_with_listener(
         state.clone(),
         &events_tx,
     );
+    // Transcript persistence: writes one JSONL line per committed
+    // transcript item to <DATA_DIR>/blobs/meetings/<id>/transcription.jsonl.
+    // Other modes' items are not persisted (they're derived from
+    // transcripts and can be re-run if ever needed).
+    crate::persistence::spawn_task(state.clone(), &events_tx);
     let db = crate::db::open_pool().await?;
     let handle = ServerHandle {
         state,
@@ -86,6 +93,29 @@ pub async fn run_server_with_listener(
         audio_source: Arc::new(crate::audio::RemoteAudioSource::new()),
         db,
     };
+
+    // REST API for browsing past meetings. Lives on a separate
+    // listener (typically `ws_port + 1`); shares this handle's db
+    // pool and token. Production / docker exposes both ports.
+    if let Some(api_listener) = api_listener {
+        let api_state = crate::api::ApiState {
+            db: handle.db.clone(),
+            token: handle.token.clone(),
+        };
+        let router = crate::api::make_router(api_state);
+        let api_shutdown = shutdown.clone();
+        let local = api_listener.local_addr().ok();
+        tokio::spawn(async move {
+            if let Some(addr) = local {
+                info!(?addr, "api listening");
+            }
+            let server = axum::serve(api_listener, router)
+                .with_graceful_shutdown(async move { api_shutdown.cancelled().await });
+            if let Err(e) = server.await {
+                tracing::warn!(error = ?e, "api server stopped with error");
+            }
+        });
+    }
 
     let hb_handle = handle.clone();
     let hb_shutdown = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));

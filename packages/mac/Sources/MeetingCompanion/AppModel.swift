@@ -52,6 +52,14 @@ final class AppModel {
     /// in the Mac UI, but decoded so contract drift surfaces here).
     private(set) var displayTag: String? = nil
 
+    /// Server-assigned id of the currently-active meeting. `nil`
+    /// when no meeting is active. Updated from `snapshot` and
+    /// `meeting_state_changed`. Used today to link to history
+    /// (`GET /meetings/<id>`) and as the basis for reconcile-on-
+    /// reconnect logic — a different id after a snapshot means the
+    /// server's view diverged from ours and we should resync.
+    private(set) var currentMeetingId: String? = nil
+
     /// Items per mode, populated lazily as the server pushes them.
     /// `transcript` mode is fed by the server's transcript
     /// summarizer (one item per committed STT utterance); other
@@ -317,6 +325,7 @@ final class AppModel {
             availableModes = payload.availableModes
             currentMode = payload.mode
             displayTag = payload.displayTag
+            currentMeetingId = payload.meetingId
             // Snapshot only carries the *current* mode's items; the
             // others stay empty until the user clicks them (server
             // replies with `mode_changed` carrying that mode's list).
@@ -330,7 +339,8 @@ final class AppModel {
                 print("[AppModel] snapshot meeting_state=idle while local meeting active — tearing down")
                 localMeetingTeardown()
             }
-        case .meetingStateChanged(let state):
+        case .meetingStateChanged(let state, let meetingId):
+            currentMeetingId = meetingId
             if state == "idle" {
                 metadata = [:]
                 extractingMetadata = false

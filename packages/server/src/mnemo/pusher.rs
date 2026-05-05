@@ -77,6 +77,7 @@ async fn handle_event(client: &MnemoClient, state: &mut PusherState, event: Even
     match event {
         Event::MeetingStateChanged {
             meeting_state: MeetingState::Active,
+            ..
         } => {
             if state.session_id.is_none() {
                 let id = Uuid::new_v4().to_string();
@@ -90,12 +91,14 @@ async fn handle_event(client: &MnemoClient, state: &mut PusherState, event: Even
         }
         Event::MeetingStateChanged {
             meeting_state: MeetingState::Idle,
+            ..
         } => {
             flush_summary(client, state).await;
             *state = PusherState::default();
         }
         Event::MeetingStateChanged {
             meeting_state: MeetingState::Paused,
+            ..
         } => {
             // pause is a transient signal; nothing to do.
         }
@@ -229,6 +232,7 @@ mod tests {
                 &mut state,
                 Event::MeetingStateChanged {
                     meeting_state: MeetingState::Active,
+                    meeting_id: None,
                 },
             )
             .await;
@@ -295,6 +299,7 @@ mod tests {
                 &mut state,
                 Event::MeetingStateChanged {
                     meeting_state: MeetingState::Paused,
+                    meeting_id: None,
                 },
             )
             .await;
@@ -307,6 +312,7 @@ mod tests {
                 &mut state,
                 Event::MeetingStateChanged {
                     meeting_state: MeetingState::Idle,
+                    meeting_id: None,
                 },
             )
             .await;
@@ -348,6 +354,7 @@ mod tests {
                 &mut state,
                 Event::MeetingStateChanged {
                     meeting_state: MeetingState::Active,
+                    meeting_id: None,
                 },
             )
             .await;
@@ -366,6 +373,7 @@ mod tests {
                 &mut state,
                 Event::MeetingStateChanged {
                     meeting_state: MeetingState::Active,
+                    meeting_id: None,
                 },
             )
             .await;

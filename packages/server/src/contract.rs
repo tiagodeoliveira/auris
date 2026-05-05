@@ -145,6 +145,12 @@ pub enum Event {
     Snapshot {
         protocol_version: u32,
         meeting_state: MeetingState,
+        /// Server-assigned id of the active meeting. `Some` when
+        /// `meeting_state == Active` or `Paused`; `None` when idle.
+        /// Clients use this to link to history (`GET /meetings/<id>`)
+        /// and to reconcile across reconnects (same id = same meeting).
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        meeting_id: Option<String>,
         available_modes: Vec<ModeOption>,
         mode: String,
         #[serde(skip_serializing_if = "Option::is_none", default)]
@@ -166,6 +172,11 @@ pub enum Event {
     },
     MeetingStateChanged {
         meeting_state: MeetingState,
+        /// `Some` going to `Active`/`Paused`; `None` going to `Idle`.
+        /// Lets clients track the current meeting id without
+        /// waiting for the next snapshot.
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        meeting_id: Option<String>,
     },
     AvailableModesChanged {
         available_modes: Vec<ModeOption>,
@@ -317,6 +328,7 @@ mod tests {
         let e = Event::Snapshot {
             protocol_version: PROTOCOL_VERSION,
             meeting_state: MeetingState::Idle,
+            meeting_id: None,
             available_modes: vec![ModeOption {
                 id: "highlights".into(),
                 label: "Highlights".into(),
@@ -342,7 +354,24 @@ mod tests {
     fn event_meeting_state_changed() {
         let e = Event::MeetingStateChanged {
             meeting_state: MeetingState::Active,
+            meeting_id: Some("abc-123".into()),
         };
+        assert_eq!(round_trip(&e), e);
+    }
+
+    #[test]
+    fn event_meeting_state_changed_idle_omits_id() {
+        // Going to Idle: meeting_id is None and `skip_serializing_if`
+        // keeps it out of the wire JSON entirely.
+        let e = Event::MeetingStateChanged {
+            meeting_state: MeetingState::Idle,
+            meeting_id: None,
+        };
+        let json = serde_json::to_string(&e).unwrap();
+        assert!(
+            !json.contains("meeting_id"),
+            "expected meeting_id omitted: {json}"
+        );
         assert_eq!(round_trip(&e), e);
     }
 
@@ -448,6 +477,7 @@ mod tests {
     fn event_type_discriminator_snake_case() {
         let e = Event::MeetingStateChanged {
             meeting_state: MeetingState::Idle,
+            meeting_id: None,
         };
         let json = serde_json::to_string(&e).unwrap();
         assert!(json.contains("\"type\":\"meeting_state_changed\""));

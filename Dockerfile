@@ -61,7 +61,10 @@ ENV MEETING_COMPANION_DATA_DIR=/data
 RUN mkdir -p /data
 VOLUME ["/data"]
 
-EXPOSE 7331
+# 7331 = WS protocol (PWA + Mac control plane + /audio).
+# 7332 = REST API (meeting history). Defaults to ws_port + 1; override
+#        with --api-port at run time.
+EXPOSE 7331 7332
 
 # `--port 7331` matches the existing `just server-run` recipe and the
 # Mac client's default. Override at run time with extra args.

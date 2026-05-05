@@ -142,7 +142,10 @@ struct SetModeIntent: Encodable {
 /// modeled yet (e.g., items_update).
 enum TypedServerEvent: Sendable {
     case snapshot(SnapshotPayload)
-    case meetingStateChanged(String)
+    /// Meeting lifecycle transition. `meetingId` is `Some` when going
+    /// to `active` / `paused`, `None` when going to `idle`. The Mac
+    /// uses this to track the current meeting's id between snapshots.
+    case meetingStateChanged(state: String, meetingId: String?)
     case deviceRegistered(Device)
     case devicesChanged([Device])
     case audioSourceDeviceChanged(String?)
@@ -178,6 +181,10 @@ enum TypedServerEvent: Sendable {
 struct SnapshotPayload: Decodable, Sendable {
     let protocolVersion: Int
     let meetingState: String
+    /// Server-assigned id of the active meeting. `nil` when idle.
+    /// Used to link to history (`GET /meetings/<id>`) and to
+    /// reconcile across reconnects (same id = same meeting).
+    let meetingId: String?
     let availableModes: [ModeOption]
     let mode: String
     let displayTag: String?
@@ -189,6 +196,7 @@ struct SnapshotPayload: Decodable, Sendable {
     enum CodingKeys: String, CodingKey {
         case protocolVersion = "protocol_version"
         case meetingState = "meeting_state"
+        case meetingId = "meeting_id"
         case availableModes = "available_modes"
         case mode
         case displayTag = "display_tag"
@@ -225,9 +233,12 @@ func decodeServerEvent(from text: String) throws -> TypedServerEvent? {
         let payload = try decoder.decode(SnapshotPayload.self, from: data)
         return .snapshot(payload)
     case "meeting_state_changed":
-        struct Wrap: Decodable { let meeting_state: String }
+        struct Wrap: Decodable {
+            let meeting_state: String
+            let meeting_id: String?
+        }
         let w = try decoder.decode(Wrap.self, from: data)
-        return .meetingStateChanged(w.meeting_state)
+        return .meetingStateChanged(state: w.meeting_state, meetingId: w.meeting_id)
     case "device_registered":
         struct Wrap: Decodable { let device: Device }
         let w = try decoder.decode(Wrap.self, from: data)

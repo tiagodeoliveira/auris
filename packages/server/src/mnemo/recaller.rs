@@ -58,6 +58,7 @@ async fn recaller_loop(
         match rx.recv().await {
             Ok(Event::MeetingStateChanged {
                 meeting_state: MeetingState::Active,
+                ..
             }) => {
                 local.meeting_active = true;
                 let project = read_project(&state).await;
@@ -66,6 +67,7 @@ async fn recaller_loop(
             }
             Ok(Event::MeetingStateChanged {
                 meeting_state: MeetingState::Idle,
+                ..
             }) => {
                 local = RecallerLocal::default();
                 state.lock().await.set_recalled_context(None);
