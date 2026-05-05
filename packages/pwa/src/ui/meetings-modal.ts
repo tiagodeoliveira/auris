@@ -1,0 +1,323 @@
+//! Meetings browser modal. Master/detail over `GET /meetings` and
+//! `GET /meetings/:id`. Mirrors the Mac app's Settings → Meetings tab.
+//!
+//! Reuses the `.settings-overlay` / `.settings-modal` styles for the
+//! container so it inherits the same chrome the user already knows;
+//! the inner master/detail layout is its own thing.
+
+import type { Store } from "../store";
+import {
+  MeetingsApi,
+  MeetingsApiError,
+  type MeetingDetail,
+  type MeetingSummary,
+} from "../meetings-api";
+
+export function mountMeetingsModal(parent: HTMLElement, store: Store): void {
+  const overlay = document.createElement("div");
+  overlay.className = "settings-overlay meetings-overlay";
+  parent.appendChild(overlay);
+
+  const modal = document.createElement("div");
+  modal.className = "settings-modal meetings-modal";
+  overlay.appendChild(modal);
+
+  // Header
+  const header = document.createElement("div");
+  header.className = "meetings-header";
+  const title = document.createElement("h2");
+  title.className = "settings-title";
+  title.textContent = "Meetings";
+  const closeBtn = document.createElement("button");
+  closeBtn.className = "btn-ghost";
+  closeBtn.textContent = "Close";
+  closeBtn.addEventListener("click", () => store.update({ meetingsModalOpen: false }));
+  const reloadBtn = document.createElement("button");
+  reloadBtn.className = "btn-ghost";
+  reloadBtn.textContent = "Reload";
+  reloadBtn.addEventListener("click", () => void reloadList());
+  header.append(title, reloadBtn, closeBtn);
+  modal.appendChild(header);
+
+  // Body: list (left) + detail (right)
+  const body = document.createElement("div");
+  body.className = "meetings-body";
+  modal.appendChild(body);
+
+  const listPane = document.createElement("div");
+  listPane.className = "meetings-list";
+  body.appendChild(listPane);
+
+  const detailPane = document.createElement("div");
+  detailPane.className = "meetings-detail";
+  body.appendChild(detailPane);
+
+  // Local UI state — kept inside the closure rather than the store
+  // because nothing else cares about the open meeting / loading flag.
+  let meetings: MeetingSummary[] = [];
+  let selectedId: string | null = null;
+  let listError: string | null = null;
+  let detailError: string | null = null;
+
+  function makeApi(): MeetingsApi | null {
+    const s = store.get().settings;
+    return MeetingsApi.from(s.serverUrl, s.serverToken);
+  }
+
+  async function reloadList(): Promise<void> {
+    const api = makeApi();
+    if (!api) {
+      listError = "Server URL or token missing — open Settings.";
+      meetings = [];
+      renderList();
+      return;
+    }
+    listError = null;
+    listPane.classList.add("loading");
+    renderList();
+    try {
+      meetings = await api.list();
+    } catch (e) {
+      listError = errorMessage(e);
+      meetings = [];
+    } finally {
+      listPane.classList.remove("loading");
+      // If the previously-selected meeting is gone, drop it.
+      if (selectedId && !meetings.some((m) => m.id === selectedId)) {
+        selectedId = null;
+        renderDetail(null);
+      }
+      renderList();
+    }
+  }
+
+  async function loadDetail(id: string): Promise<void> {
+    const api = makeApi();
+    if (!api) return;
+    selectedId = id;
+    detailError = null;
+    renderDetail(null, /* loading */ true);
+    try {
+      const detail = await api.detail(id);
+      renderDetail(detail);
+    } catch (e) {
+      detailError = errorMessage(e);
+      renderDetail(null);
+    }
+  }
+
+  function renderList(): void {
+    listPane.innerHTML = "";
+    if (listError) {
+      const err = document.createElement("div");
+      err.className = "meetings-empty";
+      err.textContent = listError;
+      listPane.appendChild(err);
+      return;
+    }
+    if (meetings.length === 0) {
+      const empty = document.createElement("div");
+      empty.className = "meetings-empty";
+      empty.textContent = "No meetings yet.";
+      listPane.appendChild(empty);
+      return;
+    }
+    for (const m of meetings) {
+      const row = document.createElement("button");
+      row.className = "meetings-row";
+      if (m.id === selectedId) row.classList.add("selected");
+      row.addEventListener("click", () => void loadDetail(m.id));
+
+      const headline = document.createElement("div");
+      headline.className = "meetings-row-title";
+      headline.textContent = m.description?.trim() || "Untitled meeting";
+
+      const sub = document.createElement("div");
+      sub.className = "meetings-row-sub";
+      sub.textContent = `${formatDateShort(m.started_at)} · ${formatDuration(m.started_at, m.ended_at)}`;
+
+      row.append(headline, sub);
+      listPane.appendChild(row);
+    }
+  }
+
+  function renderDetail(detail: MeetingDetail | null, loading = false): void {
+    detailPane.innerHTML = "";
+    if (loading) {
+      const spinner = document.createElement("div");
+      spinner.className = "meetings-empty";
+      spinner.textContent = "Loading…";
+      detailPane.appendChild(spinner);
+      return;
+    }
+    if (detailError) {
+      const err = document.createElement("div");
+      err.className = "meetings-empty";
+      err.textContent = detailError;
+      detailPane.appendChild(err);
+      return;
+    }
+    if (!detail) {
+      const hint = document.createElement("div");
+      hint.className = "meetings-empty";
+      hint.textContent = meetings.length === 0 ? "" : "Select a meeting.";
+      detailPane.appendChild(hint);
+      return;
+    }
+    detailPane.appendChild(buildDetailView(detail));
+  }
+
+  function buildDetailView(detail: MeetingDetail): HTMLElement {
+    const root = document.createElement("div");
+    root.className = "meetings-detail-inner";
+
+    const head = document.createElement("h3");
+    head.className = "meetings-detail-title";
+    head.textContent = detail.description?.trim() || "Untitled meeting";
+    root.appendChild(head);
+
+    // Timing row
+    const timing = document.createElement("div");
+    timing.className = "meetings-detail-timing";
+    timing.appendChild(timingCell("Started", formatDateLong(detail.started_at)));
+    if (detail.ended_at) {
+      timing.appendChild(timingCell("Ended", formatDateLong(detail.ended_at)));
+    } else {
+      timing.appendChild(timingCell("Status", "in progress", "in-progress"));
+    }
+    root.appendChild(timing);
+
+    // Metadata
+    const metaKeys = Object.keys(detail.metadata).sort();
+    if (metaKeys.length > 0) {
+      const block = document.createElement("div");
+      block.className = "meetings-detail-block";
+      const heading = document.createElement("div");
+      heading.className = "meetings-detail-heading";
+      heading.textContent = "Metadata";
+      block.appendChild(heading);
+      for (const k of metaKeys) {
+        const row = document.createElement("div");
+        row.className = "meetings-meta-row";
+        const key = document.createElement("span");
+        key.className = "meetings-meta-key";
+        key.textContent = k;
+        const val = document.createElement("span");
+        val.className = "meetings-meta-val";
+        val.textContent = detail.metadata[k] ?? "";
+        row.append(key, val);
+        block.appendChild(row);
+      }
+      root.appendChild(block);
+    }
+
+    // Transcript
+    const tBlock = document.createElement("div");
+    tBlock.className = "meetings-detail-block";
+    const tHead = document.createElement("div");
+    tHead.className = "meetings-detail-heading";
+    tHead.textContent = "Transcript";
+    tBlock.appendChild(tHead);
+    if (detail.transcript.length === 0) {
+      const empty = document.createElement("div");
+      empty.className = "meetings-empty inline";
+      empty.textContent = "(no transcript captured)";
+      tBlock.appendChild(empty);
+    } else {
+      for (const item of detail.transcript) {
+        const row = document.createElement("div");
+        row.className = "meetings-transcript-row";
+        const speaker =
+          (item.meta as { speaker?: string } | undefined | null)?.speaker?.trim() ?? "";
+        if (speaker) {
+          const chip = document.createElement("span");
+          chip.className = "meetings-transcript-speaker";
+          chip.textContent = speaker;
+          row.appendChild(chip);
+        }
+        const text = document.createElement("span");
+        text.className = "meetings-transcript-text";
+        text.textContent = item.text;
+        row.appendChild(text);
+        tBlock.appendChild(row);
+      }
+    }
+    root.appendChild(tBlock);
+
+    return root;
+  }
+
+  // Open/close synchronization. On open: reload. On close: drop
+  // selection so re-opening is fresh.
+  let wasOpen = false;
+  function syncOpen(): void {
+    const isOpen = store.get().meetingsModalOpen;
+    overlay.classList.toggle("open", isOpen);
+    if (isOpen && !wasOpen) {
+      void reloadList();
+    } else if (!isOpen && wasOpen) {
+      selectedId = null;
+      renderDetail(null);
+    }
+    wasOpen = isOpen;
+  }
+  syncOpen();
+  store.subscribe((s) => s.meetingsModalOpen, syncOpen);
+}
+
+function errorMessage(e: unknown): string {
+  if (e instanceof MeetingsApiError) return e.message;
+  if (e instanceof Error) return e.message;
+  return String(e);
+}
+
+function formatDateShort(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
+function formatDateLong(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleString(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
+function formatDuration(startedAt: string, endedAt: string | null): string {
+  if (!endedAt) return "in progress";
+  const start = new Date(startedAt).getTime();
+  const end = new Date(endedAt).getTime();
+  if (Number.isNaN(start) || Number.isNaN(end)) return "";
+  const seconds = Math.max(0, Math.round((end - start) / 1000));
+  if (seconds < 60) return `${seconds}s`;
+  const mins = Math.floor(seconds / 60);
+  const rem = seconds % 60;
+  if (mins < 60) return `${mins}m ${rem}s`;
+  const hours = Math.floor(mins / 60);
+  return `${hours}h ${mins % 60}m`;
+}
+
+function timingCell(label: string, value: string, cls?: "in-progress"): HTMLElement {
+  const cell = document.createElement("div");
+  cell.className = "meetings-timing-cell";
+  const labelEl = document.createElement("div");
+  labelEl.className = "label-mono meetings-timing-label";
+  labelEl.textContent = label;
+  const valueEl = document.createElement("div");
+  valueEl.className = "meetings-timing-value";
+  if (cls === "in-progress") valueEl.classList.add("in-progress");
+  valueEl.textContent = value;
+  cell.append(labelEl, valueEl);
+  return cell;
+}

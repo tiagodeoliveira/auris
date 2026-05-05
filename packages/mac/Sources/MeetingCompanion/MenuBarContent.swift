@@ -55,11 +55,14 @@ struct MenuBarContent: View {
             }
         }
 
-        // Browse — wired in Phase 2h (depends on Phase 4 REST API)
+        // Browse persisted meetings. Opens the Settings window
+        // pre-selected to the Meetings tab (REST: /meetings).
         Button("Meetings…") {
-            // TODO Phase 2h: open native meetings window (master/detail)
+            model.selectedSettingsTab = .meetings
+            openWindow(id: "settings")
+            NSApp.activate(ignoringOtherApps: true)
         }
-        .disabled(true)
+        .disabled(!model.settings.isConfigured)
 
         Divider()
 

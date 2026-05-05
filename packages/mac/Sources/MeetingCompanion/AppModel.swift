@@ -60,6 +60,12 @@ final class AppModel {
     /// server's view diverged from ours and we should resync.
     private(set) var currentMeetingId: String? = nil
 
+    /// Which tab the Settings window should show on next open.
+    /// "Settings…" leaves it where the user last was; "Meetings…"
+    /// flips it to `.meetings` before opening the window. Bound by
+    /// `SettingsView`'s TabView so the tab swap is reactive.
+    var selectedSettingsTab: SettingsTab = .server
+
     /// Items per mode, populated lazily as the server pushes them.
     /// `transcript` mode is fed by the server's transcript
     /// summarizer (one item per committed STT utterance); other

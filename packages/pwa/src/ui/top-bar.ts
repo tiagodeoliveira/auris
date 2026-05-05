@@ -1,4 +1,4 @@
-//! Always-visible top status row + settings gear.
+//! Always-visible top status row + settings gear + meetings browser.
 
 import type { Store } from "../store";
 
@@ -24,6 +24,14 @@ export function mountTopBar(parent: HTMLElement, store: Store, onSettings: () =>
   bleLabel.textContent = "BLE";
 
   status.append(wsDot, wsLabel, bleDot, bleLabel);
+
+  const meetings = document.createElement("button");
+  meetings.className = "top-bar-gear";
+  meetings.setAttribute("aria-label", "Browse meetings");
+  meetings.title = "Meetings";
+  meetings.textContent = "📋";
+  meetings.addEventListener("click", () => store.update({ meetingsModalOpen: true }));
+  bar.appendChild(meetings);
 
   const gear = document.createElement("button");
   gear.className = "top-bar-gear";

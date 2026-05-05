@@ -65,6 +65,7 @@ export interface AppState {
   batteryLevel: number | null;
   wearing: boolean;
   settingsModalOpen: boolean;
+  meetingsModalOpen: boolean;
   toasts: Toast[];
   errorOverlay: ErrorOverlay | null;
 }
@@ -108,6 +109,7 @@ export function defaultAppState(): AppState {
     batteryLevel: null,
     wearing: false,
     settingsModalOpen: false,
+    meetingsModalOpen: false,
     toasts: [],
     errorOverlay: null,
   };

@@ -34,10 +34,13 @@ struct MeetingCompanionApp: App {
         // Settings window — summoned from the menu via openWindow(id:).
         // Single instance; opening when already open just brings it
         // forward.
+        // Settings now hosts both the server creds form and the
+        // Meetings browser (master/detail). Content-min so the user
+        // can drag the window taller when reading long transcripts.
         Window("Settings", id: "settings") {
             SettingsView(model: model)
         }
-        .windowResizability(.contentSize)
+        .windowResizability(.contentMinSize)
 
         Window("Permissions", id: "permissions") {
             PermissionsView(model: model)
