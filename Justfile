@@ -25,6 +25,14 @@ stack:
     @echo "Or for terminals 2+3 combined:  just pwa-sim   (it runs vite + simulator concurrently)"
     @echo "PWA settings modal opens on first run; enter ws://localhost:7331 + token 'dev' + your Soniox key."
 
+# Build the Mac app (debug).
+mac-build:
+    cd packages/mac && swift build
+
+# Run the Mac app (build + launch). Menu bar icon appears top-right.
+mac-run:
+    cd packages/mac && swift run
+
 # --- Test ------------------------------------------------------------------
 
 # Run the full test suite (server + PWA).

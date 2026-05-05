@@ -8,6 +8,13 @@ dist
 .pnpm-store
 *.tsbuildinfo
 
+# Swift / Xcode
+.build
+.swiftpm
+DerivedData
+xcuserdata
+*.xcworkspace/xcuserdata
+
 # Editor
 .vscode
 .idea
