@@ -97,8 +97,10 @@ struct MenuBarContent: View {
     /// SCKit is delivering AND the streamer is shipping.
     private var audioCaptureMenuLabel: String {
         switch model.audioCapture.state {
-        case .stopped, .error:
+        case .stopped:
             return "Test audio capture (debug)"
+        case .error(let msg):
+            return "Audio error · \(msg.prefix(40))"
         case .starting:
             return "Starting audio capture…"
         case .running:
