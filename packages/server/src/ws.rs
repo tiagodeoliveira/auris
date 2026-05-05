@@ -33,6 +33,11 @@ pub struct ServerHandle {
     pub extraction_cancel: Arc<StdMutex<Option<CancellationToken>>>,
     pub shutdown: CancellationToken,
     pub llm: Arc<LlmClient>,
+    /// Single audio-source instance, picked at boot. Lives for the
+    /// server lifetime; meetings call `start()` against it. The
+    /// `/audio` WS handler installs incoming PCM into the `Remote`
+    /// variant via this same instance.
+    pub audio_source: Arc<crate::audio::AudioSource>,
 }
 
 pub async fn run_server(
@@ -72,6 +77,7 @@ pub async fn run_server_with_listener(
         extraction_cancel: Arc::new(StdMutex::new(None)),
         shutdown: shutdown.clone(),
         llm,
+        audio_source: Arc::new(crate::audio::AudioSource::from_env()),
     };
 
     let hb_handle = handle.clone();
@@ -136,13 +142,15 @@ async fn handle_connection(
     handle: ServerHandle,
 ) -> Result<()> {
     let token_cell = Arc::new(std::sync::Mutex::new(None::<String>));
-    let cell_clone = Arc::clone(&token_cell);
+    let path_cell = Arc::new(std::sync::Mutex::new(String::new()));
+    let token_clone = Arc::clone(&token_cell);
+    let path_clone = Arc::clone(&path_cell);
 
     #[allow(clippy::result_large_err)]
     let ws = tokio_tungstenite::accept_hdr_async(stream, |req: &Request, response: Response| {
         let raw_path = req.uri().to_string();
-        let token = parse_token_from_uri(&raw_path);
-        *cell_clone.lock().unwrap() = token;
+        *token_clone.lock().unwrap() = parse_token_from_uri(&raw_path);
+        *path_clone.lock().unwrap() = req.uri().path().to_string();
         Ok(response)
     })
     .await?;
@@ -173,7 +181,15 @@ async fn handle_connection(
         return Ok(());
     }
 
-    info!(?peer, "connection accepted");
+    let path = path_cell.lock().unwrap().clone();
+    info!(?peer, path = %path, "connection accepted");
+
+    // Dispatch by path. /audio is the binary-PCM intake from the
+    // RemoteAudioSource (Mac app or wscat). Everything else uses the
+    // PWA's intent/event protocol.
+    if path == "/audio" {
+        return handle_audio_connection(ws, peer, handle).await;
+    }
 
     let mut events_rx = handle.events_tx.subscribe();
     let snapshot = {
@@ -230,6 +246,91 @@ async fn handle_connection(
     }
 
     info!(?peer, "connection closed");
+    Ok(())
+}
+
+/// Handles the `/audio` WebSocket. The client streams binary frames
+/// of 16 kHz mono S16LE PCM (~640 bytes each); the handler installs
+/// an mpsc receiver into the `RemoteAudioSource` so the next meeting
+/// to start can take it.
+///
+/// Rejects the connection with a Policy close if the configured audio
+/// source isn't `Remote` (i.e., the server is in `local` mode and
+/// won't consume remote frames).
+async fn handle_audio_connection(
+    ws: tokio_tungstenite::WebSocketStream<TcpStream>,
+    peer: SocketAddr,
+    handle: ServerHandle,
+) -> Result<()> {
+    let Some(remote) = handle.audio_source.as_remote() else {
+        warn!(
+            ?peer,
+            "/audio connection rejected: server's audio source is not in `remote` mode"
+        );
+        let mut ws = ws;
+        let _ = ws
+            .send(Message::Close(Some(CloseFrame {
+                code: CloseCode::Policy,
+                reason: "server is not configured for remote audio".into(),
+            })))
+            .await;
+        return Ok(());
+    };
+
+    info!(?peer, "/audio connection accepted");
+
+    // Bounded channel: ~80 frames = ~1.6s of audio buffered. If the
+    // downstream STT lags this much we drop frames rather than
+    // unbounded-grow memory.
+    let (tx, rx) = tokio::sync::mpsc::channel::<Vec<u8>>(80);
+    remote.install(rx).await;
+
+    let (mut sink, mut stream) = ws.split();
+    let mut frames_received: u64 = 0;
+    let mut bytes_received: u64 = 0;
+
+    loop {
+        tokio::select! {
+            _ = handle.shutdown.cancelled() => {
+                let _ = sink.send(Message::Close(Some(CloseFrame {
+                    code: CloseCode::Away,
+                    reason: "going away".into(),
+                }))).await;
+                break;
+            }
+            msg = stream.next() => {
+                match msg {
+                    Some(Ok(Message::Binary(bytes))) => {
+                        frames_received += 1;
+                        bytes_received += bytes.len() as u64;
+                        // try_send drops on backpressure; the alternative
+                        // (await send) would block PCM intake on STT lag.
+                        if tx.try_send(bytes).is_err() {
+                            tracing::debug!(?peer, "/audio: downstream lagged, frame dropped");
+                        }
+                    }
+                    Some(Ok(Message::Ping(p))) => {
+                        let _ = sink.send(Message::Pong(p)).await;
+                    }
+                    Some(Ok(Message::Close(_))) | None => break,
+                    Some(Ok(_)) => {
+                        // Ignore text/other; only binary is meaningful here.
+                    }
+                    Some(Err(e)) => {
+                        warn!(?peer, error = %e, "/audio: ws read error");
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    info!(
+        ?peer,
+        frames = frames_received,
+        bytes = bytes_received,
+        "/audio connection closed"
+    );
     Ok(())
 }
 
@@ -468,8 +569,7 @@ async fn spawn_live_pipeline(handle: ServerHandle, cancel: CancellationToken) {
         None
     } else {
         let audio_cancel = cancel.child_token();
-        let source = crate::audio::AudioSource::from_env();
-        match source.start(audio_cancel).await {
+        match handle.audio_source.start(audio_cancel).await {
             Ok(rx) => {
                 tracing::info!("audio source started");
                 Some(rx)

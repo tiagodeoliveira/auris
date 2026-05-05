@@ -12,10 +12,12 @@
 
 pub mod format;
 pub mod local;
+pub mod remote;
 pub mod source;
 
 #[cfg(target_os = "macos")]
 pub(crate) mod capture;
 
 pub use local::LocalAudioSource;
+pub use remote::RemoteAudioSource;
 pub use source::{AudioInitError, AudioSource};
