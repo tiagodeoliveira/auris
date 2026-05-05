@@ -69,10 +69,10 @@ struct MenuBarContent: View {
             openSettings()
         }
 
-        Button("Permissions…") {
-            // TODO Phase 2d: walk user through Microphone + Screen Recording grants
+        Button(permissionsMenuLabel) {
+            openWindow(id: "permissions")
+            NSApp.activate(ignoringOtherApps: true)
         }
-        .disabled(true)
 
         Divider()
 
@@ -85,5 +85,12 @@ struct MenuBarContent: View {
     private func openSettings() {
         openWindow(id: "settings")
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    /// Label nudges the user when something's missing, without
+    /// shouting. "Permissions…" stays neutral when everything's
+    /// granted; gains a "•" prefix when not.
+    private var permissionsMenuLabel: String {
+        model.permissionMonitor.allGranted ? "Permissions…" : "• Permissions…"
     }
 }

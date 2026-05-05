@@ -4,6 +4,7 @@
 // device identity. Views read derived state; menu actions call
 // methods here.
 
+import AppKit
 import Foundation
 import Observation
 
@@ -15,6 +16,7 @@ final class AppModel {
     // in SettingsView, etc.). We never actually reassign these.
     var settings: AppSettings
     var webSocket: WebSocketClient
+    var permissionMonitor: PermissionMonitor
 
     /// This Mac's identity in the server's device registry. Set when
     /// the server replies with `device_registered`; cleared on
@@ -38,8 +40,19 @@ final class AppModel {
     init() {
         self.settings = AppSettings()
         self.webSocket = WebSocketClient()
+        self.permissionMonitor = PermissionMonitor()
         self.webSocket.onMessage = { [weak self] event in
             self?.handle(event: event)
+        }
+        // Re-check permissions whenever the app comes back to the
+        // foreground (the user may have toggled state in System
+        // Settings). Tied to the model's lifetime via [weak self].
+        Task { [weak self] in
+            for await _ in NotificationCenter.default.notifications(
+                named: NSApplication.didBecomeActiveNotification)
+            {
+                self?.permissionMonitor.refresh()
+            }
         }
     }
 

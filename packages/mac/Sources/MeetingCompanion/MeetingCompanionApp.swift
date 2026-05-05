@@ -38,5 +38,10 @@ struct MeetingCompanionApp: App {
             SettingsView(model: model)
         }
         .windowResizability(.contentSize)
+
+        Window("Permissions", id: "permissions") {
+            PermissionsView(model: model)
+        }
+        .windowResizability(.contentSize)
     }
 }
