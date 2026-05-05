@@ -44,18 +44,9 @@ struct MeetingCompanionApp: App {
         }
         .windowResizability(.contentSize)
 
-        // Meeting compose — opened by the menu's "Start meeting…"
-        // entry; collects an optional description and submits to
-        // start_meeting. Dismisses itself on submit/cancel.
-        Window("Start meeting", id: "meeting-compose") {
-            MeetingComposeView(model: model)
-        }
-        .windowResizability(.contentSize)
-
-        // Meeting overlay — small floating window shown while a
-        // meeting is active. Opened by the compose view's submit
-        // (or by the menu's "Start meeting…" path indirectly);
-        // dismisses itself when the meeting ends.
+        // Meeting overlay — the single floating meeting surface. It
+        // starts in compose mode when idle, transitions through
+        // starting, then becomes the live transcript HUD.
         Window("Meeting", id: "meeting-overlay") {
             MeetingOverlayView(model: model)
         }

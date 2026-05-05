@@ -44,6 +44,15 @@ final class AppModel {
     /// constantly-replaced single line.
     private(set) var transcriptHistory: [String] = []
 
+    /// Meeting metadata chips returned by `extract_metadata` and
+    /// edited locally via `set_metadata`. StartMeeting intentionally
+    /// omits metadata so the server preserves this reviewed state.
+    private(set) var metadata: [String: String] = [:]
+
+    /// True while the server is extracting metadata from the current
+    /// pre-meeting description.
+    private(set) var extractingMetadata: Bool = false
+
     /// The capabilities this Mac advertises. Frozen at app start; will
     /// reflect granted permissions once 2d (permissions onboarding) lands.
     private let advertisedCapabilities: [Capability] = [
@@ -237,6 +246,37 @@ final class AppModel {
         }
         audioStreamer.stop()
         audioCapture.stop()
+        metadata = [:]
+        extractingMetadata = false
+    }
+
+    func extractMetadata(description: String) async {
+        let trimmed = description.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, webSocket.state == .connected, !extractingMetadata else { return }
+
+        extractingMetadata = true
+        do {
+            try await webSocket.send(intent: ExtractMetadataIntent(description: trimmed))
+            print("[AppModel] extract_metadata sent")
+        } catch {
+            extractingMetadata = false
+            print("[AppModel] extract_metadata send failed: \(error)")
+        }
+    }
+
+    func setMetadata(key: String, value: String?) async {
+        let k = key.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !k.isEmpty, webSocket.state == .connected else { return }
+        let v = value?.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        do {
+            try await webSocket.send(intent: SetMetadataIntent(
+                key: k,
+                value: v?.isEmpty == true ? nil : v
+            ))
+        } catch {
+            print("[AppModel] set_metadata send failed: \(error)")
+        }
     }
 
     // MARK: - Event handling
@@ -247,6 +287,12 @@ final class AppModel {
         switch event {
         case .snapshot(let payload):
             availableDevices = payload.devices
+            metadata = payload.metadata
+        case .meetingStateChanged(let state):
+            if state == "idle" {
+                metadata = [:]
+                extractingMetadata = false
+            }
         case .deviceRegistered(let device):
             ownDevice = device
             // Keep availableDevices in sync in case the broadcast
@@ -264,6 +310,9 @@ final class AppModel {
         case .audioSourceDeviceChanged:
             // Phase 2g+ will react to the bound source; not needed yet.
             break
+        case .metadataChanged(let next):
+            metadata = next
+            extractingMetadata = false
         case .transcriptInterim(let text):
             transcriptInterim = text
         case .transcriptCommitted(let text):
@@ -275,6 +324,9 @@ final class AppModel {
             if transcriptHistory.count > 500 {
                 transcriptHistory.removeFirst(transcriptHistory.count - 500)
             }
+        case .error(let code, let message):
+            if extractingMetadata { extractingMetadata = false }
+            print("[AppModel] server error \(code): \(message)")
         case .unknown:
             // Unknown events fall through silently; we'll add cases
             // as we light up more flows.

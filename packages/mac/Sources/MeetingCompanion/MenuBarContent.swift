@@ -40,13 +40,12 @@ struct MenuBarContent: View {
 
         Divider()
 
-        // Meeting lifecycle. "Start meeting…" pops the compose
-        // window; "Stop meeting" only appears while a meeting is
-        // active. The overlay (VAD + transcripts) opens from the
-        // compose view's submit, not here.
+        // Meeting lifecycle. "Start meeting…" opens the overlay in
+        // compose mode; the same floating surface then morphs into
+        // the live transcript HUD after start succeeds.
         if !model.isMeetingActive {
             Button("Start meeting…") {
-                openWindow(id: "meeting-compose")
+                openWindow(id: "meeting-overlay")
                 NSApp.activate(ignoringOtherApps: true)
             }
             .disabled(!model.canStartMeeting)

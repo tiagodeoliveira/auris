@@ -15,20 +15,31 @@ struct MeetingOverlayView: View {
     @Environment(\.dismissWindow) private var dismissWindow
     @Environment(\.openWindow) private var openWindow
 
+    @State private var mode: OverlayMode
+    @State private var description: String = ""
+    @State private var addingMetadata = false
+    @FocusState private var descriptionFocused: Bool
+
+    init(model: AppModel) {
+        self.model = model
+        _mode = State(initialValue: model.isMeetingActive ? .live : .compose)
+    }
+
     var body: some View {
-        HStack(alignment: .top, spacing: 12) {
-            statusColumn
-                .frame(width: 100)
-
-            Divider()
-
-            transcriptColumn
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        Group {
+            switch mode {
+            case .compose:
+                composePanel
+            case .starting:
+                startingPanel
+            case .live:
+                livePanel
+            }
         }
         .padding(12)
         .frame(
-            minWidth: 520, idealWidth: 820, maxWidth: .infinity,
-            minHeight: 110, idealHeight: 140, maxHeight: .infinity)
+            minWidth: mode.minWidth, idealWidth: mode.idealWidth, maxWidth: .infinity,
+            minHeight: mode.minHeight, idealHeight: mode.idealHeight, maxHeight: .infinity)
         .background {
             // Translucent HUD look. Flat dark fill (rather than
             // a system material) gives us a precise opacity knob.
@@ -57,7 +68,134 @@ struct MeetingOverlayView: View {
             window.standardWindowButton(.zoomButton)?.isHidden = true
         })
         .onChange(of: model.isMeetingActive) { _, active in
-            if !active { dismissWindow(id: "meeting-overlay") }
+            if active {
+                mode = .live
+            } else if mode == .live || mode == .starting {
+                addingMetadata = false
+                dismissWindow(id: "meeting-overlay")
+            }
+        }
+        .onAppear {
+            mode = model.isMeetingActive ? .live : .compose
+            addingMetadata = false
+            descriptionFocused = mode == .compose
+        }
+    }
+
+    private var composePanel: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 10) {
+                Image(systemName: "record.circle")
+                    .font(.system(size: 15))
+                    .foregroundStyle(.red)
+
+                Text("Start meeting")
+                    .font(.headline)
+
+                Spacer()
+
+                Button {
+                    dismissWindow(id: "meeting-overlay")
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 16))
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("Cancel")
+            }
+
+            ZStack(alignment: .topLeading) {
+                if description.isEmpty {
+                    Text("What's this meeting about? (optional)")
+                        .foregroundStyle(.tertiary)
+                        .padding(.top, 8)
+                        .padding(.leading, 7)
+                        .allowsHitTesting(false)
+                }
+
+                TextEditor(text: $description)
+                    .font(.body)
+                    .scrollContentBackground(.hidden)
+                    .focused($descriptionFocused)
+                    .frame(minHeight: 84)
+            }
+            .padding(4)
+            .background(Color.white.opacity(0.08))
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .overlay(
+                RoundedRectangle(cornerRadius: 8)
+                    .strokeBorder(Color.white.opacity(0.16))
+            )
+
+            MetadataChipEditor(
+                metadata: model.metadata,
+                addingMetadata: $addingMetadata,
+                setMetadata: { key, value in
+                    Task { await model.setMetadata(key: key, value: value) }
+                }
+            )
+
+            HStack(spacing: 10) {
+                Button {
+                    Task { await model.extractMetadata(description: description) }
+                } label: {
+                    Label(
+                        model.extractingMetadata ? "Extracting…" : "Extract tags",
+                        systemImage: model.extractingMetadata ? "hourglass" : "tag"
+                    )
+                }
+                .disabled(description.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    || model.extractingMetadata)
+                .help("Extract editable tags from the description")
+
+                Spacer()
+
+                if !model.canStartMeeting {
+                    Text(notReadyHint)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Button("Start") {
+                    submitDescription()
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(!model.canStartMeeting || model.extractingMetadata)
+            }
+        }
+        .foregroundStyle(.primary)
+    }
+
+    private var startingPanel: some View {
+        HStack(spacing: 14) {
+            MicActivityIcon(peak: combinedPeak, isLive: true)
+                .frame(width: 38, height: 48)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Starting meeting")
+                    .font(.headline)
+                Text("Opening audio stream…")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer()
+
+            ProgressView()
+                .controlSize(.small)
+        }
+    }
+
+    private var livePanel: some View {
+        HStack(alignment: .top, spacing: 10) {
+            statusColumn
+                .frame(width: 54)
+
+            Divider()
+
+            transcriptColumn
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
     }
 
@@ -65,19 +203,20 @@ struct MeetingOverlayView: View {
     /// Distributed evenly so each lines up roughly with one row
     /// of transcript text on the right.
     private var statusColumn: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 6) {
+        VStack(alignment: .center, spacing: 10) {
+            HStack(spacing: 4) {
                 Image(systemName: "record.circle.fill")
                     .foregroundStyle(.red)
-                    .font(.system(size: 11))
+                    .font(.system(size: 10))
                 Text("Live")
-                    .font(.caption)
+                    .font(.caption2)
                     .fontWeight(.semibold)
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+            .frame(maxWidth: .infinity)
 
-            MicLevelMeter(peak: combinedPeak)
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+            MicActivityIcon(peak: combinedPeak, isLive: model.isMeetingActive)
+                .frame(width: 34, height: 42)
+                .frame(maxWidth: .infinity)
 
             HStack(spacing: 6) {
                 Button {
@@ -102,9 +241,9 @@ struct MeetingOverlayView: View {
                 }
                 .menuStyle(.borderlessButton)
                 .menuIndicator(.hidden)
-                .frame(width: 22)
+                .frame(width: 18)
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+            .frame(maxWidth: .infinity)
         }
     }
 
@@ -155,50 +294,338 @@ struct MeetingOverlayView: View {
     private var combinedPeak: Float {
         max(model.audioCapture.currentSysPeak, model.audioCapture.currentMicPeak)
     }
+
+    private func submitDescription() {
+        let trimmed = description.trimmingCharacters(in: .whitespacesAndNewlines)
+        let payload: String? = trimmed.isEmpty ? nil : trimmed
+        mode = .starting
+        descriptionFocused = false
+        Task {
+            await model.startMeeting(description: payload)
+            if model.isMeetingActive {
+                mode = .live
+            } else {
+                mode = .compose
+                descriptionFocused = true
+            }
+        }
+    }
+
+    /// One-line nudge when Start is disabled.
+    private var notReadyHint: String {
+        if model.webSocket.state != .connected { return "Not connected" }
+        if !model.permissionMonitor.allGranted { return "Permissions not granted" }
+        if model.audioCapture.state != .stopped { return "Audio capture busy" }
+        return ""
+    }
 }
 
-/// Mic icon + 5 vertical bars that grow with the audio peak. The
-/// outer bars have a smaller scale factor so the meter has an
-/// EQ-silhouette shape (small / medium / tall / medium / small)
-/// at full volume — visually distinct from a flat row, which
-/// would just read as "five identical bars".
-private struct MicLevelMeter: View {
-    let peak: Float
+private enum OverlayMode: Equatable {
+    case compose
+    case starting
+    case live
 
-    private static let scales: [CGFloat] = [0.45, 0.75, 1.0, 0.75, 0.45]
+    var minWidth: CGFloat {
+        switch self {
+        case .compose: 460
+        case .starting: 360
+        case .live: 520
+        }
+    }
+
+    var idealWidth: CGFloat {
+        switch self {
+        case .compose: 560
+        case .starting: 420
+        case .live: 820
+        }
+    }
+
+    var minHeight: CGFloat {
+        switch self {
+        case .compose: 275
+        case .starting: 80
+        case .live: 110
+        }
+    }
+
+    var idealHeight: CGFloat {
+        switch self {
+        case .compose: 315
+        case .starting: 92
+        case .live: 140
+        }
+    }
+}
+
+private struct MetadataChipEditor: View {
+    let metadata: [String: String]
+    @Binding var addingMetadata: Bool
+    let setMetadata: (String, String?) -> Void
+
+    @State private var newKey = ""
+    @State private var newValue = ""
+    @FocusState private var addFocus: AddFocus?
+
+    private enum AddFocus {
+        case key
+        case value
+    }
+
+    var body: some View {
+        ScrollView(.horizontal) {
+            HStack(spacing: 8) {
+                ForEach(metadata.keys.sorted(), id: \.self) { key in
+                    MetadataChip(
+                        keyName: key,
+                        value: metadata[key] ?? "",
+                        setMetadata: setMetadata
+                    )
+                }
+
+                if addingMetadata {
+                    addChip
+                } else {
+                    Button {
+                        addingMetadata = true
+                        DispatchQueue.main.async { addFocus = .key }
+                    } label: {
+                        Label("Add", systemImage: "plus")
+                            .labelStyle(.titleAndIcon)
+                            .lineLimit(1)
+                    }
+                    .buttonStyle(.plain)
+                    .font(.caption)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 7)
+                    .background(Color.white.opacity(0.08))
+                    .clipShape(Capsule())
+                    .overlay(Capsule().strokeBorder(Color.white.opacity(0.16)))
+                    .help("Add metadata")
+                }
+            }
+            .padding(.vertical, 2)
+        }
+        .scrollIndicators(.hidden)
+        .frame(height: 42)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var addChip: some View {
+        HStack(spacing: 5) {
+            TextField("key", text: $newKey)
+                .textFieldStyle(.plain)
+                .font(.caption)
+                .frame(width: min(130, max(44, CGFloat(newKey.count * 7 + 24))))
+                .focused($addFocus, equals: .key)
+                .lineLimit(1)
+                .onSubmit {
+                    if newKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        cancelAdd()
+                    } else {
+                        addFocus = .value
+                    }
+                }
+
+            Text("=")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            TextField("value", text: $newValue)
+                .textFieldStyle(.plain)
+                .font(.caption)
+                .frame(width: min(220, max(64, CGFloat(newValue.count * 7 + 34))))
+                .focused($addFocus, equals: .value)
+                .lineLimit(1)
+                .onSubmit { commitAdd() }
+
+            Button {
+                commitAdd()
+            } label: {
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.system(size: 13))
+            }
+            .buttonStyle(.plain)
+            .help("Save metadata")
+
+            Button {
+                cancelAdd()
+            } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.system(size: 13))
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .help("Cancel")
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 7)
+        .fixedSize(horizontal: true, vertical: false)
+        .background(Color.white.opacity(0.10))
+        .clipShape(Capsule())
+        .overlay(Capsule().strokeBorder(Color.white.opacity(0.20)))
+    }
+
+    private func commitAdd() {
+        let key = newKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !key.isEmpty else {
+            cancelAdd()
+            return
+        }
+        setMetadata(key, newValue)
+        newKey = ""
+        newValue = ""
+        addingMetadata = false
+        addFocus = nil
+    }
+
+    private func cancelAdd() {
+        newKey = ""
+        newValue = ""
+        addingMetadata = false
+        addFocus = nil
+    }
+}
+
+private struct MetadataChip: View {
+    let keyName: String
+    let value: String
+    let setMetadata: (String, String?) -> Void
+
+    @State private var draftValue: String
+    @FocusState private var focused: Bool
+
+    init(keyName: String, value: String, setMetadata: @escaping (String, String?) -> Void) {
+        self.keyName = keyName
+        self.value = value
+        self.setMetadata = setMetadata
+        _draftValue = State(initialValue: value)
+    }
 
     var body: some View {
         HStack(spacing: 5) {
-            Image(systemName: "mic.fill")
-                .font(.system(size: 13))
-                .foregroundStyle(peak > 0.05 ? Color.green : Color.secondary)
-                .frame(width: 14)
+            Text(keyName)
+                .font(.caption)
+                .fontWeight(.semibold)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
 
-            HStack(alignment: .center, spacing: 2) {
-                ForEach(0..<MicLevelMeter.scales.count, id: \.self) { i in
-                    bar(at: i)
+            TextField("value", text: $draftValue)
+                .textFieldStyle(.plain)
+                .font(.caption)
+                .frame(width: min(240, max(48, CGFloat(draftValue.count * 7 + 24))))
+                .focused($focused)
+                .lineLimit(1)
+                .onSubmit { commit() }
+                .onChange(of: focused) { _, isFocused in
+                    if !isFocused { commit() }
                 }
+                .onChange(of: value) { _, next in
+                    if !focused { draftValue = next }
+                }
+
+            Button {
+                setMetadata(keyName, nil)
+            } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.system(size: 13))
+                    .foregroundStyle(.secondary)
             }
-            .frame(height: 22)
+            .buttonStyle(.plain)
+            .help("Remove \(keyName)")
         }
-        .animation(.linear(duration: 0.06), value: peak)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 7)
+        .fixedSize(horizontal: true, vertical: false)
+        .background(Color.white.opacity(0.08))
+        .clipShape(Capsule())
+        .overlay(Capsule().strokeBorder(Color.white.opacity(0.16)))
     }
 
-    private func bar(at index: Int) -> some View {
-        let baseHeight: CGFloat = 3
-        let maxBarHeight: CGFloat = 20
-        let scale = MicLevelMeter.scales[index]
-        let p = CGFloat(min(1, peak))
-        let h = baseHeight + (maxBarHeight - baseHeight) * p * scale
-        return RoundedRectangle(cornerRadius: 1.5)
-            .fill(barColor)
-            .frame(width: 3, height: h)
+    private func commit() {
+        let next = draftValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        if next != value {
+            setMetadata(keyName, next.isEmpty ? nil : next)
+        }
+    }
+}
+
+/// Compact mic glyph where activity fills the capsule itself instead
+/// of using a separate EQ bar row.
+private struct MicActivityIcon: View {
+    let peak: Float
+    let isLive: Bool
+
+    var body: some View {
+        GeometryReader { proxy in
+            let w = proxy.size.width
+            let h = proxy.size.height
+            let p = CGFloat(min(1, max(0, peak)))
+            let capsuleWidth = w * 0.48
+            let capsuleHeight = h * 0.58
+            let capsuleY = h * 0.04
+            let fillHeight = max(capsuleHeight * 0.16, capsuleHeight * p)
+
+            ZStack {
+                RoundedRectangle(cornerRadius: capsuleWidth / 2)
+                    .fill(Color.black.opacity(0.28))
+                    .frame(width: capsuleWidth, height: capsuleHeight)
+                    .position(x: w / 2, y: capsuleY + capsuleHeight / 2)
+
+                RoundedRectangle(cornerRadius: capsuleWidth / 2)
+                    .fill(fillColor)
+                    .frame(width: capsuleWidth - 6, height: fillHeight)
+                    .position(
+                        x: w / 2,
+                        y: capsuleY + capsuleHeight - fillHeight / 2 - 3)
+                    .opacity(isLive ? 1 : 0.35)
+
+                RoundedRectangle(cornerRadius: capsuleWidth / 2)
+                    .strokeBorder(outlineColor, lineWidth: 2.4)
+                    .frame(width: capsuleWidth, height: capsuleHeight)
+                    .position(x: w / 2, y: capsuleY + capsuleHeight / 2)
+
+                MicYoke()
+                    .stroke(outlineColor, style: StrokeStyle(lineWidth: 2.8, lineCap: .round))
+                    .frame(width: w * 0.72, height: h * 0.34)
+                    .position(x: w / 2, y: h * 0.51)
+
+                Capsule()
+                    .fill(outlineColor)
+                    .frame(width: 3, height: h * 0.22)
+                    .position(x: w / 2, y: h * 0.84)
+            }
+        }
+        .animation(.linear(duration: 0.08), value: peak)
     }
 
-    private var barColor: Color {
+    private var fillColor: Color {
         if peak > 0.5 { return .red }
         if peak > 0.05 { return .green }
         return Color.gray.opacity(0.5)
+    }
+
+    private var outlineColor: Color {
+        peak > 0.05 ? .green : Color.secondary
+    }
+}
+
+private struct MicYoke: Shape {
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        path.move(to: CGPoint(x: rect.minX, y: rect.minY + rect.height * 0.12))
+        path.addCurve(
+            to: CGPoint(x: rect.midX, y: rect.maxY),
+            control1: CGPoint(x: rect.minX, y: rect.maxY * 0.72),
+            control2: CGPoint(x: rect.midX * 0.62, y: rect.maxY)
+        )
+        path.addCurve(
+            to: CGPoint(x: rect.maxX, y: rect.minY + rect.height * 0.12),
+            control1: CGPoint(x: rect.midX * 1.38, y: rect.maxY),
+            control2: CGPoint(x: rect.maxX, y: rect.maxY * 0.72)
+        )
+        return path
     }
 }
 

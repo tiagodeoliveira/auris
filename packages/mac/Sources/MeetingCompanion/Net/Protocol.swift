@@ -53,9 +53,11 @@ struct RegisterDeviceIntent: Encodable {
 }
 
 /// Begin a meeting on the server. `description` is the user's
-/// free-text prompt entered in the compose window; `nil` is a
-/// valid value (server treats it as an unlabeled meeting).
-/// Phase 2g-2 will add the metadata field once Extract Tags lands.
+/// free-text prompt entered in the overlay compose panel; `nil`
+/// is a valid value (server treats it as an unlabeled meeting).
+/// Metadata is intentionally omitted by the Mac start path so the
+/// server preserves any reviewed chips from `extract_metadata` and
+/// `set_metadata`.
 struct StartMeetingIntent: Encodable {
     let type: String = "start_meeting"
     let description: String?
@@ -69,6 +71,17 @@ struct StopMeetingIntent: Encodable {
     let type: String = "stop_meeting"
 }
 
+struct ExtractMetadataIntent: Encodable {
+    let type: String = "extract_metadata"
+    let description: String
+}
+
+struct SetMetadataIntent: Encodable {
+    let type: String = "set_metadata"
+    let key: String
+    let value: String?
+}
+
 // MARK: - Events (Server → Mac)
 
 /// Decoded form of incoming frames. Only the events the Mac currently
@@ -77,9 +90,11 @@ struct StopMeetingIntent: Encodable {
 /// modeled yet (e.g., items_update).
 enum TypedServerEvent: Sendable {
     case snapshot(SnapshotPayload)
+    case meetingStateChanged(String)
     case deviceRegistered(Device)
     case devicesChanged([Device])
     case audioSourceDeviceChanged(String?)
+    case metadataChanged([String: String])
     /// Live, in-flight transcript preview from the STT provider.
     /// Replaces the previous interim text wholesale on each event.
     case transcriptInterim(String)
@@ -89,6 +104,7 @@ enum TypedServerEvent: Sendable {
     /// silence). Distinct from `transcriptInterim` which is the
     /// still-mutable preview.
     case transcriptCommitted(String)
+    case error(code: String, message: String)
     case unknown(type: String)
 }
 
@@ -96,11 +112,13 @@ enum TypedServerEvent: Sendable {
 /// Phase 2g+ adds more as the meeting flow lights up.
 struct SnapshotPayload: Decodable, Sendable {
     let protocolVersion: Int
+    let metadata: [String: String]
     let devices: [Device]
     let audioSourceDeviceId: String?
 
     enum CodingKeys: String, CodingKey {
         case protocolVersion = "protocol_version"
+        case metadata
         case devices
         case audioSourceDeviceId = "audio_source_device_id"
     }
@@ -131,6 +149,10 @@ func decodeServerEvent(from text: String) throws -> TypedServerEvent? {
         // Snapshot is a wrapped envelope — fields live at the top level.
         let payload = try decoder.decode(SnapshotPayload.self, from: data)
         return .snapshot(payload)
+    case "meeting_state_changed":
+        struct Wrap: Decodable { let meeting_state: String }
+        let w = try decoder.decode(Wrap.self, from: data)
+        return .meetingStateChanged(w.meeting_state)
     case "device_registered":
         struct Wrap: Decodable { let device: Device }
         let w = try decoder.decode(Wrap.self, from: data)
@@ -143,6 +165,10 @@ func decodeServerEvent(from text: String) throws -> TypedServerEvent? {
         struct Wrap: Decodable { let device_id: String? }
         let w = try decoder.decode(Wrap.self, from: data)
         return .audioSourceDeviceChanged(w.device_id)
+    case "metadata_changed":
+        struct Wrap: Decodable { let metadata: [String: String] }
+        let w = try decoder.decode(Wrap.self, from: data)
+        return .metadataChanged(w.metadata)
     case "transcript_interim":
         struct Wrap: Decodable { let text: String }
         let w = try decoder.decode(Wrap.self, from: data)
@@ -151,6 +177,13 @@ func decodeServerEvent(from text: String) throws -> TypedServerEvent? {
         struct Wrap: Decodable { let text: String }
         let w = try decoder.decode(Wrap.self, from: data)
         return .transcriptCommitted(w.text)
+    case "error":
+        struct Wrap: Decodable {
+            let code: String
+            let message: String
+        }
+        let w = try decoder.decode(Wrap.self, from: data)
+        return .error(code: w.code, message: w.message)
     default:
         return .unknown(type: envelope.type)
     }
