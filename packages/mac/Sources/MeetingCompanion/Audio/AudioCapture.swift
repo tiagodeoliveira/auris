@@ -150,10 +150,15 @@ final class AudioCapture {
     }
 
     /// 50 fps mixer: drain a 20 ms frame from each source, sum
-    /// sample-wise (clamped to [-1, 1]), pack as S16LE, emit.
+    /// sample-wise (clamped to [-1, 1]), pack as S16LE, emit. Always
+    /// emits — silence is a valid frame; the consumer downstream (STT
+    /// / RemoteAudioSource) sees a steady cadence regardless of
+    /// whether anyone is talking.
     private func runMixerLoop() async {
         let interval: UInt64 = 20_000_000  // 20 ms in nanoseconds
         var nextDeadline = DispatchTime.now().uptimeNanoseconds + interval
+        var ticksSinceFirstSample = 0
+        var firstSampleSeen = false
 
         while !Task.isCancelled {
             // Sleep until the next 20 ms tick. Drift-correcting: we
@@ -168,6 +173,21 @@ final class AudioCapture {
             let systemSamples = systemRing.drain(count: AudioFormat.mixerFrameSamples)
             let micSamples = micRing.drain(count: AudioFormat.mixerFrameSamples)
 
+            if !firstSampleSeen, !systemSamples.isEmpty || !micSamples.isEmpty {
+                firstSampleSeen = true
+                Self.log.info(
+                    "mixer: first non-empty drain (system=\(systemSamples.count, privacy: .public), mic=\(micSamples.count, privacy: .public))"
+                )
+            }
+            ticksSinceFirstSample += 1
+            // Periodic depth probe — every ~5 s — to keep an eye on
+            // whether sources are keeping up.
+            if ticksSinceFirstSample % 250 == 0 {
+                Self.log.info(
+                    "mixer tick: system_ring=\(self.systemRing.approximateCount, privacy: .public) mic_ring=\(self.micRing.approximateCount, privacy: .public) frames=\(self.frameCount, privacy: .public)"
+                )
+            }
+
             // Mix sample-wise. Treat short/empty buffers as silence
             // (zero-fill) so the output cadence stays steady even if
             // one source briefly stalls.
@@ -176,12 +196,6 @@ final class AudioCapture {
                 let s = i < systemSamples.count ? systemSamples[i] : 0
                 let m = i < micSamples.count ? micSamples[i] : 0
                 mixed[i] = max(-1.0, min(1.0, s + m))
-            }
-
-            // If both sources produced nothing, skip the emit. Avoids
-            // a constant silence stream when no audio is happening.
-            if systemSamples.isEmpty && micSamples.isEmpty {
-                continue
             }
 
             let frame = AudioFormat.packS16LE(mixed)
@@ -204,12 +218,17 @@ final class SCAudioHandler: NSObject, SCStreamOutput, @unchecked Sendable {
     private let sourceLabel: String
     private var converter: AVAudioConverter?
     private var inputFormat: AVAudioFormat?
+    private var sampleBuffersSeen: UInt64 = 0
+    private var samplesAppended: UInt64 = 0
     /// 16 kHz mono Float32 — the rings store this format.
     private let outputFormat = AVAudioFormat(
         commonFormat: .pcmFormatFloat32,
         sampleRate: 16000,
         channels: 1,
         interleaved: true)!
+
+    private static let log = Logger(
+        subsystem: "com.meeting-companion.mac", category: "SCAudioHandler")
 
     init(ring: AudioRing, sourceLabel: String) {
         self.ring = ring
@@ -221,12 +240,18 @@ final class SCAudioHandler: NSObject, SCStreamOutput, @unchecked Sendable {
         didOutputSampleBuffer sampleBuffer: CMSampleBuffer,
         of type: SCStreamOutputType
     ) {
-        // SCKit may deliver an `audio` callback to the mic handler if
-        // misrouted; we only honor matching types. Type set per-handler
-        // at addStreamOutput time, but be defensive.
-        guard sampleBuffer.isValid,
-            let pcm = pcmBuffer(from: sampleBuffer)
-        else {
+        guard sampleBuffer.isValid else { return }
+        sampleBuffersSeen &+= 1
+        if sampleBuffersSeen == 1 {
+            Self.log.info("[\(self.sourceLabel, privacy: .public)] first sample buffer received")
+        }
+
+        guard let pcm = pcmBuffer(from: sampleBuffer) else {
+            if sampleBuffersSeen <= 5 {
+                Self.log.warning(
+                    "[\(self.sourceLabel, privacy: .public)] pcmBuffer build failed (#\(self.sampleBuffersSeen, privacy: .public))"
+                )
+            }
             return
         }
         // Lazy-initialize the converter on the first sample buffer
@@ -234,6 +259,9 @@ final class SCAudioHandler: NSObject, SCStreamOutput, @unchecked Sendable {
         if converter == nil {
             inputFormat = pcm.format
             converter = AVAudioConverter(from: pcm.format, to: outputFormat)
+            Self.log.info(
+                "[\(self.sourceLabel, privacy: .public)] converter init: \(pcm.format.description, privacy: .public) → 16k mono"
+            )
         }
         guard let converter else { return }
 
@@ -265,10 +293,9 @@ final class SCAudioHandler: NSObject, SCStreamOutput, @unchecked Sendable {
             })
 
         if let error = conversionError {
-            // Best-effort: log via os_log since we're nonisolated and
-            // the OSLog-style logger is fine off MainActor.
-            os_log("audio convert error", log: .default, type: .error)
-            _ = error
+            Self.log.error(
+                "[\(self.sourceLabel, privacy: .public)] convert error: \(error.localizedDescription, privacy: .public)"
+            )
             return
         }
 
@@ -280,17 +307,29 @@ final class SCAudioHandler: NSObject, SCStreamOutput, @unchecked Sendable {
         }
         let buffer = UnsafeBufferPointer(start: channelData[0], count: frameLength)
         ring.append(ArraySlice(Array(buffer)))
+        samplesAppended &+= UInt64(frameLength)
+        // Log roughly every second of converted audio (~16k samples).
+        if samplesAppended % 16_000 < UInt64(frameLength) {
+            Self.log.info(
+                "[\(self.sourceLabel, privacy: .public)] \(self.samplesAppended, privacy: .public) samples appended (~\(self.samplesAppended / 16_000, privacy: .public)s)"
+            )
+        }
     }
 
-    /// Build an `AVAudioPCMBuffer` view of the SCKit `CMSampleBuffer`.
-    /// SCKit delivers Float32 stereo at 48 kHz (per our config).
+    /// Build an `AVAudioPCMBuffer` from a SCKit `CMSampleBuffer`.
+    /// Handles both interleaved and planar layouts (planar = one
+    /// `AudioBuffer` per channel).
     private func pcmBuffer(from sampleBuffer: CMSampleBuffer) -> AVAudioPCMBuffer? {
         guard let formatDesc = sampleBuffer.formatDescription,
             let asbd = formatDesc.audioStreamBasicDescription
         else {
             return nil
         }
-        let format = AVAudioFormat(streamDescription: withUnsafePointer(to: asbd) { $0 })
+        // Build AVAudioFormat WITHIN the closure — `withUnsafePointer`
+        // only guarantees the pointer is valid for the closure body.
+        let format = withUnsafePointer(to: asbd) { ptr -> AVAudioFormat? in
+            AVAudioFormat(streamDescription: ptr)
+        }
         guard let format else { return nil }
         let frameCount = AVAudioFrameCount(sampleBuffer.numSamples)
         guard frameCount > 0,
@@ -300,35 +339,21 @@ final class SCAudioHandler: NSObject, SCStreamOutput, @unchecked Sendable {
         }
         buffer.frameLength = frameCount
 
-        // Copy the audio data out of the CMSampleBuffer's CMBlockBuffer
-        // into the PCMBuffer's audio buffer list.
-        var blockBuffer: CMBlockBuffer?
-        let audioBufferList = UnsafeMutablePointer<AudioBufferList>.allocate(capacity: 1)
-        defer { audioBufferList.deallocate() }
-        let status = CMSampleBufferGetAudioBufferListWithRetainedBlockBuffer(
-            sampleBuffer,
-            bufferListSizeNeededOut: nil,
-            bufferListOut: audioBufferList,
-            bufferListSize: MemoryLayout<AudioBufferList>.size,
-            blockBufferAllocator: nil,
-            blockBufferMemoryAllocator: nil,
-            flags: kCMSampleBufferFlag_AudioBufferList_Assure16ByteAlignment,
-            blockBufferOut: &blockBuffer
-        )
-        guard status == noErr,
-            let abl = audioBufferList.pointee.mBuffers.mData
-        else {
+        // Copy each AudioBuffer (one per channel for planar layouts,
+        // a single buffer holding all channels for interleaved). Use
+        // `withAudioBufferList` so the ABL's lifetime is managed.
+        do {
+            try sampleBuffer.withAudioBufferList { abl, _ in
+                let buffers = UnsafeMutableAudioBufferListPointer(abl.unsafeMutablePointer)
+                for i in 0..<buffers.count {
+                    guard let src = buffers[i].mData,
+                        let dst = buffer.floatChannelData?[i]
+                    else { continue }
+                    memcpy(dst, src, Int(buffers[i].mDataByteSize))
+                }
+            }
+        } catch {
             return nil
-        }
-
-        // We have the raw bytes in `abl`. Copy them into the PCMBuffer.
-        // For Float32 interleaved stereo, both channels live in the
-        // same single AudioBuffer.
-        let byteSize = Int(audioBufferList.pointee.mBuffers.mDataByteSize)
-        if let dst = buffer.floatChannelData?[0] {
-            // Interleaved stereo: PCMBuffer's channel data view treats
-            // it as one continuous block.
-            memcpy(dst, abl, byteSize)
         }
         return buffer
     }
