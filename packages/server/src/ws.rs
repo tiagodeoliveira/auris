@@ -324,7 +324,26 @@ async fn handle_audio_connection(
                         // try_send drops on backpressure; the alternative
                         // (await send) would block PCM intake on STT lag.
                         if tx.try_send(bytes).is_err() {
-                            tracing::debug!(?peer, "/audio: downstream lagged, frame dropped");
+                            // Most common cause: the /audio buffer is
+                            // full because no meeting has started, so
+                            // nobody is pulling from the receiver.
+                            // Bump to warn so this isn't silent.
+                            tracing::warn!(
+                                ?peer,
+                                frame = frames_received,
+                                "/audio: downstream not consuming — frame dropped (is a meeting active?)"
+                            );
+                        }
+                        // Periodic ingest log so the operator can see
+                        // frames are arriving even before/without a
+                        // meeting consuming them.
+                        if frames_received % 250 == 0 {
+                            tracing::info!(
+                                ?peer,
+                                frames = frames_received,
+                                bytes = bytes_received,
+                                "/audio: ingest progress (~5 s of audio)"
+                            );
                         }
                     }
                     Some(Ok(Message::Ping(p))) => {
