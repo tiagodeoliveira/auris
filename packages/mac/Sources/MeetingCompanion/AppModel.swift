@@ -32,17 +32,31 @@ final class AppModel {
 
     /// Latest in-flight transcript preview from the server. Replaced
     /// wholesale on each `transcript_interim` event; the meeting
-    /// overlay binds to this for live display.
+    /// overlay shows this as a dim trailing line below the
+    /// transcript-mode items.
     private(set) var transcriptInterim: String = ""
 
-    /// Committed transcript chunks, appended in order. The server
-    /// signals "this utterance is done" by emitting an empty
-    /// `transcript_interim`, at which point we move whatever was
-    /// in `transcriptInterim` here. The overlay shows
-    /// `transcriptHistory` + `transcriptInterim` together so the
-    /// user sees a growing, scrollable transcript rather than a
-    /// constantly-replaced single line.
-    private(set) var transcriptHistory: [String] = []
+    /// Modes the server has declared available for this meeting.
+    /// Static across a session today (transcript / highlights /
+    /// actions / open_questions); seeded from `snapshot`.
+    private(set) var availableModes: [ModeOption] = []
+
+    /// The currently selected mode. Defaults to "transcript" until a
+    /// snapshot arrives. `setMode` updates this optimistically before
+    /// sending the intent — the server's `mode_changed` echo confirms
+    /// it (or corrects to a different mode on validation failure).
+    private(set) var currentMode: String = "transcript"
+
+    /// Optional display-tag emitted with `mode_changed`; carries
+    /// per-mode metadata the server wants surfaced (currently unused
+    /// in the Mac UI, but decoded so contract drift surfaces here).
+    private(set) var displayTag: String? = nil
+
+    /// Items per mode, populated lazily as the server pushes them.
+    /// `transcript` mode is fed by the server's transcript
+    /// summarizer (one item per committed STT utterance); other
+    /// modes by their respective summarizer pipelines.
+    private(set) var itemsByMode: [String: [Item]] = [:]
 
     /// Meeting metadata chips returned by `extract_metadata` and
     /// edited locally via `set_metadata`. StartMeeting intentionally
@@ -75,6 +89,14 @@ final class AppModel {
         self.webSocket.onMessage = { [weak self] event in
             self?.handle(event: event)
         }
+        // Send register_device on every successful (re)connect.
+        // The server treats each WS as a fresh device session, so
+        // the same registration flow that runs on initial connect
+        // must rerun after a transport drop. WebSocketClient fires
+        // `onConnected` for both cases.
+        self.webSocket.onConnected = { [weak self] in
+            self?.sendRegisterDevice()
+        }
         // Re-check permissions whenever the app comes back to the
         // foreground (the user may have toggled state in System
         // Settings). Tied to the model's lifetime via [weak self].
@@ -103,6 +125,7 @@ final class AppModel {
         switch webSocket.state {
         case .disconnected: settings.isConfigured ? "circle" : "circle.dashed"
         case .connecting: "circle.dotted"
+        case .reconnecting: "arrow.clockwise.circle"
         case .connected: "circle.fill"
         case .error: "exclamationmark.circle.fill"
         }
@@ -114,6 +137,7 @@ final class AppModel {
         case .disconnected:
             settings.isConfigured ? "Not connected" : "Not signed in"
         case .connecting: "Connecting…"
+        case .reconnecting: "Reconnecting…"
         case .connected:
             if let d = ownDevice {
                 "Connected · registered as \(d.hostname)"
@@ -125,44 +149,50 @@ final class AppModel {
     }
 
     /// True when the user can press "Connect" — i.e., settings exist
-    /// and we're not already connecting/connected.
+    /// and we're not already connecting/connected/reconnecting.
     var canConnect: Bool {
         settings.isConfigured && webSocket.state == .disconnected
     }
 
-    /// True when the user can press "Disconnect".
+    /// True when the user can press "Disconnect". `.reconnecting`
+    /// counts — letting the user cancel the backoff loop is a real
+    /// affordance ("stop trying").
     var canDisconnect: Bool {
         switch webSocket.state {
-        case .connecting, .connected: true
+        case .connecting, .connected, .reconnecting: true
         default: false
         }
     }
 
     // MARK: - Intent
 
-    /// Open a WS connection using the current settings, then send a
-    /// `register_device` intent so the server knows this Mac is
-    /// available as an audio source.
+    /// Open a WS connection using the current settings.
+    /// `WebSocketClient` will dial in, retry with backoff on drops,
+    /// and call `onConnected` once the handshake succeeds — that's
+    /// where `register_device` actually goes out.
     func connect() {
         webSocket.connect(serverURL: settings.serverURL, token: settings.token)
-
-        let intent = RegisterDeviceIntent(
-            hostname: Self.hostname(),
-            capabilities: advertisedCapabilities
-        )
-        // URLSession buffers the send until the WS handshake
-        // completes, so it's safe to fire-and-forget here.
-        Task { [weak webSocket] in
-            try? await webSocket?.send(intent: intent)
-        }
     }
 
     /// Tear down the current WS connection. Server marks our device
-    /// offline as a side effect of the close.
+    /// offline as a side effect of the close. Also opts out of the
+    /// auto-reconnect loop until the user calls `connect()` again.
     func disconnect() {
         webSocket.disconnect()
         ownDevice = nil
         availableDevices = []
+    }
+
+    /// Build and send the `register_device` intent. Fired once per
+    /// successful (re)connect by `webSocket.onConnected`.
+    private func sendRegisterDevice() {
+        let intent = RegisterDeviceIntent(
+            hostname: Self.hostname(),
+            capabilities: advertisedCapabilities
+        )
+        Task { [weak webSocket] in
+            try? await webSocket?.send(intent: intent)
+        }
     }
 
     /// True when a meeting is in progress or being started locally.
@@ -223,6 +253,15 @@ final class AppModel {
         } catch {
             print("[AppModel] stop_meeting send failed: \(error)")
         }
+        localMeetingTeardown()
+    }
+
+    /// Stop the local capture + streamer and reset meeting-scoped
+    /// state, *without* sending `stop_meeting`. Used when the
+    /// server has already torn down (server restart → snapshot
+    /// arrives with `meeting_state: idle`); sending stop_meeting in
+    /// that path would be a no-op at best, an error at worst.
+    private func localMeetingTeardown() {
         audioStreamer.stop()
         audioCapture.stop()
         metadata = [:]
@@ -275,6 +314,22 @@ final class AppModel {
         case .snapshot(let payload):
             availableDevices = payload.devices
             metadata = payload.metadata
+            availableModes = payload.availableModes
+            currentMode = payload.mode
+            displayTag = payload.displayTag
+            // Snapshot only carries the *current* mode's items; the
+            // others stay empty until the user clicks them (server
+            // replies with `mode_changed` carrying that mode's list).
+            itemsByMode = [payload.mode: payload.items]
+            // Server vs. local state divergence: typically a server
+            // restart (no persistence yet — meeting state is just
+            // gone). Tear down our locally-running meeting so the
+            // overlay flips back to compose; the user can hit Start
+            // again on a fresh server.
+            if payload.meetingState == "idle", isMeetingActive {
+                print("[AppModel] snapshot meeting_state=idle while local meeting active — tearing down")
+                localMeetingTeardown()
+            }
         case .meetingStateChanged(let state):
             if state == "idle" {
                 metadata = [:]
@@ -303,15 +358,18 @@ final class AppModel {
             extractingMetadata = false
         case .transcriptInterim(let text):
             transcriptInterim = text
-        case .transcriptCommitted(let text):
-            transcriptHistory.append(text)
-            // Bound history so a marathon meeting doesn't grow
-            // the array unboundedly. 500 lines ≈ a long
-            // transcript; older lines scroll out of view anyway
-            // so dropping them is harmless.
-            if transcriptHistory.count > 500 {
-                transcriptHistory.removeFirst(transcriptHistory.count - 500)
-            }
+        case .transcriptCommitted:
+            // Same content arrives as a transcript-mode `Item` via
+            // `items_update` (server-side transcript summarizer);
+            // the overlay reads from `itemsByMode["transcript"]`.
+            // Variant kept decoded so future consumers can attach.
+            break
+        case .modeChanged(let mode, let tag, let items):
+            currentMode = mode
+            displayTag = tag
+            itemsByMode[mode] = items
+        case .itemsUpdate(let mode, let items):
+            mergeItems(items, into: mode)
         case .error(let code, let message):
             if extractingMetadata { extractingMetadata = false }
             print("[AppModel] server error \(code): \(message)")
@@ -326,7 +384,45 @@ final class AppModel {
     /// overlay from carrying state across meetings.
     func clearTranscript() {
         transcriptInterim = ""
-        transcriptHistory = []
+        itemsByMode = [:]
+        currentMode = "transcript"
+        displayTag = nil
+    }
+
+    /// Send `set_mode` to the server. Optimistically updates
+    /// `currentMode` first so the overlay snaps immediately;
+    /// `mode_changed` echoes back with the items list.
+    func setMode(_ mode: String) async {
+        guard mode != currentMode else { return }
+        guard webSocket.state == .connected else { return }
+        currentMode = mode
+        do {
+            try await webSocket.send(intent: SetModeIntent(mode: mode))
+        } catch {
+            print("[AppModel] set_mode send failed: \(error)")
+        }
+    }
+
+    /// Merge an `items_update` payload into the buffer for `mode`,
+    /// honoring the mode's declared `UpdateStrategy`. Falls back to
+    /// `append` if the mode isn't in `availableModes` (defensive —
+    /// shouldn't happen but the server's broadcast would race).
+    private func mergeItems(_ incoming: [Item], into mode: String) {
+        let strategy = availableModes.first(where: { $0.id == mode })?.updateStrategy ?? .append
+        switch strategy {
+        case .replace:
+            itemsByMode[mode] = incoming
+        case .append:
+            var current = itemsByMode[mode] ?? []
+            current.append(contentsOf: incoming)
+            // Bound long meetings — same 500-line ceiling that the
+            // old `transcriptHistory` had. Replace strategy modes
+            // are server-capped at 10 so they don't need this.
+            if current.count > 500 {
+                current.removeFirst(current.count - 500)
+            }
+            itemsByMode[mode] = current
+        }
     }
 
     private func startAudioStream() async -> Bool {
@@ -343,24 +439,12 @@ final class AppModel {
             token: settings.token,
             frames: frames)
 
-        // Wait up to 2 s for the streamer to confirm the /audio WS
-        // is open and at least one frame has shipped — only then is
-        // it safe to send start_meeting (the server's RemoteAudioSource
-        // needs the install() side to have run).
-        let deadline = Date().addingTimeInterval(2.0)
-        while audioStreamer.state != .streaming, Date() < deadline {
-            if case .error = audioStreamer.state {
-                audioCapture.stop()
-                return false
-            }
-            try? await Task.sleep(for: .milliseconds(50))
-        }
-        guard audioStreamer.state == .streaming else {
-            print("[AppModel] audio streamer did not reach .streaming within 2s; aborting")
-            audioStreamer.stop()
-            audioCapture.stop()
-            return false
-        }
+        // No need to wait for the /audio WS to open before sending
+        // start_meeting. The server's `RemoteAudioSource` is now
+        // late-binding: meeting can start with no audio client and
+        // pick one up later, and a mid-meeting `/audio` reconnect
+        // reuses the same downstream rx. The streamer's own
+        // backoff loop handles transport drops in the background.
         return true
     }
 

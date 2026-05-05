@@ -194,7 +194,7 @@ struct MeetingOverlayView: View {
 
             Divider()
 
-            transcriptColumn
+            modeColumn
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
     }
@@ -257,45 +257,117 @@ struct MeetingOverlayView: View {
         }
     }
 
-    /// Right column: scrollable transcript. Each committed
-    /// utterance from `transcriptHistory` is its own paragraph;
-    /// the rolling `transcriptInterim` follows in a dimmer style
-    /// so the user can tell what's settled vs. still-forming.
-    /// Auto-pins to the bottom on each update so the latest words
-    /// stay visible without manual scrolling.
-    private var transcriptColumn: some View {
+    /// Right column: mode-tabs row over a scrollable items list.
+    /// Mirrors `packages/pwa/src/ui/mode-tabs.ts` — same short
+    /// uppercase labels, same active-state semantics. The items
+    /// area shows `itemsByMode[currentMode]` plus, in transcript
+    /// mode only, the dim trailing `transcriptInterim` line.
+    private var modeColumn: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            modeTabs
+            itemsList
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+
+    private var modeTabs: some View {
+        HStack(spacing: 4) {
+            ForEach(model.availableModes) { mode in
+                let isActive = mode.id == model.currentMode
+                Button {
+                    Task { await model.setMode(mode.id) }
+                } label: {
+                    Text(Self.shortLabel(for: mode))
+                        .font(.system(size: 10, weight: isActive ? .bold : .semibold))
+                        .tracking(0.4)
+                        .foregroundStyle(isActive ? .primary : .secondary)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background {
+                            if isActive {
+                                RoundedRectangle(cornerRadius: 5)
+                                    .fill(Color.white.opacity(0.14))
+                            }
+                        }
+                }
+                .buttonStyle(.plain)
+            }
+            Spacer(minLength: 0)
+        }
+    }
+
+    private var itemsList: some View {
         ScrollViewReader { proxy in
             ScrollView {
                 VStack(alignment: .leading, spacing: 4) {
-                    if model.transcriptHistory.isEmpty, model.transcriptInterim.isEmpty {
-                        Text("(listening…)")
+                    let items = model.itemsByMode[model.currentMode] ?? []
+                    let interim = model.currentMode == "transcript" ? model.transcriptInterim : ""
+
+                    if items.isEmpty, interim.isEmpty {
+                        Text(emptyHint)
                             .foregroundStyle(.secondary)
                     } else {
-                        ForEach(Array(model.transcriptHistory.enumerated()), id: \.offset) { _, line in
-                            Text(line)
+                        ForEach(items) { item in
+                            Text(item.text)
                                 .foregroundStyle(.primary)
                         }
-                        if !model.transcriptInterim.isEmpty {
-                            Text(model.transcriptInterim)
+                        if !interim.isEmpty {
+                            Text(interim)
                                 .foregroundStyle(.secondary)
                         }
                     }
-                    Color.clear.frame(height: 1).id("transcriptEnd")
+                    Color.clear.frame(height: 1).id("itemsEnd")
                 }
                 .font(.body)
                 .frame(maxWidth: .infinity, alignment: .topLeading)
                 .textSelection(.enabled)
             }
             .onChange(of: model.transcriptInterim) { _, _ in
+                guard model.currentMode == "transcript" else { return }
                 withAnimation(.linear(duration: 0.1)) {
-                    proxy.scrollTo("transcriptEnd", anchor: .bottom)
+                    proxy.scrollTo("itemsEnd", anchor: .bottom)
                 }
             }
-            .onChange(of: model.transcriptHistory.count) { _, _ in
+            .onChange(of: itemsCountForCurrentMode) { _, _ in
                 withAnimation(.linear(duration: 0.1)) {
-                    proxy.scrollTo("transcriptEnd", anchor: .bottom)
+                    proxy.scrollTo("itemsEnd", anchor: .bottom)
                 }
             }
+            .onChange(of: model.currentMode) { _, _ in
+                // Tab switch — jump straight to the bottom of the
+                // newly-selected list without animating; smoother
+                // than scrolling through unrelated content.
+                proxy.scrollTo("itemsEnd", anchor: .bottom)
+            }
+        }
+    }
+
+    /// Short uppercase tab labels. Falls back to the server-provided
+    /// label when we haven't seen the mode id before.
+    private static func shortLabel(for mode: ModeOption) -> String {
+        switch mode.id {
+        case "transcript": return "TRANSCRIPT"
+        case "highlights": return "HIGHLIGHTS"
+        case "actions": return "ACTIONS"
+        case "open_questions": return "QUESTIONS"
+        default: return mode.label.uppercased()
+        }
+    }
+
+    /// Tracked separately so `.onChange` can fire on the active
+    /// mode's item count without referencing `itemsByMode` directly
+    /// (dictionary equality on every render is wasteful).
+    private var itemsCountForCurrentMode: Int {
+        model.itemsByMode[model.currentMode]?.count ?? 0
+    }
+
+    private var emptyHint: String {
+        switch model.currentMode {
+        case "transcript": return "(listening…)"
+        case "highlights": return "(no highlights yet)"
+        case "actions": return "(no action items yet)"
+        case "open_questions": return "(no open questions yet)"
+        default: return "(no items yet)"
         }
     }
 

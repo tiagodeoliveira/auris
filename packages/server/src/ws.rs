@@ -268,9 +268,16 @@ async fn handle_connection(
 }
 
 /// Handles the `/audio` WebSocket. The client streams binary frames
-/// of 16 kHz mono S16LE PCM (~640 bytes each); the handler installs
-/// an mpsc receiver into the `RemoteAudioSource` so the next meeting
-/// to start can take it.
+/// of 16 kHz mono S16LE PCM (~640 bytes each); the handler forwards
+/// each frame into the active meeting's audio sender (held by
+/// `RemoteAudioSource`).
+///
+/// Late-binding semantics: the meeting can start before *or* after
+/// the `/audio` connection, and a mid-meeting `/audio` reconnect
+/// reuses the same downstream rx (the STT pipeline never sees the
+/// connection churn). The handler caches the current sender locally
+/// to avoid locking on every frame, and refreshes on `Closed` (rx
+/// dropped — meeting ended) or `is_none` (no active meeting yet).
 ///
 /// Rejects the connection with a Policy close if the configured audio
 /// source isn't `Remote` (i.e., the server is in `local` mode and
@@ -297,15 +304,15 @@ async fn handle_audio_connection(
 
     info!(?peer, "/audio connection accepted");
 
-    // Bounded channel: ~80 frames = ~1.6s of audio buffered. If the
-    // downstream STT lags this much we drop frames rather than
-    // unbounded-grow memory.
-    let (tx, rx) = tokio::sync::mpsc::channel::<Vec<u8>>(80);
-    remote.install(rx).await;
-
     let (mut sink, mut stream) = ws.split();
     let mut frames_received: u64 = 0;
     let mut bytes_received: u64 = 0;
+    let mut frames_dropped_no_meeting: u64 = 0;
+    // Cached sender for the active meeting. Refreshed lazily — on
+    // first frame, on `Closed` errors (meeting just ended), and
+    // each frame while there's no meeting yet (so we pick it up
+    // promptly when one starts).
+    let mut tx_cache: Option<tokio::sync::mpsc::Sender<Vec<u8>>> = remote.current_sender().await;
 
     loop {
         tokio::select! {
@@ -321,19 +328,47 @@ async fn handle_audio_connection(
                     Some(Ok(Message::Binary(bytes))) => {
                         frames_received += 1;
                         bytes_received += bytes.len() as u64;
-                        // try_send drops on backpressure; the alternative
-                        // (await send) would block PCM intake on STT lag.
-                        if tx.try_send(bytes).is_err() {
-                            // Most common cause: the /audio buffer is
-                            // full because no meeting has started, so
-                            // nobody is pulling from the receiver.
-                            // Bump to warn so this isn't silent.
-                            tracing::warn!(
-                                ?peer,
-                                frame = frames_received,
-                                "/audio: downstream not consuming — frame dropped (is a meeting active?)"
-                            );
+
+                        // Refresh the cache when we don't have a sender;
+                        // covers "/audio connected before start_meeting".
+                        if tx_cache.is_none() {
+                            tx_cache = remote.current_sender().await;
                         }
+
+                        if let Some(tx) = &tx_cache {
+                            // try_send drops on backpressure; the
+                            // alternative (await send) would block PCM
+                            // intake on STT lag.
+                            match tx.try_send(bytes) {
+                                Ok(()) => {}
+                                Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                                    tracing::warn!(
+                                        ?peer,
+                                        frame = frames_received,
+                                        "/audio: downstream backlogged — frame dropped"
+                                    );
+                                }
+                                Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                                    // Meeting just ended (rx dropped).
+                                    // Clear the cache; the next frame
+                                    // will retry current_sender, which
+                                    // self-cleans the slot to None.
+                                    tx_cache = None;
+                                }
+                            }
+                        } else {
+                            frames_dropped_no_meeting += 1;
+                            // First-time-only nudge so the operator
+                            // sees /audio frames are arriving but
+                            // there's nowhere to send them.
+                            if frames_dropped_no_meeting == 1 {
+                                tracing::warn!(
+                                    ?peer,
+                                    "/audio: frames arriving but no meeting active — dropping"
+                                );
+                            }
+                        }
+
                         // Periodic ingest log so the operator can see
                         // frames are arriving even before/without a
                         // meeting consuming them.
@@ -342,6 +377,7 @@ async fn handle_audio_connection(
                                 ?peer,
                                 frames = frames_received,
                                 bytes = bytes_received,
+                                dropped_no_meeting = frames_dropped_no_meeting,
                                 "/audio: ingest progress (~5 s of audio)"
                             );
                         }

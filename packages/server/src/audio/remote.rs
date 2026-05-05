@@ -3,22 +3,24 @@
 //! client (the Mac app, or `wscat` for testing) opens `/audio` and
 //! streams binary frames of 16 kHz mono S16LE PCM, ~640 bytes each.
 //!
-//! Lifecycle:
+//! Lifecycle (late-binding):
 //!   1. Server boot: a single `RemoteAudioSource` is created and
 //!      stored on `ServerHandle`.
-//!   2. A client connects to `/audio`: the WS handler creates an mpsc
-//!      pair and *installs* the receiver into the source's slot.
-//!   3. A meeting begins: `start()` *takes* the receiver out of the
-//!      slot. The downstream STT consumes from it.
-//!   4. WS client disconnects: the tx side drops; the receiver sees
-//!      end-of-stream; meeting continues silent until reconnect.
+//!   2. A meeting begins: `start()` allocates an mpsc channel,
+//!      stores the *sender* in the slot, and hands the *receiver*
+//!      to the STT pipeline.
+//!   3. A client connects to `/audio`: it queries the slot for the
+//!      current sender and forwards each incoming PCM frame into
+//!      it. Multiple connections (e.g., reconnect mid-meeting) can
+//!      sequentially pick up the same sender — the pipeline's
+//!      receiver stays alive across them.
+//!   4. Meeting ends: STT drops the receiver. The stored sender
+//!      becomes Closed; the next `current_sender()` self-cleans
+//!      the slot to None and returning clients see "no meeting".
 //!
-//! Edge cases:
-//!   - Meeting begins with nothing in the slot: returns `NotConnected`.
-//!   - Second client connects mid-meeting: the new receiver replaces
-//!     the slot, but the active meeting still holds the old rx.
-//!     Phase 2 introduces device registration that resolves "which
-//!     device is bound to this meeting" cleanly.
+//! This shape replaces the earlier "install rx, take rx" pattern,
+//! which broke when `/audio` reconnected mid-meeting (the new rx
+//! sat unconsumed in the slot while STT held the dead one).
 
 use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
@@ -28,11 +30,12 @@ use super::source::AudioInitError;
 
 #[derive(Clone, Default)]
 pub struct RemoteAudioSource {
-    /// Holds the receiver from the most-recently-connected `/audio`
-    /// client. `start()` takes it out; subsequent connections replace
-    /// it. Wrapped in `Arc<Mutex<...>>` so the WS handler and the
-    /// meeting starter (different async tasks) can both reach it.
-    inner: Arc<Mutex<Option<mpsc::Receiver<Vec<u8>>>>>,
+    /// Current meeting's audio sink. Set by `start()`; cleared
+    /// lazily by `current_sender()` once its rx has been dropped
+    /// (meeting ended). `Arc<Mutex<...>>` because the meeting
+    /// starter and the `/audio` handler(s) live on different async
+    /// tasks.
+    inner: Arc<Mutex<Option<mpsc::Sender<Vec<u8>>>>>,
 }
 
 impl RemoteAudioSource {
@@ -40,23 +43,41 @@ impl RemoteAudioSource {
         Self::default()
     }
 
-    /// Called by the `/audio` WS handler when a client connects. Any
-    /// previous (un-taken) receiver is dropped — first-mover loses if
-    /// nobody claimed it.
-    pub async fn install(&self, rx: mpsc::Receiver<Vec<u8>>) {
-        let mut slot = self.inner.lock().await;
-        *slot = Some(rx);
-    }
-
-    /// Called by `AudioSource::start` when a meeting begins. Takes the
-    /// currently-installed receiver, or returns `NotConnected` if no
-    /// client has connected yet.
+    /// Called by `AudioSource::start` when a meeting begins.
+    /// Allocates the audio mpsc channel, stores its `Sender` in
+    /// the slot for `/audio` handlers to forward into, and returns
+    /// the `Receiver` for the STT pipeline.
+    ///
+    /// Late-binding: this no longer requires an `/audio` client to
+    /// be connected. If none is, the rx yields silence until one
+    /// arrives. If the active `/audio` disconnects mid-meeting, the
+    /// rx pauses until it reconnects. This intentionally cannot
+    /// fail with `NotConnected` — the variant is preserved for
+    /// future audio-source kinds that have init-time prerequisites.
     pub async fn start(
         &self,
         _cancel: CancellationToken,
     ) -> Result<mpsc::Receiver<Vec<u8>>, AudioInitError> {
+        // 80 frames ≈ 1.6 s of audio at 50 fps, 640 B each. Same
+        // budget the per-connection forwarder used to use.
+        let (tx, rx) = mpsc::channel::<Vec<u8>>(80);
         let mut slot = self.inner.lock().await;
-        slot.take().ok_or(AudioInitError::NotConnected)
+        *slot = Some(tx);
+        Ok(rx)
+    }
+
+    /// Returns the active meeting's audio `Sender`, or `None` if
+    /// no meeting is running. Self-cleans when the stored sender
+    /// is closed (the rx was dropped — meeting ended), so callers
+    /// don't need to know about meeting lifecycle.
+    pub async fn current_sender(&self) -> Option<mpsc::Sender<Vec<u8>>> {
+        let mut slot = self.inner.lock().await;
+        if let Some(tx) = slot.as_ref() {
+            if tx.is_closed() {
+                *slot = None;
+            }
+        }
+        slot.clone()
     }
 }
 
@@ -65,48 +86,68 @@ mod tests {
     use super::*;
 
     #[tokio::test]
-    async fn start_with_empty_slot_returns_not_connected() {
+    async fn start_creates_an_open_channel_with_no_audio_client() {
+        // Late-binding: start() must succeed regardless of whether
+        // anyone has connected to /audio. The rx simply yields
+        // nothing until a sender forwards frames into the slot.
         let src = RemoteAudioSource::new();
         let cancel = CancellationToken::new();
-        let result = src.start(cancel).await;
-        assert!(matches!(result, Err(AudioInitError::NotConnected)));
+        let mut rx = src.start(cancel).await.expect("start should succeed");
+
+        // Forward into the slot via current_sender — simulates an
+        // `/audio` client connecting *after* start.
+        let tx = src.current_sender().await.expect("slot populated by start");
+        tx.send(b"frame".to_vec()).await.unwrap();
+
+        let received = rx.recv().await.unwrap();
+        assert_eq!(received, b"frame");
     }
 
     #[tokio::test]
-    async fn install_then_start_returns_receiver_and_empties_slot() {
+    async fn current_sender_self_cleans_when_meeting_ends() {
+        // Drop the rx (meeting ended) and confirm the slot
+        // transitions back to None on the next current_sender lookup.
         let src = RemoteAudioSource::new();
-        let (tx, rx) = mpsc::channel::<Vec<u8>>(4);
-        src.install(rx).await;
-
         let cancel = CancellationToken::new();
-        let mut taken = src.start(cancel.clone()).await.unwrap();
+        let rx = src.start(cancel).await.unwrap();
+        assert!(src.current_sender().await.is_some());
 
-        // The receiver we got out should be the one we installed.
-        tx.send(b"hello".to_vec()).await.unwrap();
-        let frame = taken.recv().await.unwrap();
-        assert_eq!(frame, b"hello");
-
-        // Slot is now empty; second start fails.
-        let result = src.start(cancel).await;
-        assert!(matches!(result, Err(AudioInitError::NotConnected)));
+        drop(rx);
+        let after = src.current_sender().await;
+        assert!(
+            after.is_none(),
+            "slot should self-clean once its rx is dropped"
+        );
     }
 
     #[tokio::test]
-    async fn second_install_replaces_first() {
+    async fn current_sender_none_when_no_meeting() {
         let src = RemoteAudioSource::new();
-        let (_tx_a, rx_a) = mpsc::channel::<Vec<u8>>(4);
-        let (tx_b, rx_b) = mpsc::channel::<Vec<u8>>(4);
-        src.install(rx_a).await;
-        src.install(rx_b).await;
+        assert!(src.current_sender().await.is_none());
+    }
 
+    #[tokio::test]
+    async fn reconnect_mid_meeting_keeps_pipeline_rx_alive() {
+        // Two sequential "/audio" clients forward into the same
+        // slot; the meeting's rx (taken once at start) sees both
+        // streams of frames as if from a single producer.
+        let src = RemoteAudioSource::new();
         let cancel = CancellationToken::new();
-        let mut taken = src.start(cancel).await.unwrap();
+        let mut rx = src.start(cancel).await.unwrap();
 
-        // The receiver we got out should be the second one (rx_b).
-        tx_b.send(b"second".to_vec()).await.unwrap();
-        let frame = taken.recv().await.unwrap();
-        assert_eq!(frame, b"second");
-        // rx_a is dropped — _tx_a sends would fail if we tried.
-        drop(_tx_a);
+        // First "client".
+        let tx1 = src.current_sender().await.unwrap();
+        tx1.send(b"a".to_vec()).await.unwrap();
+        drop(tx1); // simulate /audio disconnect
+
+        // Stored sender in the slot is *the channel's* sender,
+        // distinct from tx1 (which was a clone). It survives.
+        // Second "client" reconnects, picks up the live sender,
+        // forwards more frames.
+        let tx2 = src.current_sender().await.unwrap();
+        tx2.send(b"b".to_vec()).await.unwrap();
+
+        assert_eq!(rx.recv().await.unwrap(), b"a");
+        assert_eq!(rx.recv().await.unwrap(), b"b");
     }
 }

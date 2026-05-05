@@ -37,6 +37,42 @@ struct Device: Codable, Sendable, Equatable, Identifiable {
     let online: Bool
 }
 
+// MARK: - Modes & Items
+
+/// How a mode's item list should be merged when an `items_update`
+/// arrives. Mirrors `crate::contract::UpdateStrategy`.
+///
+/// - `replace`: payload IS the new full list (capped at 10 server-side).
+/// - `append`: payload is one or more items to append onto the buffer.
+enum UpdateStrategy: String, Codable, Sendable {
+    case replace, append
+}
+
+/// One available mode the user can select (transcript, highlights,
+/// actions, open_questions). Static set, snapshot-delivered.
+struct ModeOption: Codable, Sendable, Equatable, Identifiable {
+    let id: String
+    let label: String
+    let updateStrategy: UpdateStrategy
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case label
+        case updateStrategy = "update_strategy"
+    }
+}
+
+/// One row inside a mode's items list. `meta` is `serde_json::Value`
+/// server-side; we don't need to introspect it yet (speaker tagging
+/// is the only known consumer; deferred), so it stays out of this
+/// struct entirely. Adding it later is a non-breaking decode change.
+struct Item: Codable, Sendable, Equatable, Identifiable {
+    let id: String
+    let text: String
+    let detail: String?
+    let t: UInt64
+}
+
 // MARK: - Intents (Mac → Server)
 
 /// Encoded with `type: "register_device"` to match the snake_case
@@ -82,6 +118,11 @@ struct SetMetadataIntent: Encodable {
     let value: String?
 }
 
+struct SetModeIntent: Encodable {
+    let type: String = "set_mode"
+    let mode: String
+}
+
 // MARK: - Events (Server → Mac)
 
 /// Decoded form of incoming frames. Only the events the Mac currently
@@ -98,27 +139,50 @@ enum TypedServerEvent: Sendable {
     /// Live, in-flight transcript preview from the STT provider.
     /// Replaces the previous interim text wholesale on each event.
     case transcriptInterim(String)
-    /// Finalised utterance from the STT provider — append to the
-    /// rolling transcript view. Emitted by the server when its
-    /// internal buffer is flushed (punctuation / length cap /
-    /// silence). Distinct from `transcriptInterim` which is the
-    /// still-mutable preview.
+    /// Finalised utterance from the STT provider — same content
+    /// also flows as a transcript-mode item via `itemsUpdate`, so
+    /// the overlay no longer needs this directly. Kept decoded so
+    /// future consumers (e.g. system-level captions) don't have to
+    /// re-add the variant.
     case transcriptCommitted(String)
+    /// User switched modes (or the server-side meeting started in a
+    /// non-default mode). `items` is the full list for the new mode.
+    case modeChanged(mode: String, displayTag: String?, items: [Item])
+    /// New / replacement items for a mode. Merge per the mode's
+    /// `UpdateStrategy` — `replace` payloads are the full list,
+    /// `append` payloads are deltas.
+    case itemsUpdate(mode: String, items: [Item])
     case error(code: String, message: String)
     case unknown(type: String)
 }
 
-/// Minimal snapshot decode — only the fields the Mac uses today.
-/// Phase 2g+ adds more as the meeting flow lights up.
+/// Initial state for a freshly-connected client. `items` is for the
+/// current mode only; other modes hydrate lazily via `mode_changed`
+/// or `items_update` as the server pushes them.
+///
+/// `meetingState` is critical on *reconnect*: if the server has
+/// restarted, it boots into "idle" and the snapshot will say so —
+/// the Mac uses that as the signal to tear down any locally-running
+/// meeting that the server no longer knows about.
 struct SnapshotPayload: Decodable, Sendable {
     let protocolVersion: Int
+    let meetingState: String
+    let availableModes: [ModeOption]
+    let mode: String
+    let displayTag: String?
     let metadata: [String: String]
+    let items: [Item]
     let devices: [Device]
     let audioSourceDeviceId: String?
 
     enum CodingKeys: String, CodingKey {
         case protocolVersion = "protocol_version"
+        case meetingState = "meeting_state"
+        case availableModes = "available_modes"
+        case mode
+        case displayTag = "display_tag"
         case metadata
+        case items
         case devices
         case audioSourceDeviceId = "audio_source_device_id"
     }
@@ -177,6 +241,21 @@ func decodeServerEvent(from text: String) throws -> TypedServerEvent? {
         struct Wrap: Decodable { let text: String }
         let w = try decoder.decode(Wrap.self, from: data)
         return .transcriptCommitted(w.text)
+    case "mode_changed":
+        struct Wrap: Decodable {
+            let mode: String
+            let display_tag: String?
+            let items: [Item]
+        }
+        let w = try decoder.decode(Wrap.self, from: data)
+        return .modeChanged(mode: w.mode, displayTag: w.display_tag, items: w.items)
+    case "items_update":
+        struct Wrap: Decodable {
+            let mode: String
+            let items: [Item]
+        }
+        let w = try decoder.decode(Wrap.self, from: data)
+        return .itemsUpdate(mode: w.mode, items: w.items)
     case "error":
         struct Wrap: Decodable {
             let code: String
