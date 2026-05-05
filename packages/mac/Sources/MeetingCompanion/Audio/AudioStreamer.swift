@@ -38,9 +38,11 @@ final class AudioStreamer {
         stop()
 
         guard let url = Self.buildAudioURL(serverURL: serverURL, token: token) else {
+            print("[AudioStreamer] start FAILED: invalid server URL '\(serverURL)'")
             state = .error("Invalid server URL.")
             return
         }
+        print("[AudioStreamer] start: opening WS to \(url.absoluteString)")
 
         state = .connecting
         let task = URLSession.shared.webSocketTask(with: url)
@@ -51,7 +53,9 @@ final class AudioStreamer {
         bytesSent = 0
 
         pumpTask = Task { [weak self] in
+            print("[AudioStreamer] pump task spawned")
             await self?.pump(frames: frames, task: task)
+            print("[AudioStreamer] pump task exited")
         }
     }
 
@@ -75,17 +79,33 @@ final class AudioStreamer {
         // frames. URLSession buffers send() calls until open, so the
         // first few frames may queue briefly — that's fine; our
         // backpressure is at the audio source (bounded ring buffer).
+        print("[AudioStreamer] pump: entering for-await loop")
+        var sawFirstFrame = false
         for await frame in frames {
-            if Task.isCancelled { break }
+            if Task.isCancelled {
+                print("[AudioStreamer] pump: task cancelled, exiting")
+                break
+            }
+            if !sawFirstFrame {
+                sawFirstFrame = true
+                print("[AudioStreamer] pump: FIRST frame received from AsyncStream (\(frame.count) bytes)")
+            }
             do {
                 try await task.send(.data(frame))
+                if framesSent == 0 {
+                    print("[AudioStreamer] pump: FIRST frame sent over WS")
+                }
                 if state != .streaming {
                     state = .streaming
                 }
                 framesSent &+= 1
                 bytesSent &+= UInt64(frame.count)
+                if framesSent % 100 == 0 {
+                    print("[AudioStreamer] pump: \(framesSent) frames sent (\(bytesSent) bytes)")
+                }
             } catch {
                 if Task.isCancelled { return }
+                print("[AudioStreamer] pump: send error: \(error.localizedDescription)")
                 Self.log.warning(
                     "audio frame send failed: \(error.localizedDescription, privacy: .public)")
                 state = .error(error.localizedDescription)
@@ -93,6 +113,9 @@ final class AudioStreamer {
             }
         }
         // Source stream finished; close cleanly.
+        print(
+            "[AudioStreamer] pump: AsyncStream ended (frames=\(framesSent), bytes=\(bytesSent))"
+        )
         Self.log.info(
             "audio source stream ended (frames=\(self.framesSent, privacy: .public), bytes=\(self.bytesSent, privacy: .public))"
         )
