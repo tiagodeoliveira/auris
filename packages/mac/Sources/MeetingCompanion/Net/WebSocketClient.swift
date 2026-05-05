@@ -6,6 +6,7 @@
 
 import Foundation
 import Observation
+import OSLog
 
 @MainActor
 @Observable
@@ -17,14 +18,28 @@ final class WebSocketClient {
         case error(String)
     }
 
+    enum SendError: Error {
+        case notConnected
+        case encodeFailed(any Error)
+    }
+
     /// Last message received, surfaced raw for the UI to peek at while
     /// the protocol decoder is built out in later sub-phases.
     private(set) var state: State = .disconnected
     private(set) var lastMessagePreview: String?
     private(set) var messagesReceived: Int = 0
 
+    /// Invoked on every successfully decoded server event. AppModel
+    /// subscribes to act on `device_registered`, `devices_changed`,
+    /// etc. Set this once at construction; the closure is held weakly
+    /// by callers.
+    var onMessage: ((TypedServerEvent) -> Void)?
+
     private var task: URLSessionWebSocketTask?
     private var receiveLoop: Task<Void, Never>?
+
+    private static let log = Logger(
+        subsystem: "com.meeting-companion.mac", category: "WebSocketClient")
 
     /// Open a WS connection to the given server URL with the given
     /// auth token. Replaces any existing connection.
@@ -55,6 +70,24 @@ final class WebSocketClient {
         if state != .disconnected {
             state = .disconnected
         }
+    }
+
+    /// Send an `Encodable` intent as a JSON text frame. Safe to call
+    /// before the WS handshake completes — URLSession buffers the
+    /// frame until the connection is open.
+    func send<T: Encodable>(intent: T) async throws {
+        guard let task else { throw SendError.notConnected }
+        let data: Data
+        do {
+            data = try JSONEncoder().encode(intent)
+        } catch {
+            throw SendError.encodeFailed(error)
+        }
+        guard let text = String(data: data, encoding: .utf8) else {
+            throw SendError.encodeFailed(
+                NSError(domain: "WebSocketClient", code: -1, userInfo: nil))
+        }
+        try await task.send(.string(text))
     }
 
     // MARK: - Internals
@@ -95,13 +128,20 @@ final class WebSocketClient {
         }
     }
 
-    /// Phase 2c: just count + preview. Phase 2g+ will decode this into
-    /// the typed contract and dispatch.
+    /// Track count + preview, then decode and forward to onMessage.
+    /// Decode failures log but don't break the connection.
     private func handleMessage(_ message: URLSessionWebSocketTask.Message) {
         messagesReceived += 1
         switch message {
         case .string(let text):
             lastMessagePreview = String(text.prefix(80))
+            do {
+                if let event = try decodeServerEvent(from: text) {
+                    onMessage?(event)
+                }
+            } catch {
+                Self.log.warning("decode failed: \(error.localizedDescription, privacy: .public)")
+            }
         case .data(let data):
             lastMessagePreview = "<binary \(data.count) bytes>"
         @unknown default:

@@ -32,16 +32,17 @@ What it is _not_:
 
 ## Status — Phase 2c complete (Mac talks to the server)
 
-| Sub-phase | Goal                                                         | Status     |
-| --------- | ------------------------------------------------------------ | ---------- |
-| **2a**    | Mac scaffold: SwiftPM + menu bar item + AppModel placeholder | **✓ Done** |
-| **2b**    | Server-side device registry + control channel                | **✓ Done** |
-| **2c**    | Settings window + token-based server connection              | **✓ Done** |
-| **2d**    | Permissions onboarding (Microphone + Screen Recording)       | Pending    |
-| **2e**    | Audio capture in Swift (SCKit) + mixer parity with Rust      | Pending    |
-| **2f**    | Mac → server: register as device, stream PCM via `/audio`    | Pending    |
-| **2g**    | Compose window (description input + Start Meeting flow)      | Pending    |
-| **2h**    | Native Meetings browse window (depends on Phase 4 APIs)      | Deferred   |
+| Sub-phase | Goal                                                           | Status             |
+| --------- | -------------------------------------------------------------- | ------------------ |
+| **2a**    | Mac scaffold: SwiftPM + menu bar item + AppModel placeholder   | **✓ Done**         |
+| **2b**    | Server-side device registry + control channel                  | **✓ Done**         |
+| **2c**    | Settings window + token-based server connection                | **✓ Done**         |
+| **2f₁**   | Mac registers as a device on connect; ownDevice + capabilities | **✓ Done**         |
+| **2d**    | Permissions onboarding (Microphone + Screen Recording)         | Pending            |
+| **2e**    | Audio capture in Swift (SCKit) + mixer parity with Rust        | Pending            |
+| **2f₂**   | Stream PCM via `/audio` (depends on 2e)                        | Pending (after 2e) |
+| **2g**    | Compose window (description input + Start Meeting flow)        | Pending            |
+| **2h**    | Native Meetings browse window (depends on Phase 4 APIs)        | Deferred           |
 
 Acceptance for Phase 2 overall: three demos pass — Mac standalone,
 PWA-led with Mac as source, Mac standalone with browse (where 2h is
@@ -128,36 +129,57 @@ Sources/MeetingCompanion/
 - **Comments explain _why_, not _what_.** The menu-bar-accessory
   comment in `MeetingCompanionApp.swift` is a good template.
 
-## Smoke test (Phase 2c)
+## Smoke test (through Phase 2f₁)
 
 Two terminals:
 
 ```bash
-# Terminal 1 — start the server (uses the existing Rust binary):
+# Terminal 1 — start the server:
 just server-run
 
 # Terminal 2 — launch the Mac app:
 just mac-run
 ```
 
-Click the menu bar icon → "Open Settings to sign in…" (or
-"Settings…") → enter `ws://localhost:7331` + token `dev` → close
-window. Click the menu bar icon again → "Connect" → status flips to
-**Connected** and "Last frame:" previews the server's `Snapshot`.
-Click "Disconnect" → status flips back.
+First run only: click the menu bar icon → "Open Settings to sign
+in…" → enter `ws://localhost:7331` + token `dev` → close.
 
-## Next: Phase 2d or 2f
+Click the menu bar icon → **Connect** → the status line should
+quickly progress through:
 
-With both 2b (server registry) and 2c (Mac WS connection) in place,
-two paths are open:
+```
+Not signed in
+   ↓ (Connect)
+Connecting…
+   ↓
+Connected · registering…
+   ↓ (server replies device_registered)
+Connected · registered as <hostname>
+```
 
-- **2d** (Mac): permissions onboarding for Microphone + Screen
-  Recording. Independent of network work. Once permissions are
-  granted, 2e (audio capture) becomes possible.
-- **2f** (Mac→server): wire the Mac to send `register_device` on
-  connect (declaring `audio_capture`, `system_audio`,
-  `control_surface`), then later in the same sub-phase add the
-  `/audio` PCM streamer.
+A `Device id: <8-char-prefix>…` line appears below the status,
+confirming the server-assigned UUID. **Disconnect** clears it.
 
-2d is the more user-visible (and standalone-mac-completing) piece;
-2f is the one that unlocks PWA→Mac→server end-to-end audio.
+You can verify the registry from a third terminal with `websocat`:
+
+```bash
+websocat 'ws://localhost:7331/?token=dev'
+# Look at the snapshot's `devices` array — should include the Mac.
+```
+
+When the Mac disconnects, the websocat session sees a
+`devices_changed` broadcast with the entry gone.
+
+## Next: Phase 2d → 2e → 2f₂
+
+The unblocked sub-phases now run in dependency order:
+
+- **2d**: Permissions onboarding (Microphone + Screen Recording).
+  Required before 2e can produce frames.
+- **2e**: SCKit audio capture in Swift. Mirror of the existing Rust
+  pipeline. Produces 16 kHz mono S16LE PCM into an
+  `AsyncStream<Data>` or `AsyncChannel<Data>`.
+- **2f₂**: Stream those PCM frames to the server's `/audio`
+  endpoint via a second WebSocket connection. Once this lands, the
+  server's `RemoteAudioSource` (Phase 1b) consumes them and the
+  full Mac-as-audio-source path is wired end-to-end.

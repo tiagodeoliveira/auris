@@ -13,7 +13,11 @@ struct MenuBarContent: View {
             .font(.headline)
         Text(model.statusLine)
             .foregroundStyle(.secondary)
-        if let preview = model.webSocket.lastMessagePreview, !preview.isEmpty {
+        if let device = model.ownDevice {
+            Text("Device id: \(device.id.prefix(8))…")
+                .foregroundStyle(.secondary)
+                .font(.caption)
+        } else if let preview = model.webSocket.lastMessagePreview, !preview.isEmpty {
             Text("Last frame: \(preview)")
                 .foregroundStyle(.secondary)
                 .font(.caption)
