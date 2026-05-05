@@ -458,7 +458,9 @@ async fn spawn_live_pipeline(handle: ServerHandle, cancel: CancellationToken) {
     let (chunk_tx, _) = tokio::sync::broadcast::channel::<crate::stt::TranscriptChunk>(64);
 
     // -------------------------------------------------------------------
-    // Audio capture task (macOS only; honors MEETING_COMPANION_AUDIO_DISABLED)
+    // Audio source — pluggable via MEETING_COMPANION_AUDIO_SOURCE
+    // (default `local`). Honors MEETING_COMPANION_AUDIO_DISABLED for
+    // tests and non-mac platforms that want a silent meeting.
     // -------------------------------------------------------------------
     let audio_disabled = std::env::var("MEETING_COMPANION_AUDIO_DISABLED").is_ok();
     let audio_rx = if audio_disabled {
@@ -466,13 +468,14 @@ async fn spawn_live_pipeline(handle: ServerHandle, cancel: CancellationToken) {
         None
     } else {
         let audio_cancel = cancel.child_token();
-        match crate::audio::spawn_audio_task(audio_cancel).await {
+        let source = crate::audio::AudioSource::from_env();
+        match source.start(audio_cancel).await {
             Ok(rx) => {
-                tracing::info!("audio capture started (ScreenCaptureKit)");
+                tracing::info!("audio source started");
                 Some(rx)
             }
             Err(e) => {
-                tracing::error!(error = %e, "audio capture init failed; meeting will run silent");
+                tracing::error!(error = %e, "audio source init failed; meeting will run silent");
                 let status = crate::contract::Status {
                     listening: true,
                     paused: false,

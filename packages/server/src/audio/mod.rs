@@ -1,30 +1,21 @@
-//! Server-side audio capture.
+//! Server-side audio input.
 //!
-//! On macOS, captures system audio + mic via ScreenCaptureKit and emits
-//! 16 kHz mono S16LE PCM frames (~20 ms each) on an mpsc channel.
+//! Audio enters the server through an `AudioSource`, picked at boot
+//! via `MEETING_COMPANION_AUDIO_SOURCE`. Two variants are planned:
+//!   - `local`  — in-process macOS ScreenCaptureKit capture (default).
+//!   - `remote` — accepts PCM frames from a separate client over the
+//!     `/audio` WebSocket endpoint (Phase 1b — not yet wired).
 //!
-//! On other platforms, returns `Err(AudioInitError::Unsupported)` — the
-//! server still runs, just without an audio source. Tests can use this
-//! by setting `MEETING_COMPANION_AUDIO_DISABLED=1`.
+//! Both variants produce 16 kHz mono S16LE PCM frames (~20 ms each)
+//! on an mpsc channel — the downstream STT pipeline doesn't know
+//! which one is feeding it.
 
 pub mod format;
+pub mod local;
+pub mod source;
 
 #[cfg(target_os = "macos")]
-pub mod capture;
+pub(crate) mod capture;
 
-#[cfg(target_os = "macos")]
-pub use capture::{spawn_audio_task, AudioInitError};
-
-#[cfg(not(target_os = "macos"))]
-pub async fn spawn_audio_task(
-    _cancel: tokio_util::sync::CancellationToken,
-) -> Result<tokio::sync::mpsc::Receiver<Vec<u8>>, AudioInitError> {
-    Err(AudioInitError::Unsupported)
-}
-
-#[cfg(not(target_os = "macos"))]
-#[derive(Debug, thiserror::Error)]
-pub enum AudioInitError {
-    #[error("Audio capture is only supported on macOS in this build.")]
-    Unsupported,
-}
+pub use local::LocalAudioSource;
+pub use source::{AudioInitError, AudioSource};

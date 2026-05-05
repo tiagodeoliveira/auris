@@ -8,22 +8,14 @@
 #![cfg(target_os = "macos")]
 
 use crate::audio::format::{floats_to_s16le_bytes, to_mono_16k_f32};
+use crate::audio::source::AudioInitError;
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use thiserror::Error;
 use tokio::sync::mpsc;
 use tokio::time::MissedTickBehavior;
 use tokio_util::sync::CancellationToken;
-
-#[derive(Debug, Error)]
-pub enum AudioInitError {
-    #[error("Screen Recording permission denied (TCC). Grant it in System Settings → Privacy & Security → Screen Recording, then restart the terminal.")]
-    PermissionDenied,
-    #[error("ScreenCaptureKit init failed: {0}")]
-    Init(String),
-}
 
 /// 1 second of 16 kHz mono Float32 = 16,000 samples per ring. Drop-oldest
 /// when full. With both sources at ~50 fps and the mixer also at 50 fps,
@@ -41,7 +33,10 @@ const MIXER_INTERVAL: Duration = Duration::from_millis(20);
 /// Spawn the audio capture pipeline. Mixed PCM frames (16 kHz mono S16LE,
 /// ~20 ms each, ~640 bytes each) land on the returned mpsc receiver. Cancel
 /// the token to stop capture.
-pub async fn spawn_audio_task(
+///
+/// Crate-private: callers go through `LocalAudioSource::start` (which
+/// dispatches to this on macOS and to `Unsupported` elsewhere).
+pub(crate) async fn spawn_audio_task(
     cancel: CancellationToken,
 ) -> Result<mpsc::Receiver<Vec<u8>>, AudioInitError> {
     use screencapturekit::prelude::*;
