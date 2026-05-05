@@ -92,8 +92,9 @@ struct MenuBarContent: View {
         .keyboardShortcut("q")
     }
 
-    /// Reflects the current AudioCapture state. While running, shows
-    /// a frame counter so the user can confirm SCKit is delivering.
+    /// Reflects the current AudioCapture + AudioStreamer state.
+    /// While running, shows a frame counter so the user can confirm
+    /// SCKit is delivering AND the streamer is shipping.
     private var audioCaptureMenuLabel: String {
         switch model.audioCapture.state {
         case .stopped, .error:
@@ -101,7 +102,9 @@ struct MenuBarContent: View {
         case .starting:
             return "Starting audio capture…"
         case .running:
-            return "Stop audio capture (\(model.audioCapture.frameCount) frames)"
+            let captured = model.audioCapture.frameCount
+            let streamed = model.audioStreamer.framesSent
+            return "Stop audio capture (\(streamed)/\(captured) frames sent)"
         }
     }
 

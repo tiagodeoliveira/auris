@@ -32,17 +32,17 @@ What it is _not_:
 
 ## Status — Phase 2c complete (Mac talks to the server)
 
-| Sub-phase | Goal                                                           | Status             |
-| --------- | -------------------------------------------------------------- | ------------------ |
-| **2a**    | Mac scaffold: SwiftPM + menu bar item + AppModel placeholder   | **✓ Done**         |
-| **2b**    | Server-side device registry + control channel                  | **✓ Done**         |
-| **2c**    | Settings window + token-based server connection                | **✓ Done**         |
-| **2f₁**   | Mac registers as a device on connect; ownDevice + capabilities | **✓ Done**         |
-| **2d**    | Permissions onboarding (Microphone + Screen Recording)         | **✓ Done**         |
-| **2e**    | Audio capture in Swift (SCKit) + mixer parity with Rust        | **✓ Done**         |
-| **2f₂**   | Stream PCM via `/audio` (depends on 2e)                        | Pending (after 2e) |
-| **2g**    | Compose window (description input + Start Meeting flow)        | Pending            |
-| **2h**    | Native Meetings browse window (depends on Phase 4 APIs)        | Deferred           |
+| Sub-phase | Goal                                                           | Status     |
+| --------- | -------------------------------------------------------------- | ---------- |
+| **2a**    | Mac scaffold: SwiftPM + menu bar item + AppModel placeholder   | **✓ Done** |
+| **2b**    | Server-side device registry + control channel                  | **✓ Done** |
+| **2c**    | Settings window + token-based server connection                | **✓ Done** |
+| **2f₁**   | Mac registers as a device on connect; ownDevice + capabilities | **✓ Done** |
+| **2d**    | Permissions onboarding (Microphone + Screen Recording)         | **✓ Done** |
+| **2e**    | Audio capture in Swift (SCKit) + mixer parity with Rust        | **✓ Done** |
+| **2f₂**   | Stream PCM via `/audio` (depends on 2e)                        | **✓ Done** |
+| **2g**    | Compose window (description input + Start Meeting flow)        | Pending    |
+| **2h**    | Native Meetings browse window (depends on Phase 4 APIs)        | Deferred   |
 
 Acceptance for Phase 2 overall: three demos pass — Mac standalone,
 PWA-led with Mac as source, Mac standalone with browse (where 2h is

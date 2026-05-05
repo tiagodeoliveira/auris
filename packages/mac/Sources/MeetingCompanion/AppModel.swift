@@ -18,6 +18,7 @@ final class AppModel {
     var webSocket: WebSocketClient
     var permissionMonitor: PermissionMonitor
     var audioCapture: AudioCapture
+    var audioStreamer: AudioStreamer
 
     /// This Mac's identity in the server's device registry. Set when
     /// the server replies with `device_registered`; cleared on
@@ -43,6 +44,7 @@ final class AppModel {
         self.webSocket = WebSocketClient()
         self.permissionMonitor = PermissionMonitor()
         self.audioCapture = AudioCapture()
+        self.audioStreamer = AudioStreamer()
         self.webSocket.onMessage = { [weak self] event in
             self?.handle(event: event)
         }
@@ -128,19 +130,27 @@ final class AppModel {
         availableDevices = []
     }
 
-    /// Phase 2e debug affordance: start audio capture and log frame
-    /// counts. The Phase 2g compose-meeting flow will replace this
-    /// with proper meeting-bound start/stop.
+    /// Phase 2e/2f₂ debug affordance: start audio capture AND stream
+    /// the resulting frames to the server's /audio endpoint. The
+    /// Phase 2g compose-meeting flow will replace this with proper
+    /// meeting-bound start/stop.
     func toggleAudioCapture() async {
         switch audioCapture.state {
         case .stopped, .error:
             do {
                 try await audioCapture.start()
+                if let frames = audioCapture.output {
+                    audioStreamer.start(
+                        serverURL: settings.serverURL,
+                        token: settings.token,
+                        frames: frames)
+                }
             } catch {
                 // surfaced via audioCapture.state
                 _ = error
             }
         case .running, .starting:
+            audioStreamer.stop()
             audioCapture.stop()
         }
     }
