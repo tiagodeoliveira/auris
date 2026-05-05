@@ -95,6 +95,25 @@ pub struct MomentRequest {
     pub note: Option<String>,
 }
 
+/// In-memory representation of an unfinished meeting recovered from
+/// disk on server boot. Built by `db::find_active_meeting` +
+/// `persistence::read_transcription` and consumed by
+/// `ServerState::rehydrate_from_recovered_meeting`.
+#[derive(Debug, Clone)]
+pub struct RecoveredMeeting {
+    pub id: String,
+    pub description: Option<String>,
+    pub metadata: HashMap<String, String>,
+    /// Wall-clock start time. Stored only for display / log; the
+    /// in-memory `meeting_started_at: Instant` gets stamped fresh
+    /// at recovery time since `Instant` can't be reconstructed.
+    pub started_at: chrono::DateTime<chrono::Utc>,
+    /// All previously-committed transcript items, replayed from the
+    /// per-meeting JSONL blob. Empty when the meeting had no
+    /// committed transcript before the crash.
+    pub transcript_items: Vec<Item>,
+}
+
 pub struct ServerState {
     pub(crate) meeting_state: MeetingState,
     pub(crate) available_modes: Vec<ModeOption>,
@@ -143,6 +162,32 @@ impl ServerState {
         };
         s.assert_invariants();
         s
+    }
+
+    /// Rehydrate from a meeting that was active when the server last
+    /// stopped. Called once at boot, before any clients connect.
+    /// Wipes any in-memory state to avoid mixing fresh and recovered
+    /// fields, then re-installs the recovered ones.
+    ///
+    /// Note: `meeting_started_at` is stamped with `Instant::now()`
+    /// rather than the wall-clock `recovered.started_at` — `Instant`
+    /// is monotonic and process-local so we can't reconstruct it.
+    /// Anywhere that wants a true wall-clock start consults the DB
+    /// row directly (`db::find_active_meeting`), not this field.
+    pub fn rehydrate_from_recovered_meeting(&mut self, r: &RecoveredMeeting) {
+        self.meeting_state = MeetingState::Active;
+        self.current_meeting_id = Some(r.id.clone());
+        self.metadata = r.metadata.clone();
+        self.meeting_started_at = Some(Instant::now());
+        self.current_mode = DEFAULT_MODE_ID.to_string();
+        // Replay transcript items into transcript-mode. Other modes
+        // start empty — their summarizers will re-derive items as
+        // new transcript chunks come in.
+        self.items_per_mode
+            .insert(DEFAULT_MODE_ID.to_string(), r.transcript_items.clone());
+        self.rolling_transcript.clear();
+        self.recalled_context = None;
+        self.assert_invariants();
     }
 
     pub fn snapshot(&self) -> Event {
@@ -638,6 +683,34 @@ mod tests {
     fn new_has_idle_state() {
         let s = ServerState::new();
         assert!(matches!(s.meeting_state, MeetingState::Idle));
+    }
+
+    #[test]
+    fn rehydrate_from_recovered_meeting_installs_state() {
+        let mut s = ServerState::new();
+        let recovered = RecoveredMeeting {
+            id: "rec-1".to_string(),
+            description: Some("recovered standup".to_string()),
+            metadata: HashMap::from([("project".to_string(), "helix".to_string())]),
+            started_at: chrono::Utc::now(),
+            transcript_items: vec![Item {
+                id: "i1".to_string(),
+                text: "hello world".to_string(),
+                detail: None,
+                t: 100,
+                meta: None,
+            }],
+        };
+        s.rehydrate_from_recovered_meeting(&recovered);
+
+        assert!(matches!(s.meeting_state, MeetingState::Active));
+        assert_eq!(s.current_meeting_id.as_deref(), Some("rec-1"));
+        assert_eq!(s.metadata.get("project"), Some(&"helix".to_string()));
+        assert!(s.meeting_started_at.is_some());
+        assert_eq!(s.current_mode, DEFAULT_MODE_ID);
+        let items = s.items_per_mode.get(DEFAULT_MODE_ID).unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].text, "hello world");
     }
 
     #[test]

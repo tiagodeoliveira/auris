@@ -94,6 +94,30 @@ pub async fn insert_meeting(
     Ok(())
 }
 
+/// Find the most recent meeting whose `ended_at` is NULL. There
+/// should be at most one in normal operation (we clear the field
+/// on `stop_meeting`); if multiple exist due to crash sequencing
+/// we pick the newest by `started_at` and ignore older ones —
+/// boot recovery covers the most likely "the user was mid-meeting
+/// when the server died" case.
+///
+/// Returns `(id, description, metadata_json, started_at)` or `None`.
+pub async fn find_active_meeting(
+    pool: &SqlitePool,
+) -> Result<Option<(String, Option<String>, String, DateTime<Utc>)>> {
+    let row: Option<(String, Option<String>, String, DateTime<Utc>)> = sqlx::query_as(
+        r#"SELECT id, description, metadata, started_at
+             FROM meetings
+            WHERE ended_at IS NULL
+            ORDER BY started_at DESC
+            LIMIT 1"#,
+    )
+    .fetch_optional(pool)
+    .await
+    .context("find_active_meeting")?;
+    Ok(row)
+}
+
 /// Mark a meeting as ended at the given timestamp. No-op (silently)
 /// if `meeting_id` doesn't exist or has already been ended.
 pub async fn end_meeting(

@@ -2,6 +2,7 @@
 
 use anyhow::Result;
 use futures_util::{SinkExt, StreamExt};
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
@@ -68,6 +69,17 @@ pub async fn run_server_with_listener(
     let (events_tx, _) = broadcast::channel::<Event>(64);
     let shutdown = CancellationToken::new();
     let state = Arc::new(Mutex::new(ServerState::new()));
+
+    // DB first — boot recovery wants to query meetings before any
+    // subscribers spin up.
+    let db = crate::db::open_pool().await?;
+
+    // Boot recovery. If the previous run died with a meeting still
+    // active (ended_at IS NULL in the meetings table), pick it up,
+    // replay the persisted transcript items, and resume as if the
+    // meeting had never been interrupted.
+    let recovered = recover_active_meeting(&db, &state).await;
+
     // Memory layer: spin up the ingestion pusher and the start-of-meeting
     // recaller. Each gets its own broadcast subscription. No-op if mnemo
     // env vars are not set.
@@ -81,7 +93,6 @@ pub async fn run_server_with_listener(
     // Other modes' items are not persisted (they're derived from
     // transcripts and can be re-run if ever needed).
     crate::persistence::spawn_task(state.clone(), &events_tx);
-    let db = crate::db::open_pool().await?;
     let handle = ServerHandle {
         state,
         events_tx,
@@ -93,6 +104,28 @@ pub async fn run_server_with_listener(
         audio_source: Arc::new(crate::audio::RemoteAudioSource::new()),
         db,
     };
+
+    // If we recovered an active meeting, fire a synthetic
+    // `MeetingStateChanged Active` so the subscribers we just spawned
+    // (mnemo, etc.) treat it as a started session. Then spin up the
+    // live pipeline so STT + summarizers + audio are all running again.
+    // The Mac's auto-reconnect will reconnect /audio into the new
+    // RemoteAudioSource sender via late binding.
+    if let Some(recovered_id) = recovered {
+        let _ = handle.events_tx.send(Event::MeetingStateChanged {
+            meeting_state: crate::contract::MeetingState::Active,
+            meeting_id: Some(recovered_id.clone()),
+        });
+
+        let token = {
+            let mut slot = handle.meeting_cancel.lock().unwrap();
+            let t = CancellationToken::new();
+            *slot = Some(t.clone());
+            t
+        };
+        spawn_live_pipeline(handle.clone(), token.child_token()).await;
+        info!(meeting_id = %recovered_id, "live pipeline restarted for recovered meeting");
+    }
 
     // REST API for browsing past meetings. Lives on a separate
     // listener (typically `ws_port + 1`); shares this handle's db
@@ -425,6 +458,64 @@ async fn handle_audio_connection(
         "/audio connection closed"
     );
     Ok(())
+}
+
+/// On boot, look for a meeting whose `ended_at` is still NULL in the
+/// `meetings` table — that's the previous run dying mid-meeting.
+/// Replay its transcript from the per-meeting JSONL blob, mutate
+/// `ServerState` so the next snapshot reflects an active meeting,
+/// and return the recovered id (used by the caller to spawn the
+/// live pipeline + emit a synthetic state-change event).
+///
+/// Returns `None` if there's nothing to recover or if loading fails.
+/// Failures are logged but never propagate — boot recovery is
+/// best-effort, the server should still come up even if the disk
+/// is corrupted.
+async fn recover_active_meeting(
+    db: &sqlx::SqlitePool,
+    state: &Arc<Mutex<ServerState>>,
+) -> Option<String> {
+    // Test escape hatch: integration tests share a process and would
+    // resurrect each other's leftover meetings without this gate.
+    // Production never sets it.
+    if std::env::var("MEETING_COMPANION_SKIP_BOOT_RECOVERY").is_ok() {
+        return None;
+    }
+    let row = match crate::db::find_active_meeting(db).await {
+        Ok(Some(r)) => r,
+        Ok(None) => return None,
+        Err(e) => {
+            warn!(error = ?e, "find_active_meeting failed; skipping boot recovery");
+            return None;
+        }
+    };
+    let (id, description, metadata_json, started_at) = row;
+
+    let metadata: HashMap<String, String> =
+        serde_json::from_str(&metadata_json).unwrap_or_default();
+    let transcript_items = crate::persistence::read_transcription(&id)
+        .await
+        .unwrap_or_default();
+
+    info!(
+        meeting_id = %id,
+        items = transcript_items.len(),
+        ?started_at,
+        "recovering active meeting"
+    );
+
+    let recovered = crate::state::RecoveredMeeting {
+        id: id.clone(),
+        description,
+        metadata,
+        started_at,
+        transcript_items,
+    };
+    state
+        .lock()
+        .await
+        .rehydrate_from_recovered_meeting(&recovered);
+    Some(id)
 }
 
 fn parse_token_from_uri(raw: &str) -> Option<String> {

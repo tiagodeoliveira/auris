@@ -74,6 +74,24 @@ async fn persist_transcript_items(state: &Arc<Mutex<ServerState>>, items: &[Item
     append_jsonl(&path, items).await
 }
 
+/// Read the per-meeting transcription jsonl back into `Item`s.
+/// Returns `Ok(vec![])` when the file doesn't exist (no transcript
+/// was ever committed) or any line fails to parse — boot recovery
+/// is best-effort, partial transcripts are better than aborting
+/// the whole resume because of one corrupted line.
+pub async fn read_transcription(meeting_id: &str) -> Result<Vec<Item>> {
+    let path = transcription_path(meeting_id)?;
+    let content = match tokio::fs::read_to_string(&path).await {
+        Ok(c) => c,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(anyhow::Error::from(e).context(format!("read {}", path.display()))),
+    };
+    Ok(content
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Item>(line).ok())
+        .collect())
+}
+
 /// `<DATA_DIR>/blobs/meetings/<meeting_id>/transcription.jsonl`.
 pub fn transcription_path(meeting_id: &str) -> Result<PathBuf> {
     let dir = crate::db::data_dir()?;

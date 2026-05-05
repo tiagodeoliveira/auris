@@ -44,6 +44,11 @@ pub async fn spawn_test_server_with_token(token: &str) -> TestServer {
         std::env::set_var("AWS_SECRET_ACCESS_KEY", "test");
         std::env::set_var("AWS_REGION", "us-west-2");
     }
+    // Skip Phase C boot recovery in integration tests. Without this,
+    // any previous test that left a meeting active (ended_at IS NULL)
+    // would be resurrected on the next test's boot, polluting state.
+    // Production servers always set this off (default).
+    std::env::set_var("MEETING_COMPANION_SKIP_BOOT_RECOVERY", "1");
 
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let addr = listener.local_addr().expect("addr");
