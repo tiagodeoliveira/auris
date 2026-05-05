@@ -43,9 +43,9 @@ struct MeetingOverlayView: View {
         .background {
             // Translucent HUD look. Flat dark fill (rather than
             // a system material) gives us a precise opacity knob.
-            // Tune the 0.72 here if it's still wrong.
+            // Tune the 0.84 here if it's still wrong.
             RoundedRectangle(cornerRadius: 12)
-                .fill(Color.black.opacity(0.72))
+                .fill(Color.black.opacity(0.84))
         }
         .background(WindowAccessor { window in
             window.level = .floating
@@ -205,18 +205,28 @@ struct MeetingOverlayView: View {
     private var statusColumn: some View {
         VStack(alignment: .center, spacing: 10) {
             HStack(spacing: 4) {
-                Image(systemName: "record.circle.fill")
-                    .foregroundStyle(.red)
+                Image(systemName: model.audioToBackendPaused ? "pause.circle.fill" : "record.circle.fill")
+                    .foregroundStyle(model.audioToBackendPaused ? .yellow : .red)
                     .font(.system(size: 10))
-                Text("Live")
+                Text(model.audioToBackendPaused ? "Muted" : "Live")
                     .font(.caption2)
                     .fontWeight(.semibold)
             }
             .frame(maxWidth: .infinity)
 
-            MicActivityIcon(peak: combinedPeak, isLive: model.isMeetingActive)
+            Button {
+                model.toggleBackendAudio()
+            } label: {
+                MicActivityIcon(
+                    peak: model.audioToBackendPaused ? 0 : combinedPeak,
+                    isLive: model.isMeetingActive && !model.audioToBackendPaused
+                )
                 .frame(width: 34, height: 42)
-                .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.plain)
+            .disabled(!model.canToggleBackendAudio)
+            .frame(maxWidth: .infinity)
+            .help(model.audioToBackendPaused ? "Resume backend audio" : "Pause backend audio")
 
             HStack(spacing: 6) {
                 Button {

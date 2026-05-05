@@ -53,6 +53,10 @@ final class AppModel {
     /// pre-meeting description.
     private(set) var extractingMetadata: Bool = false
 
+    /// Local audio egress gate. When true, capture keeps running but
+    /// `AudioStreamer` drops frames before sending them to the backend.
+    private(set) var audioToBackendPaused: Bool = false
+
     /// The capabilities this Mac advertises. Frozen at app start; will
     /// reflect granted permissions once 2d (permissions onboarding) lands.
     private let advertisedCapabilities: [Capability] = [
@@ -161,7 +165,7 @@ final class AppModel {
         availableDevices = []
     }
 
-    /// True when a meeting is in progress (audio capture running).
+    /// True when a meeting is in progress or being started locally.
     var isMeetingActive: Bool {
         switch audioCapture.state {
         case .running, .starting: true
@@ -175,6 +179,10 @@ final class AppModel {
         webSocket.state == .connected
             && permissionMonitor.allGranted
             && audioCapture.state == .stopped
+    }
+
+    var canToggleBackendAudio: Bool {
+        audioCapture.state == .running && audioStreamer.state == .streaming
     }
 
     /// Start a meeting end-to-end from the Mac. The sequence is
@@ -194,36 +202,7 @@ final class AppModel {
         guard canStartMeeting else { return }
 
         clearTranscript()
-        do {
-            try await audioCapture.start()
-        } catch {
-            return  // surfaced via audioCapture.state
-        }
-        guard let frames = audioCapture.output else { return }
-
-        audioStreamer.start(
-            serverURL: settings.serverURL,
-            token: settings.token,
-            frames: frames)
-
-        // Wait up to 2 s for the streamer to confirm the /audio WS
-        // is open and at least one frame has shipped — only then is
-        // it safe to send start_meeting (the server's
-        // RemoteAudioSource needs the install() side to have run).
-        let deadline = Date().addingTimeInterval(2.0)
-        while audioStreamer.state != .streaming, Date() < deadline {
-            if case .error = audioStreamer.state {
-                audioCapture.stop()
-                return
-            }
-            try? await Task.sleep(for: .milliseconds(50))
-        }
-        guard audioStreamer.state == .streaming else {
-            print("[AppModel] audio streamer did not reach .streaming within 2s; aborting")
-            audioStreamer.stop()
-            audioCapture.stop()
-            return
-        }
+        guard await startAudioStream() else { return }
 
         do {
             try await webSocket.send(intent: StartMeetingIntent(description: description))
@@ -248,6 +227,14 @@ final class AppModel {
         audioCapture.stop()
         metadata = [:]
         extractingMetadata = false
+        audioToBackendPaused = false
+    }
+
+    func toggleBackendAudio() {
+        guard canToggleBackendAudio else { return }
+        audioToBackendPaused.toggle()
+        audioStreamer.setMuted(audioToBackendPaused)
+        print("[AppModel] backend audio \(audioToBackendPaused ? "paused" : "resumed")")
     }
 
     func extractMetadata(description: String) async {
@@ -292,6 +279,7 @@ final class AppModel {
             if state == "idle" {
                 metadata = [:]
                 extractingMetadata = false
+                audioToBackendPaused = false
             }
         case .deviceRegistered(let device):
             ownDevice = device
@@ -339,6 +327,41 @@ final class AppModel {
     func clearTranscript() {
         transcriptInterim = ""
         transcriptHistory = []
+    }
+
+    private func startAudioStream() async -> Bool {
+        do {
+            try await audioCapture.start()
+        } catch {
+            return false  // surfaced via audioCapture.state
+        }
+        guard let frames = audioCapture.output else { return false }
+
+        audioToBackendPaused = false
+        audioStreamer.start(
+            serverURL: settings.serverURL,
+            token: settings.token,
+            frames: frames)
+
+        // Wait up to 2 s for the streamer to confirm the /audio WS
+        // is open and at least one frame has shipped — only then is
+        // it safe to send start_meeting (the server's RemoteAudioSource
+        // needs the install() side to have run).
+        let deadline = Date().addingTimeInterval(2.0)
+        while audioStreamer.state != .streaming, Date() < deadline {
+            if case .error = audioStreamer.state {
+                audioCapture.stop()
+                return false
+            }
+            try? await Task.sleep(for: .milliseconds(50))
+        }
+        guard audioStreamer.state == .streaming else {
+            print("[AppModel] audio streamer did not reach .streaming within 2s; aborting")
+            audioStreamer.stop()
+            audioCapture.stop()
+            return false
+        }
+        return true
     }
 
     // MARK: - Helpers

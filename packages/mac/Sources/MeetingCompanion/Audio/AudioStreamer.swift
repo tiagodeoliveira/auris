@@ -24,6 +24,7 @@ final class AudioStreamer {
     private(set) var state: State = .idle
     private(set) var framesSent: UInt64 = 0
     private(set) var bytesSent: UInt64 = 0
+    private(set) var muted: Bool = false
 
     private var task: URLSessionWebSocketTask?
     private var pumpTask: Task<Void, Never>?
@@ -51,6 +52,7 @@ final class AudioStreamer {
 
         framesSent = 0
         bytesSent = 0
+        muted = false
 
         pumpTask = Task { [weak self] in
             print("[AudioStreamer] pump task spawned")
@@ -69,6 +71,14 @@ final class AudioStreamer {
         if state != .idle {
             state = .idle
         }
+        muted = false
+    }
+
+    /// Locally gate audio egress without changing the meeting state on
+    /// the server. Capture keeps running, but frames are dropped before
+    /// they reach `/audio`.
+    func setMuted(_ muted: Bool) {
+        self.muted = muted
     }
 
     private func pump(
@@ -89,6 +99,9 @@ final class AudioStreamer {
             if !sawFirstFrame {
                 sawFirstFrame = true
                 print("[AudioStreamer] pump: FIRST frame received from AsyncStream (\(frame.count) bytes)")
+            }
+            if muted {
+                continue
             }
             do {
                 try await task.send(.data(frame))
