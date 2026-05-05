@@ -33,11 +33,16 @@ pub struct ServerHandle {
     pub extraction_cancel: Arc<StdMutex<Option<CancellationToken>>>,
     pub shutdown: CancellationToken,
     pub llm: Arc<LlmClient>,
-    /// Single audio-source instance, picked at boot. Lives for the
-    /// server lifetime; meetings call `start()` against it. The
-    /// `/audio` WS handler installs incoming PCM into the `Remote`
-    /// variant via this same instance.
-    pub audio_source: Arc<crate::audio::AudioSource>,
+    /// Single `RemoteAudioSource` instance for the server lifetime.
+    /// Meetings call `start()` against it to allocate a new
+    /// downstream channel; `/audio` WS connections forward incoming
+    /// PCM into the same channel via `current_sender()`.
+    pub audio_source: Arc<crate::audio::RemoteAudioSource>,
+    /// SQLite pool for meeting / moment persistence. See `db` module.
+    /// Single connection pool is fine — the access pattern is
+    /// "occasional small writes from intent handlers"; we're
+    /// nowhere near needing read replicas or sharding.
+    pub db: sqlx::SqlitePool,
 }
 
 pub async fn run_server(
@@ -69,6 +74,7 @@ pub async fn run_server_with_listener(
         state.clone(),
         &events_tx,
     );
+    let db = crate::db::open_pool().await?;
     let handle = ServerHandle {
         state,
         events_tx,
@@ -77,7 +83,8 @@ pub async fn run_server_with_listener(
         extraction_cancel: Arc::new(StdMutex::new(None)),
         shutdown: shutdown.clone(),
         llm,
-        audio_source: Arc::new(crate::audio::AudioSource::from_env()),
+        audio_source: Arc::new(crate::audio::RemoteAudioSource::new()),
+        db,
     };
 
     let hb_handle = handle.clone();
@@ -278,29 +285,12 @@ async fn handle_connection(
 /// connection churn). The handler caches the current sender locally
 /// to avoid locking on every frame, and refreshes on `Closed` (rx
 /// dropped — meeting ended) or `is_none` (no active meeting yet).
-///
-/// Rejects the connection with a Policy close if the configured audio
-/// source isn't `Remote` (i.e., the server is in `local` mode and
-/// won't consume remote frames).
 async fn handle_audio_connection(
     ws: tokio_tungstenite::WebSocketStream<TcpStream>,
     peer: SocketAddr,
     handle: ServerHandle,
 ) -> Result<()> {
-    let Some(remote) = handle.audio_source.as_remote() else {
-        warn!(
-            ?peer,
-            "/audio connection rejected: server's audio source is not in `remote` mode"
-        );
-        let mut ws = ws;
-        let _ = ws
-            .send(Message::Close(Some(CloseFrame {
-                code: CloseCode::Policy,
-                reason: "server is not configured for remote audio".into(),
-            })))
-            .await;
-        return Ok(());
-    };
+    let remote = &handle.audio_source;
 
     info!(?peer, "/audio connection accepted");
 
@@ -569,6 +559,51 @@ async fn dispatch_intent(
             t.cancel();
         }
     }
+
+    // Persistence side-effects. None of these block the broadcast
+    // path above — events have already gone out by the time we get
+    // here. A DB hiccup logs a warning but doesn't fail the intent;
+    // the meeting still proceeds in memory.
+    if let Some(rec) = outcome.created_meeting {
+        let metadata_json =
+            serde_json::to_string(&rec.metadata).unwrap_or_else(|_| "{}".to_string());
+        if let Err(e) = crate::db::insert_meeting(
+            &handle.db,
+            &rec.id,
+            rec.started_at,
+            rec.description.as_deref(),
+            &metadata_json,
+        )
+        .await
+        {
+            tracing::warn!(error = ?e, meeting_id = %rec.id, "insert_meeting failed");
+        } else {
+            tracing::info!(meeting_id = %rec.id, "meeting persisted");
+        }
+    }
+    if let Some(rec) = outcome.closed_meeting {
+        if let Err(e) = crate::db::end_meeting(&handle.db, &rec.id, rec.ended_at).await {
+            tracing::warn!(error = ?e, meeting_id = %rec.id, "end_meeting failed");
+        } else {
+            tracing::info!(meeting_id = %rec.id, "meeting closed in db");
+        }
+    }
+    if let Some(req) = outcome.mark_moment {
+        match crate::db::insert_moment(
+            &handle.db,
+            &req.meeting_id,
+            req.t as i64,
+            req.note.as_deref(),
+        )
+        .await
+        {
+            Ok(moment_id) => tracing::info!(
+                meeting_id = %req.meeting_id, moment_id = %moment_id, t = req.t,
+                "moment persisted"
+            ),
+            Err(e) => tracing::warn!(error = ?e, "insert_moment failed"),
+        }
+    }
     Ok(())
 }
 
@@ -662,9 +697,10 @@ async fn spawn_live_pipeline(handle: ServerHandle, cancel: CancellationToken) {
     let (chunk_tx, _) = tokio::sync::broadcast::channel::<crate::stt::TranscriptChunk>(64);
 
     // -------------------------------------------------------------------
-    // Audio source — pluggable via MEETING_COMPANION_AUDIO_SOURCE
-    // (default `local`). Honors MEETING_COMPANION_AUDIO_DISABLED for
-    // tests and non-mac platforms that want a silent meeting.
+    // Audio source. Allocates a downstream channel; the rx feeds STT,
+    // the tx is parked on the `RemoteAudioSource` for `/audio` WS
+    // handlers to forward into. `MEETING_COMPANION_AUDIO_DISABLED` is
+    // a test/CI knob that runs the pipeline silent (no STT input).
     // -------------------------------------------------------------------
     let audio_disabled = std::env::var("MEETING_COMPANION_AUDIO_DISABLED").is_ok();
     let audio_rx = if audio_disabled {
@@ -672,24 +708,9 @@ async fn spawn_live_pipeline(handle: ServerHandle, cancel: CancellationToken) {
         None
     } else {
         let audio_cancel = cancel.child_token();
-        match handle.audio_source.start(audio_cancel).await {
-            Ok(rx) => {
-                tracing::info!("audio source started");
-                Some(rx)
-            }
-            Err(e) => {
-                tracing::error!(error = %e, "audio source init failed; meeting will run silent");
-                let status = crate::contract::Status {
-                    listening: true,
-                    paused: false,
-                    error: Some(format!("audio: {e}")),
-                };
-                let _ = handle
-                    .events_tx
-                    .send(crate::contract::Event::Status { status });
-                None
-            }
-        }
+        let rx = handle.audio_source.start(audio_cancel).await;
+        tracing::info!("audio source started");
+        Some(rx)
     };
 
     // -------------------------------------------------------------------

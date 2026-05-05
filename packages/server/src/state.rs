@@ -54,6 +54,45 @@ pub struct IntentOutcome {
     pub stopped_meeting: bool,
     pub paused_meeting: bool,
     pub resumed_meeting: bool,
+    /// Set by `start_meeting`; carries everything the `ws` layer
+    /// needs to insert the meetings row in SQLite.
+    pub created_meeting: Option<NewMeetingRecord>,
+    /// Set by `stop_meeting`; carries the closing id + timestamp
+    /// so the `ws` layer can update `ended_at`.
+    pub closed_meeting: Option<ClosedMeetingRecord>,
+    /// Pending moment to persist (set by `mark_moment` when a
+    /// meeting is active). Carries everything the `ws` layer needs
+    /// to write a moments row without re-grabbing the state lock.
+    pub mark_moment: Option<MomentRequest>,
+}
+
+/// Snapshot of a freshly-started meeting that the persistence layer
+/// will insert. Built in `handle_start_meeting` and consumed by the
+/// `ws` persistence path. Description is cloned out of the intent
+/// before being moved to extraction; metadata is the post-merge map.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewMeetingRecord {
+    pub id: String,
+    pub started_at: chrono::DateTime<chrono::Utc>,
+    pub description: Option<String>,
+    pub metadata: HashMap<String, String>,
+}
+
+/// Snapshot of a freshly-closed meeting. The `ws` layer flips
+/// `ended_at` on the matching `meetings.id`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClosedMeetingRecord {
+    pub id: String,
+    pub ended_at: chrono::DateTime<chrono::Utc>,
+}
+
+/// One row's worth of `moments` insert data. Built in
+/// `handle_mark_moment` and consumed by the `ws` persistence path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MomentRequest {
+    pub meeting_id: String,
+    pub t: u64,
+    pub note: Option<String>,
 }
 
 pub struct ServerState {
@@ -73,11 +112,15 @@ pub struct ServerState {
     /// the entry; Phase 4 adds a persistent `devices` table that
     /// preserves entries across reconnects.
     pub(crate) devices_by_connection: HashMap<String, crate::contract::Device>,
-    /// Device that's currently feeding audio into the meeting. `None`
-    /// during idle or for local-mode meetings (Phase 1's
-    /// `LocalAudioSource`). Phase 2f sets this when meetings bind to
-    /// a remote audio source.
+    /// Device that's currently feeding audio into the meeting.
+    /// `None` until a meeting starts and a `/audio` client is bound.
     pub(crate) audio_source_device_id: Option<String>,
+    /// UUID of the active meeting in the persistence layer. Set in
+    /// `handle_start_meeting`, cleared in `handle_stop_meeting`. The
+    /// in-memory equivalent of the `meetings.id` row in SQLite —
+    /// kept here so `mark_moment` (and future intents that need to
+    /// reference the meeting) can attach to it without touching I/O.
+    pub(crate) current_meeting_id: Option<String>,
 }
 
 impl ServerState {
@@ -96,6 +139,7 @@ impl ServerState {
             recalled_context: None,
             devices_by_connection: HashMap::new(),
             audio_source_device_id: None,
+            current_meeting_id: None,
         };
         s.assert_invariants();
         s
@@ -212,6 +256,11 @@ impl ServerState {
         }
         self.meeting_state = MeetingState::Active;
         self.meeting_started_at = Some(Instant::now());
+        // Mint the meeting id up front. Held in state so `mark_moment`
+        // can reference it without I/O; surfaced through the outcome
+        // so the `ws` layer can persist the meetings row.
+        let meeting_id = uuid::Uuid::new_v4().to_string();
+        self.current_meeting_id = Some(meeting_id.clone());
         // Preserve any metadata extracted while idle (via ExtractMetadata) when
         // the intent doesn't supply its own. If the intent supplies metadata,
         // it wins (treating the client as the source of truth at start time).
@@ -232,6 +281,16 @@ impl ServerState {
             items: self.items_per_mode[&self.current_mode].clone(),
         });
         outcome.started_meeting = true;
+        // Snapshot the description before it's potentially moved to
+        // `start_extraction_for` below — we want both paths (DB insert
+        // *and* extraction) to see the same value.
+        let description_for_record = description.as_ref().filter(|s| !s.is_empty()).cloned();
+        outcome.created_meeting = Some(NewMeetingRecord {
+            id: meeting_id,
+            started_at: chrono::Utc::now(),
+            description: description_for_record,
+            metadata: self.metadata.clone(),
+        });
         if let Some(d) = description.filter(|s| !s.is_empty()) {
             outcome.start_extraction_for = Some(d);
         }
@@ -251,11 +310,21 @@ impl ServerState {
         self.current_mode = DEFAULT_MODE_ID.to_string();
         self.rolling_transcript.clear();
         self.recalled_context = None;
+        // Surface the closing id to the persistence layer before
+        // clearing it locally — the `ws` handler reads
+        // `outcome.closed_meeting_id` to set `ended_at` in SQLite.
+        let closing_id = self.current_meeting_id.take();
 
         outcome.events.push(Event::MeetingStateChanged {
             meeting_state: MeetingState::Idle,
         });
         outcome.stopped_meeting = true;
+        if let Some(id) = closing_id {
+            outcome.closed_meeting = Some(ClosedMeetingRecord {
+                id,
+                ended_at: chrono::Utc::now(),
+            });
+        }
     }
 
     fn handle_pause(&mut self, outcome: &mut IntentOutcome) {
@@ -334,13 +403,25 @@ impl ServerState {
             tracing::warn!(state = ?self.meeting_state, "mark_moment in invalid state");
             return;
         }
-        tracing::info!(t, ?note, "mark_moment");
+        // `meeting_state == Active` guarantees `current_meeting_id`
+        // is Some — both are written atomically in `handle_start_meeting`
+        // and cleared atomically in `handle_stop_meeting`.
+        let Some(meeting_id) = self.current_meeting_id.clone() else {
+            tracing::error!("invariant violation: Active meeting with no current_meeting_id");
+            return;
+        };
+        tracing::info!(t, ?note, meeting_id = %meeting_id, "mark_moment");
         outcome.events.push(Event::Status {
             status: Status {
                 listening: true,
                 paused: false,
                 error: None,
             },
+        });
+        outcome.mark_moment = Some(MomentRequest {
+            meeting_id,
+            t,
+            note,
         });
     }
 

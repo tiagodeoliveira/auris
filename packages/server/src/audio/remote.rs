@@ -26,8 +26,6 @@ use std::sync::Arc;
 use tokio::sync::{mpsc, Mutex};
 use tokio_util::sync::CancellationToken;
 
-use super::source::AudioInitError;
-
 #[derive(Clone, Default)]
 pub struct RemoteAudioSource {
     /// Current meeting's audio sink. Set by `start()`; cleared
@@ -48,22 +46,17 @@ impl RemoteAudioSource {
     /// the slot for `/audio` handlers to forward into, and returns
     /// the `Receiver` for the STT pipeline.
     ///
-    /// Late-binding: this no longer requires an `/audio` client to
-    /// be connected. If none is, the rx yields silence until one
+    /// Late-binding: always succeeds. If no `/audio` client is
+    /// connected, the returned rx simply yields nothing until one
     /// arrives. If the active `/audio` disconnects mid-meeting, the
-    /// rx pauses until it reconnects. This intentionally cannot
-    /// fail with `NotConnected` — the variant is preserved for
-    /// future audio-source kinds that have init-time prerequisites.
-    pub async fn start(
-        &self,
-        _cancel: CancellationToken,
-    ) -> Result<mpsc::Receiver<Vec<u8>>, AudioInitError> {
+    /// rx pauses until it reconnects.
+    pub async fn start(&self, _cancel: CancellationToken) -> mpsc::Receiver<Vec<u8>> {
         // 80 frames ≈ 1.6 s of audio at 50 fps, 640 B each. Same
         // budget the per-connection forwarder used to use.
         let (tx, rx) = mpsc::channel::<Vec<u8>>(80);
         let mut slot = self.inner.lock().await;
         *slot = Some(tx);
-        Ok(rx)
+        rx
     }
 
     /// Returns the active meeting's audio `Sender`, or `None` if
@@ -92,7 +85,7 @@ mod tests {
         // nothing until a sender forwards frames into the slot.
         let src = RemoteAudioSource::new();
         let cancel = CancellationToken::new();
-        let mut rx = src.start(cancel).await.expect("start should succeed");
+        let mut rx = src.start(cancel).await;
 
         // Forward into the slot via current_sender — simulates an
         // `/audio` client connecting *after* start.
@@ -109,7 +102,7 @@ mod tests {
         // transitions back to None on the next current_sender lookup.
         let src = RemoteAudioSource::new();
         let cancel = CancellationToken::new();
-        let rx = src.start(cancel).await.unwrap();
+        let rx = src.start(cancel).await;
         assert!(src.current_sender().await.is_some());
 
         drop(rx);
@@ -133,7 +126,7 @@ mod tests {
         // streams of frames as if from a single producer.
         let src = RemoteAudioSource::new();
         let cancel = CancellationToken::new();
-        let mut rx = src.start(cancel).await.unwrap();
+        let mut rx = src.start(cancel).await;
 
         // First "client".
         let tx1 = src.current_sender().await.unwrap();

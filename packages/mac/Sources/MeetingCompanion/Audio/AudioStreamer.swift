@@ -55,6 +55,15 @@ final class AudioStreamer {
     private static let backoffBase: TimeInterval = 0.5
     private static let backoffMax: TimeInterval = 30.0
 
+    /// Consecutive failures since the last `.streaming` state. Caps
+    /// the reconnect loop so a misconfigured / dead server doesn't
+    /// spin us forever — most commonly when the server is in
+    /// `local` audio mode and rejects every `/audio` connection
+    /// with a Policy close. After this many tries we give up and
+    /// surface `.error` so the UI can react.
+    private var consecutiveFailures: Int = 0
+    private static let maxConsecutiveFailures: Int = 10
+
     private static let log = Logger(
         subsystem: "com.meeting-companion.mac", category: "AudioStreamer")
 
@@ -69,6 +78,7 @@ final class AudioStreamer {
         self.token = token
         self.shouldAutoReconnect = true
         self.nextBackoff = Self.backoffBase
+        self.consecutiveFailures = 0
 
         framesSent = 0
         bytesSent = 0
@@ -125,16 +135,33 @@ final class AudioStreamer {
             if !shouldRetry { break }
             if Task.isCancelled || !shouldAutoReconnect { break }
 
+            consecutiveFailures += 1
+            if consecutiveFailures >= Self.maxConsecutiveFailures {
+                let msg =
+                    "Audio path failed \(consecutiveFailures) times. Server may be in `local` audio mode (set MEETING_COMPANION_AUDIO_SOURCE=remote) or unreachable."
+                print("[AudioStreamer] pump: giving up — \(msg)")
+                Self.log.error("\(msg, privacy: .public)")
+                shouldAutoReconnect = false
+                state = .error(msg)
+                break
+            }
+
             let delay = nextBackoff
             nextBackoff = min(nextBackoff * 2, Self.backoffMax)
             state = .reconnecting
-            print("[AudioStreamer] pump: WS dropped — reconnecting in \(delay)s")
+            print(
+                "[AudioStreamer] pump: WS dropped (\(consecutiveFailures)/\(Self.maxConsecutiveFailures)) — reconnecting in \(delay)s"
+            )
             Self.log.warning(
-                "audio WS dropped; reconnecting in \(delay, privacy: .public)s")
+                "audio WS dropped (\(self.consecutiveFailures, privacy: .public)/\(Self.maxConsecutiveFailures, privacy: .public)); reconnecting in \(delay, privacy: .public)s"
+            )
             try? await Task.sleep(for: .seconds(delay))
         }
 
-        if state != .idle {
+        if case .error = state {
+            // Already surfaced as .error above — keep it, don't
+            // overwrite with .idle on the way out.
+        } else if state != .idle {
             state = .idle
         }
         Self.log.info(
@@ -163,9 +190,11 @@ final class AudioStreamer {
                 if state != .streaming {
                     state = .streaming
                     // First successful send after a (re)connect:
-                    // the path is healthy, reset the backoff so a
-                    // future drop starts at base again.
+                    // the path is healthy, reset both the backoff
+                    // and the consecutive-failure cap so a future
+                    // drop starts fresh.
                     nextBackoff = Self.backoffBase
+                    consecutiveFailures = 0
                     if framesSent == 0 {
                         print("[AudioStreamer] pump: FIRST frame sent over WS")
                     } else {

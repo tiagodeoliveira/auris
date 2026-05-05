@@ -3,6 +3,7 @@
 
 pub mod audio;
 pub mod contract;
+pub mod db;
 pub mod extraction;
 pub mod llm;
 pub mod mnemo;
