@@ -117,7 +117,10 @@ async fn handle_event(client: &MnemoClient, state: &mut PusherState, event: Even
         | Event::PriorContextChanged { .. }
         | Event::TranscriptInterim { .. }
         | Event::Status { .. }
-        | Event::Error { .. } => {}
+        | Event::Error { .. }
+        | Event::DeviceRegistered { .. }
+        | Event::DevicesChanged { .. }
+        | Event::AudioSourceDeviceChanged { .. } => {}
     }
 }
 

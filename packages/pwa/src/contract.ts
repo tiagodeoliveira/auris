@@ -30,6 +30,15 @@ export interface PriorContextSummary {
   project_memories: number;
 }
 
+export type Capability = "audio_capture" | "screen_capture" | "control_surface" | "system_audio";
+
+export interface Device {
+  id: string;
+  hostname: string;
+  capabilities: Capability[];
+  online: boolean;
+}
+
 export type Intent =
   | { type: "start_meeting"; description?: string; metadata?: Record<string, string> }
   | { type: "stop_meeting" }
@@ -38,6 +47,7 @@ export type Intent =
   | { type: "set_mode"; mode: string }
   | { type: "set_metadata"; key: string; value: string | null }
   | { type: "extract_metadata"; description: string }
+  | { type: "register_device"; hostname: string; capabilities: Capability[] }
   | { type: "mark_moment"; t: number; note?: string }
   | { type: "expand_item"; item_id: string };
 
@@ -53,9 +63,14 @@ export type Event =
       items: Item[];
       status: Status;
       prior_context?: PriorContextSummary;
+      devices: Device[];
+      audio_source_device_id?: string;
     }
   | { type: "meeting_state_changed"; meeting_state: MeetingState }
   | { type: "prior_context_changed"; summary: PriorContextSummary }
+  | { type: "device_registered"; device: Device }
+  | { type: "devices_changed"; devices: Device[] }
+  | { type: "audio_source_device_changed"; device_id?: string }
   | { type: "available_modes_changed"; available_modes: ModeOption[] }
   | { type: "mode_changed"; mode: string; display_tag?: string; items: Item[] }
   | { type: "display_tag_changed"; tag?: string }

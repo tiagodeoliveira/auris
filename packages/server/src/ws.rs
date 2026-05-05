@@ -191,6 +191,10 @@ async fn handle_connection(
         return handle_audio_connection(ws, peer, handle).await;
     }
 
+    // Per-connection ID. Used as the key for any device this
+    // connection registers; on disconnect we remove the entry.
+    let connection_id = uuid::Uuid::new_v4().to_string();
+
     let mut events_rx = handle.events_tx.subscribe();
     let snapshot = {
         let s = handle.state.lock().await;
@@ -232,7 +236,7 @@ async fn handle_connection(
             msg = stream.next() => {
                 match msg {
                     Some(Ok(Message::Text(t))) => {
-                        dispatch_intent(&t, &handle, &mut sink).await?;
+                        dispatch_intent(&t, &handle, &connection_id, &mut sink).await?;
                     }
                     Some(Ok(Message::Close(_))) | None => break,
                     Some(Ok(_)) => {}    // ignore binary, ping, pong
@@ -243,6 +247,20 @@ async fn handle_connection(
                 }
             }
         }
+    }
+
+    // Drop any device registered against this connection; broadcast.
+    let removed = {
+        let mut s = handle.state.lock().await;
+        s.unregister_device(&connection_id)
+    };
+    if let Some(d) = removed {
+        info!(?peer, device_id = %d.id, hostname = %d.hostname, "device unregistered on disconnect");
+        let devices = {
+            let s = handle.state.lock().await;
+            s.devices_clone()
+        };
+        let _ = handle.events_tx.send(Event::DevicesChanged { devices });
     }
 
     info!(?peer, "connection closed");
@@ -354,6 +372,7 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
 async fn dispatch_intent(
     text: &str,
     handle: &ServerHandle,
+    connection_id: &str,
     sink: &mut futures_util::stream::SplitSink<
         tokio_tungstenite::WebSocketStream<TcpStream>,
         Message,
@@ -380,6 +399,7 @@ async fn dispatch_intent(
         "set_mode",
         "set_metadata",
         "extract_metadata",
+        "register_device",
         "mark_moment",
         "expand_item",
     ];
@@ -408,6 +428,34 @@ async fn dispatch_intent(
     };
 
     tracing::info!(intent = ?intent, "intent received");
+
+    // RegisterDevice needs the connection_id (only ws.rs knows it),
+    // so it's handled here rather than in `apply_intent`.
+    if let Intent::RegisterDevice {
+        hostname,
+        capabilities,
+    } = intent
+    {
+        let (device, all_devices) = {
+            let mut s = handle.state.lock().await;
+            let device = s.register_device(connection_id.to_string(), hostname, capabilities);
+            let all = s.devices_clone();
+            (device, all)
+        };
+        // Direct response to the registering client (so it learns its
+        // own assigned device_id). Sent on the auth'd sink before any
+        // broadcast lands, so the client never sees its own device in
+        // a `DevicesChanged` before the `DeviceRegistered`.
+        let registered = Event::DeviceRegistered { device };
+        sink.send(Message::Text(serde_json::to_string(&registered)?))
+            .await
+            .ok();
+        // Broadcast to everyone else.
+        let _ = handle.events_tx.send(Event::DevicesChanged {
+            devices: all_devices,
+        });
+        return Ok(());
+    }
 
     let outcome = {
         let mut s = handle.state.lock().await;

@@ -68,6 +68,16 @@ pub struct ServerState {
     /// shared with the LLM summarizers as a "Prior context" preamble.
     /// `None` until recall completes (or if mnemo is disabled / failed).
     pub(crate) recalled_context: Option<crate::mnemo::RecalledContext>,
+    /// Registered devices keyed by `connection_id` (a UUID minted per
+    /// WS connection). Phase 2b is in-memory only — disconnect removes
+    /// the entry; Phase 4 adds a persistent `devices` table that
+    /// preserves entries across reconnects.
+    pub(crate) devices_by_connection: HashMap<String, crate::contract::Device>,
+    /// Device that's currently feeding audio into the meeting. `None`
+    /// during idle or for local-mode meetings (Phase 1's
+    /// `LocalAudioSource`). Phase 2f sets this when meetings bind to
+    /// a remote audio source.
+    pub(crate) audio_source_device_id: Option<String>,
 }
 
 impl ServerState {
@@ -84,6 +94,8 @@ impl ServerState {
             meeting_started_at: None,
             rolling_transcript: Vec::new(),
             recalled_context: None,
+            devices_by_connection: HashMap::new(),
+            audio_source_device_id: None,
         };
         s.assert_invariants();
         s
@@ -108,7 +120,46 @@ impl ServerState {
                 error: None,
             },
             prior_context: self.recalled_context.as_ref().map(|c| c.summary()),
+            devices: self.devices_by_connection.values().cloned().collect(),
+            audio_source_device_id: self.audio_source_device_id.clone(),
         }
+    }
+
+    /// Register (or re-register) a device under the given WS
+    /// connection. Returns the assigned device.
+    pub fn register_device(
+        &mut self,
+        connection_id: String,
+        hostname: String,
+        capabilities: Vec<crate::contract::Capability>,
+    ) -> crate::contract::Device {
+        let device = crate::contract::Device {
+            id: uuid::Uuid::new_v4().to_string(),
+            hostname,
+            capabilities,
+            online: true,
+        };
+        self.devices_by_connection
+            .insert(connection_id, device.clone());
+        device
+    }
+
+    /// Remove a device when its WS connection closes. Returns the
+    /// removed device (for diagnostics) if there was one.
+    pub fn unregister_device(&mut self, connection_id: &str) -> Option<crate::contract::Device> {
+        let removed = self.devices_by_connection.remove(connection_id);
+        // If this device was bound as the audio source, drop the binding.
+        if let Some(d) = &removed {
+            if self.audio_source_device_id.as_deref() == Some(&d.id) {
+                self.audio_source_device_id = None;
+            }
+        }
+        removed
+    }
+
+    /// Snapshot of all currently-registered devices.
+    pub fn devices_clone(&self) -> Vec<crate::contract::Device> {
+        self.devices_by_connection.values().cloned().collect()
     }
 
     pub fn apply_intent(&mut self, intent: Intent) -> IntentOutcome {
@@ -138,6 +189,12 @@ impl ServerState {
             }
             Intent::MarkMoment { t, note } => self.handle_mark_moment(t, note, &mut outcome),
             Intent::ExpandItem { item_id } => self.handle_expand_item(item_id, &mut outcome),
+            Intent::RegisterDevice { .. } => {
+                // Handled in ws.rs because it needs the per-connection
+                // identity (only ws.rs has it). This arm exists so the
+                // match stays exhaustive without us adding a fake outcome.
+                tracing::warn!("RegisterDevice reached apply_intent — should be handled in ws.rs");
+            }
         }
         self.assert_invariants();
         outcome
@@ -535,6 +592,8 @@ mod tests {
                 items,
                 status,
                 prior_context,
+                devices,
+                audio_source_device_id,
             } => {
                 assert_eq!(protocol_version, PROTOCOL_VERSION);
                 assert!(matches!(meeting_state, MeetingState::Idle));
@@ -544,6 +603,8 @@ mod tests {
                 assert!(metadata.is_empty());
                 assert!(items.is_empty());
                 assert!(prior_context.is_none());
+                assert!(devices.is_empty());
+                assert!(audio_source_device_id.is_none());
                 assert!(!status.listening);
                 assert!(!status.paused);
                 assert!(status.error.is_none());
@@ -1053,5 +1114,108 @@ mod tests {
         assert_eq!(payload.len(), 2);
         assert_eq!(s.items_per_mode["highlights"].len(), 2);
         assert_eq!(s.items_per_mode["highlights"][0].text, "second 0");
+    }
+
+    // ── Device registry ──────────────────────────────────────────────
+
+    #[test]
+    fn register_device_assigns_unique_id_and_marks_online() {
+        let mut s = ServerState::new();
+        let device = s.register_device(
+            "conn-1".into(),
+            "tiago-laptop".into(),
+            vec![
+                crate::contract::Capability::AudioCapture,
+                crate::contract::Capability::SystemAudio,
+            ],
+        );
+        assert!(!device.id.is_empty());
+        assert_eq!(device.hostname, "tiago-laptop");
+        assert!(device.online);
+        assert_eq!(device.capabilities.len(), 2);
+
+        let all = s.devices_clone();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].id, device.id);
+    }
+
+    #[test]
+    fn unregister_device_removes_entry() {
+        let mut s = ServerState::new();
+        let device = s.register_device(
+            "conn-1".into(),
+            "tiago-laptop".into(),
+            vec![crate::contract::Capability::AudioCapture],
+        );
+        assert_eq!(s.devices_clone().len(), 1);
+
+        let removed = s.unregister_device("conn-1");
+        assert!(removed.is_some());
+        assert_eq!(removed.unwrap().id, device.id);
+        assert!(s.devices_clone().is_empty());
+    }
+
+    #[test]
+    fn unregister_device_clears_audio_binding_if_match() {
+        let mut s = ServerState::new();
+        let device = s.register_device(
+            "conn-1".into(),
+            "tiago-laptop".into(),
+            vec![crate::contract::Capability::AudioCapture],
+        );
+        s.audio_source_device_id = Some(device.id.clone());
+
+        s.unregister_device("conn-1");
+        assert!(
+            s.audio_source_device_id.is_none(),
+            "audio binding should clear when bound device unregisters"
+        );
+    }
+
+    #[test]
+    fn unregister_device_keeps_audio_binding_if_different() {
+        let mut s = ServerState::new();
+        let other = s.register_device(
+            "conn-other".into(),
+            "other-mac".into(),
+            vec![crate::contract::Capability::AudioCapture],
+        );
+        let _ = s.register_device(
+            "conn-self".into(),
+            "tiago-laptop".into(),
+            vec![crate::contract::Capability::AudioCapture],
+        );
+        s.audio_source_device_id = Some(other.id.clone());
+
+        s.unregister_device("conn-self");
+        assert_eq!(
+            s.audio_source_device_id.as_deref(),
+            Some(other.id.as_str()),
+            "audio binding should persist when an unrelated device disconnects"
+        );
+    }
+
+    #[test]
+    fn snapshot_includes_devices_and_audio_binding() {
+        let mut s = ServerState::new();
+        let d = s.register_device(
+            "conn-1".into(),
+            "host".into(),
+            vec![crate::contract::Capability::ControlSurface],
+        );
+        s.audio_source_device_id = Some(d.id.clone());
+
+        match s.snapshot() {
+            Event::Snapshot {
+                devices,
+                audio_source_device_id,
+                ..
+            } => {
+                assert_eq!(devices.len(), 1);
+                assert_eq!(devices[0].id, d.id);
+                assert_eq!(audio_source_device_id.as_deref(), Some(d.id.as_str()));
+            }
+            e => panic!("expected snapshot, got {e:?}"),
+        }
     }
 }

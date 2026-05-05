@@ -1,4 +1,5 @@
 import type {
+  Device,
   Event as ServerEvent,
   Intent,
   Item,
@@ -46,6 +47,10 @@ export interface AppState {
   composeDescription: string;
   extractingMetadata: boolean;
   priorContext: PriorContextSummary | null;
+  /// All currently-registered devices (Phase 2g UI consumes this).
+  availableDevices: Device[];
+  /// Device whose audio is feeding the active meeting; null otherwise.
+  audioSourceDeviceId: string | null;
   liveTranscriptInterim: string;
   status: ServerStatus;
   glassesView: GlassesView;
@@ -87,6 +92,8 @@ export function defaultAppState(): AppState {
     composeDescription: "",
     extractingMetadata: false,
     priorContext: null,
+    availableDevices: [],
+    audioSourceDeviceId: null,
     liveTranscriptInterim: "",
     status: { listening: false, paused: false },
     glassesView: "idle",

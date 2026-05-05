@@ -16,6 +16,7 @@ describe("ws handlers", () => {
       metadata: {},
       items: [],
       status: { listening: false, paused: false },
+      devices: [],
     };
     handleServerEvent(event, store);
     expect(store.get().errorOverlay?.title).toMatch(/Incompatible/);
@@ -33,6 +34,7 @@ describe("ws handlers", () => {
       metadata: { project: "helix" },
       items: [{ id: "a", text: "first", t: 0 }],
       status: { listening: true, paused: false },
+      devices: [],
     };
     handleServerEvent(event, store);
     expect(store.get().protocolVersionMatched).toBe(true);

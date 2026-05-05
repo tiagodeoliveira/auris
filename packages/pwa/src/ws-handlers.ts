@@ -58,6 +58,8 @@ export function handleServerEvent(event: ServerEvent, store: Store): void {
         itemsByMode: { ...store.get().itemsByMode, [event.mode]: event.items },
         status: event.status,
         priorContext: event.prior_context ?? null,
+        availableDevices: event.devices ?? [],
+        audioSourceDeviceId: event.audio_source_device_id ?? null,
         glassesView: nextGlassesView,
         highlightIndex: 0,
         viewportStart: 0,
@@ -125,6 +127,24 @@ export function handleServerEvent(event: ServerEvent, store: Store): void {
       store.update({ priorContext: empty ? null : s });
       return;
     }
+    case "devices_changed":
+      store.update({ availableDevices: event.devices });
+      return;
+    case "device_registered":
+      // Sent only to the registering client. The PWA isn't usually a
+      // device today; reserved for the future PWA-as-audio-source path.
+      // We update the device list to include the new device if the
+      // server's broadcast hasn't landed yet.
+      store.update({
+        availableDevices: [
+          ...store.get().availableDevices.filter((d) => d.id !== event.device.id),
+          event.device,
+        ],
+      });
+      return;
+    case "audio_source_device_changed":
+      store.update({ audioSourceDeviceId: event.device_id ?? null });
+      return;
     case "items_update": {
       const modeOpt = store.get().availableModes.find((m) => m.id === event.mode);
       if (!modeOpt) return;

@@ -18,6 +18,8 @@ function defaultState(): AppState {
     composeDescription: "",
     extractingMetadata: false,
     priorContext: null,
+    availableDevices: [],
+    audioSourceDeviceId: null,
     liveTranscriptInterim: "",
     status: { listening: false, paused: false },
     glassesView: "idle",

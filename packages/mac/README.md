@@ -35,7 +35,7 @@ What it is _not_:
 | Sub-phase | Goal                                                         | Status     |
 | --------- | ------------------------------------------------------------ | ---------- |
 | **2a**    | Mac scaffold: SwiftPM + menu bar item + AppModel placeholder | **✓ Done** |
-| **2b**    | Server-side device registry + control channel                | Pending    |
+| **2b**    | Server-side device registry + control channel                | **✓ Done** |
 | **2c**    | Settings window + token-based server connection              | **✓ Done** |
 | **2d**    | Permissions onboarding (Microphone + Screen Recording)       | Pending    |
 | **2e**    | Audio capture in Swift (SCKit) + mixer parity with Rust      | Pending    |
@@ -146,13 +146,18 @@ window. Click the menu bar icon again → "Connect" → status flips to
 **Connected** and "Last frame:" previews the server's `Snapshot`.
 Click "Disconnect" → status flips back.
 
-## Next: Phase 2b or 2d
+## Next: Phase 2d or 2f
 
-Now that Mac↔server is wired:
+With both 2b (server registry) and 2c (Mac WS connection) in place,
+two paths are open:
 
-- **2b** (server-side): device registry endpoints + `DeviceCommand`
-  control channel. Lets the Mac register itself as a device with
-  capabilities and lets the server send it commands.
-- **2d** (Mac-side): permissions onboarding for Microphone + Screen
-  Recording. Independent of 2b; can land in either order. Once
-  permissions are granted, 2e (audio capture) becomes possible.
+- **2d** (Mac): permissions onboarding for Microphone + Screen
+  Recording. Independent of network work. Once permissions are
+  granted, 2e (audio capture) becomes possible.
+- **2f** (Mac→server): wire the Mac to send `register_device` on
+  connect (declaring `audio_capture`, `system_audio`,
+  `control_surface`), then later in the same sub-phase add the
+  `/audio` PCM streamer.
+
+2d is the more user-visible (and standalone-mac-completing) piece;
+2f is the one that unlocks PWA→Mac→server end-to-end audio.

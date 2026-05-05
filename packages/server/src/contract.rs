@@ -64,6 +64,38 @@ impl PriorContextSummary {
     }
 }
 
+/// Capabilities a connected client can offer to the meeting. Drives
+/// the audio-source picker (PWA filters by `audio_capture`), the
+/// screenshot trigger (Phase 5: filters by `screen_capture`), etc.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Capability {
+    /// Microphone or system audio. Mac app, future PWA-via-goggles.
+    AudioCapture,
+    /// Display capture. Mac app on macOS 14+.
+    ScreenCapture,
+    /// Renders meeting state (mode tabs, items, moments). Both PWA
+    /// and Mac overlay (Phase 6) declare this.
+    ControlSurface,
+    /// Sub-capability of `audio_capture` indicating the device can
+    /// grab system-wide audio output, not just a microphone.
+    /// Distinguishes "Mac via SCKit" from "phone with mic permission."
+    SystemAudio,
+}
+
+/// A registered device. The server tracks one entry per active WS
+/// connection that has sent `RegisterDevice`. `online` flips to false
+/// on disconnect; the entry is removed only when the user explicitly
+/// unregisters (Phase 4 with the persistent `devices` table). For
+/// Phase 2b, in-memory only — disconnect removes the entry entirely.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Device {
+    pub id: String,
+    pub hostname: String,
+    pub capabilities: Vec<Capability>,
+    pub online: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Intent {
@@ -88,6 +120,14 @@ pub enum Intent {
     /// state, so the user can review/edit chips before starting.
     ExtractMetadata {
         description: String,
+    },
+    /// Capability-bearing client (Mac app, future glasses) declaring
+    /// itself to the server. Server returns the assigned `device_id`
+    /// via `Event::DeviceRegistered` (to the registering client) and
+    /// broadcasts `Event::DevicesChanged` (to everyone).
+    RegisterDevice {
+        hostname: String,
+        capabilities: Vec<Capability>,
     },
     MarkMoment {
         t: u64,
@@ -114,6 +154,15 @@ pub enum Event {
         status: Status,
         #[serde(skip_serializing_if = "Option::is_none", default)]
         prior_context: Option<PriorContextSummary>,
+        /// All currently-registered devices, including the one this
+        /// snapshot was sent to (if it has registered). Empty list is
+        /// "no devices have registered yet."
+        devices: Vec<Device>,
+        /// The device whose audio is feeding the active meeting, if
+        /// one is bound. None during idle or when no audio source is
+        /// active (e.g., Phase 1 local meeting with no Mac client).
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        audio_source_device_id: Option<String>,
     },
     MeetingStateChanged {
         meeting_state: MeetingState,
@@ -152,6 +201,25 @@ pub enum Event {
         message: String,
         #[serde(skip_serializing_if = "Option::is_none", default)]
         intent_ref: Option<String>,
+    },
+    /// Sent only to the connection that just successfully registered.
+    /// Carries the server-assigned `device_id` so the client can
+    /// identify "itself" in subsequent device lists / commands.
+    DeviceRegistered {
+        device: Device,
+    },
+    /// Broadcast whenever the device list changes (registration,
+    /// unregistration on disconnect, capability update). Carries the
+    /// full current list — clients replace their cache.
+    DevicesChanged {
+        devices: Vec<Device>,
+    },
+    /// Broadcast when the audio-source binding for the active meeting
+    /// changes (start/stop/rebind). `None` means no device is bound
+    /// (idle or local-only meeting).
+    AudioSourceDeviceChanged {
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        device_id: Option<String>,
     },
 }
 
@@ -257,6 +325,8 @@ mod tests {
                 error: None,
             },
             prior_context: None,
+            devices: vec![],
+            audio_source_device_id: None,
         };
         assert_eq!(round_trip(&e), e);
     }
