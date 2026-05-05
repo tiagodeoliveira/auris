@@ -20,5 +20,13 @@ struct MeetingCompanionApp: App {
         MenuBarExtra("Meeting Companion", systemImage: model.statusSystemImageName) {
             MenuBarContent(model: model)
         }
+
+        // Settings window — summoned from the menu via openWindow(id:).
+        // Single instance; opening when already open just brings it
+        // forward.
+        Window("Settings", id: "settings") {
+            SettingsView(model: model)
+        }
+        .windowResizability(.contentSize)
     }
 }

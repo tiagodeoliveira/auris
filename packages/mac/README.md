@@ -30,13 +30,13 @@ What it is _not_:
 - A standalone meeting backend. The server still owns state, STT,
   summarizers, mnemo. The Mac is the audio source + a control surface.
 
-## Status — Phase 2a complete (scaffold only)
+## Status — Phase 2c complete (Mac talks to the server)
 
 | Sub-phase | Goal                                                         | Status     |
 | --------- | ------------------------------------------------------------ | ---------- |
 | **2a**    | Mac scaffold: SwiftPM + menu bar item + AppModel placeholder | **✓ Done** |
 | **2b**    | Server-side device registry + control channel                | Pending    |
-| **2c**    | Settings window + token-based server connection              | Pending    |
+| **2c**    | Settings window + token-based server connection              | **✓ Done** |
 | **2d**    | Permissions onboarding (Microphone + Screen Recording)       | Pending    |
 | **2e**    | Audio capture in Swift (SCKit) + mixer parity with Rust      | Pending    |
 | **2f**    | Mac → server: register as device, stream PCM via `/audio`    | Pending    |
@@ -93,13 +93,14 @@ Single executable target. Files under `Sources/MeetingCompanion/`:
 
 ```
 Sources/MeetingCompanion/
-  MeetingCompanionApp.swift        ✓ 2a
-  MenuBarContent.swift             ✓ 2a
-  AppModel.swift                   ✓ 2a
+  MeetingCompanionApp.swift        ✓ 2a (extended in 2c with Settings window scene)
+  MenuBarContent.swift             ✓ 2a (extended in 2c with Connect/Disconnect/Settings)
+  AppModel.swift                   ✓ 2a (extended in 2c to own settings + ws)
   Settings/
-    SettingsWindow.swift            2b: Account / General / Permissions tabs
+    AppSettings.swift              ✓ 2c: UserDefaults-backed settings
+    SettingsView.swift             ✓ 2c: server URL + token form
   Net/
-    WebSocketClient.swift           2c: WS to server, JWT/token auth
+    WebSocketClient.swift          ✓ 2c: URLSessionWebSocketTask wrapper
     DeviceRegistration.swift        2f: POST /devices, capability advertisement
   Permissions/
     PermissionsOnboarding.swift     2d: first-launch UX
@@ -127,15 +128,31 @@ Sources/MeetingCompanion/
 - **Comments explain _why_, not _what_.** The menu-bar-accessory
   comment in `MeetingCompanionApp.swift` is a good template.
 
-## Next: Phase 2b
+## Smoke test (Phase 2c)
 
-Two parallel tracks open up after 2a:
+Two terminals:
 
-- **Server-side**: implement device registry endpoints + control channel
-  (`DeviceCommand` enum) on the existing Rust server.
-- **Mac-side**: Settings window + WebSocket client to connect to the
-  server (using the dev token for now; OAuth lands in Phase 3).
+```bash
+# Terminal 1 — start the server (uses the existing Rust binary):
+just server-run
 
-Either can land first. The Mac `WebSocketClient` is independently
-testable against the server's existing WS endpoint (which already
-accepts the dev token).
+# Terminal 2 — launch the Mac app:
+just mac-run
+```
+
+Click the menu bar icon → "Open Settings to sign in…" (or
+"Settings…") → enter `ws://localhost:7331` + token `dev` → close
+window. Click the menu bar icon again → "Connect" → status flips to
+**Connected** and "Last frame:" previews the server's `Snapshot`.
+Click "Disconnect" → status flips back.
+
+## Next: Phase 2b or 2d
+
+Now that Mac↔server is wired:
+
+- **2b** (server-side): device registry endpoints + `DeviceCommand`
+  control channel. Lets the Mac register itself as a device with
+  capabilities and lets the server send it commands.
+- **2d** (Mac-side): permissions onboarding for Microphone + Screen
+  Recording. Independent of 2b; can land in either order. Once
+  permissions are granted, 2e (audio capture) becomes possible.

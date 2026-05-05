@@ -1,32 +1,32 @@
 // AppModel.swift
-// Single observable owner of app-wide state. Everything in the app
-// reads from here; phases add fields as features land.
+// Single observable owner of app-wide state. Holds the user's
+// settings + the live WebSocket connection. Views read derived
+// state; menu actions call methods here.
 
 import Foundation
 import Observation
 
+@MainActor
 @Observable
 final class AppModel {
-    enum ConnectionState: Equatable {
-        case signedOut
-        case connecting
-        case connected
-        case error(String)
+    // `var` (not `let`) so SwiftUI `@Bindable` can project bindings
+    // through to nested observable state (`$model.settings.serverURL`
+    // in SettingsView, etc.). We never actually reassign these.
+    var settings: AppSettings
+    var webSocket: WebSocketClient
+
+    init() {
+        self.settings = AppSettings()
+        self.webSocket = WebSocketClient()
     }
 
-    /// Server we connect to. Configurable via the (future) Settings
-    /// window. Defaults to local dev.
-    var serverURL: String = "ws://localhost:7331"
-
-    /// Connection / auth state. Drives the menu bar icon and the
-    /// status line in the dropdown.
-    var connectionState: ConnectionState = .signedOut
+    // MARK: - Derived state for views
 
     /// SF Symbol name shown as the menu bar icon. Reflects the
     /// connection state at a glance.
     var statusSystemImageName: String {
-        switch connectionState {
-        case .signedOut: "circle"
+        switch webSocket.state {
+        case .disconnected: settings.isConfigured ? "circle" : "circle.dashed"
         case .connecting: "circle.dotted"
         case .connected: "circle.fill"
         case .error: "exclamationmark.circle.fill"
@@ -35,11 +35,38 @@ final class AppModel {
 
     /// Human-readable status line for the dropdown header.
     var statusLine: String {
-        switch connectionState {
-        case .signedOut: "Not signed in"
+        switch webSocket.state {
+        case .disconnected:
+            settings.isConfigured ? "Not connected" : "Not signed in"
         case .connecting: "Connecting…"
         case .connected: "Connected"
         case .error(let message): "Error: \(message)"
         }
+    }
+
+    /// True when the user can press "Connect" — i.e., settings exist
+    /// and we're not already connecting/connected.
+    var canConnect: Bool {
+        settings.isConfigured && webSocket.state == .disconnected
+    }
+
+    /// True when the user can press "Disconnect".
+    var canDisconnect: Bool {
+        switch webSocket.state {
+        case .connecting, .connected: true
+        default: false
+        }
+    }
+
+    // MARK: - Intent
+
+    /// Open a WS connection using the current settings.
+    func connect() {
+        webSocket.connect(serverURL: settings.serverURL, token: settings.token)
+    }
+
+    /// Tear down the current WS connection.
+    func disconnect() {
+        webSocket.disconnect()
     }
 }
