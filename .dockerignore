@@ -1,0 +1,34 @@
+# Keep the build context small. The Dockerfile only consumes
+# Cargo.toml, Cargo.lock, and packages/server — everything else is
+# noise that would just slow down the upload to the docker daemon.
+
+# Build outputs
+target/
+**/target/
+**/.build/
+**/dist/
+**/node_modules/
+**/.pnpm-store/
+**/DerivedData/
+
+# Local data dir (sqlite + future blobs)
+/data/
+**/data/server.db*
+**/data/blobs/
+
+# Mac-only client (we're not building it in docker)
+packages/mac/
+packages/pwa/
+
+# Dev tooling + editor cruft
+.git/
+.github/
+.idea/
+.vscode/
+**/.DS_Store
+*.swp
+
+# Secrets — must not enter the image even by accident
+.env
+.env.*
+!.env.example
