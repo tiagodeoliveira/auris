@@ -73,8 +73,9 @@ struct MeetingsAPI: Sendable {
     let baseURL: URL
     let token: String
 
-    /// Build a client from the WS server URL. Returns nil if the URL
-    /// can't be parsed or has no explicit port (we don't guess defaults).
+    /// Build a client from the WS server URL. WS and REST share a
+    /// single port now (axum routes both); we just upgrade the
+    /// scheme and strip the path/query.
     static func fromWSURL(_ wsURL: String, token: String) -> MeetingsAPI? {
         guard let parsed = URL(string: wsURL),
             var components = URLComponents(url: parsed, resolvingAgainstBaseURL: false)
@@ -84,8 +85,6 @@ struct MeetingsAPI: Sendable {
         case "wss": components.scheme = "https"
         default: return nil
         }
-        guard let port = components.port else { return nil }
-        components.port = port + 1
         components.path = ""
         components.query = nil
         guard let base = components.url else { return nil }

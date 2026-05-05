@@ -34,8 +34,8 @@ export class MeetingsApiError extends Error {
 
 /**
  * Build the base URL of the REST API from the WS URL the user typed
- * into Settings. Returns `null` when the WS URL is unparseable or
- * has no explicit port — we don't guess defaults.
+ * into Settings. WS and REST share a single port now (axum routes
+ * both); we just upgrade the scheme and strip the path/query.
  */
 export function deriveApiBase(wsUrl: string): string | null {
   try {
@@ -43,9 +43,6 @@ export function deriveApiBase(wsUrl: string): string | null {
     if (url.protocol === "ws:") url.protocol = "http:";
     else if (url.protocol === "wss:") url.protocol = "https:";
     else return null;
-    const port = url.port ? Number.parseInt(url.port, 10) : NaN;
-    if (Number.isNaN(port)) return null;
-    url.port = String(port + 1);
     url.pathname = "";
     url.search = "";
     return url.origin;

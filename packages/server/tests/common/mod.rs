@@ -62,11 +62,8 @@ pub async fn spawn_test_server_with_token(token: &str) -> TestServer {
     );
 
     tokio::spawn(async move {
-        // Integration tests don't exercise the REST API; pass None
-        // for the api_listener so we don't need a second port.
         let _ =
-            meeting_companion_server::ws::run_server_with_listener(listener, None, token, llm, rx)
-                .await;
+            meeting_companion_server::ws::run_server_with_listener(listener, token, llm, rx).await;
     });
     TestServer {
         addr,
