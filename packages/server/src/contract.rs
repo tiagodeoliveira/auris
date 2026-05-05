@@ -193,6 +193,13 @@ pub enum Event {
     TranscriptInterim {
         text: String,
     },
+    /// Emitted when the STT provider finalises an utterance —
+    /// `text` is the committed segment that should be appended to
+    /// any rolling transcript view. Distinct from `TranscriptInterim`
+    /// which is the still-mutable preview.
+    TranscriptCommitted {
+        text: String,
+    },
     Status {
         status: Status,
     },

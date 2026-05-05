@@ -56,11 +56,18 @@ final class AudioCapture {
 
     private var stream: SCStream?
     private var systemHandler: SCAudioHandler?
-    private var micHandler: SCAudioHandler?
+    private var micCapture: MicCapture?
     private let systemRing = AudioRing(capacity: AudioConstants.ringCapacity)
     private let micRing = AudioRing(capacity: AudioConstants.ringCapacity)
     private var continuation: AsyncStream<Data>.Continuation?
     private var mixerTask: Task<Void, Never>?
+
+    /// Per-source peak amplitude (0..1) smoothed with exponential
+    /// decay. Drives the meeting overlay's VAD bars and is the
+    /// quickest way to tell silent-input from real speech when
+    /// transcripts go missing.
+    private(set) var currentSysPeak: Float = 0
+    private(set) var currentMicPeak: Float = 0
 
     private static let log = Logger(
         subsystem: "com.meeting-companion.mac", category: "AudioCapture")
@@ -116,8 +123,11 @@ final class AudioCapture {
             config.width = 2
             config.height = 2
             config.capturesAudio = true
-            // macOS 15+: pull microphone through the same SCStream.
-            config.captureMicrophone = true
+            // System audio only — microphone goes through
+            // AVAudioEngine (`MicCapture`). SCKit's
+            // `captureMicrophone` flag was observed to deliver
+            // silent / no buffers on macOS 15+ even with
+            // permissions correctly granted.
             config.sampleRate = 48000
             config.channelCount = 2
 
@@ -125,14 +135,14 @@ final class AudioCapture {
             Self.logBoth("AudioCapture: SCStream created")
 
             let systemHandler = SCAudioHandler(ring: systemRing, sourceLabel: "system")
-            let micHandler = SCAudioHandler(ring: micRing, sourceLabel: "mic")
             try stream.addStreamOutput(
                 systemHandler, type: .audio,
                 sampleHandlerQueue: DispatchQueue(label: "audio.system", qos: .userInteractive))
-            try stream.addStreamOutput(
-                micHandler, type: .microphone,
-                sampleHandlerQueue: DispatchQueue(label: "audio.mic", qos: .userInteractive))
-            Self.logBoth("AudioCapture: stream outputs added (audio, microphone)")
+            Self.logBoth("AudioCapture: stream output added (system audio)")
+
+            let micCapture = MicCapture(ring: micRing)
+            try micCapture.start()
+            Self.logBoth("AudioCapture: mic capture (AVAudioEngine) started")
 
             let (asyncStream, continuation) = AsyncStream<Data>.makeStream(
                 bufferingPolicy: .bufferingNewest(50))  // ~1 s of frames if the consumer lags
@@ -145,7 +155,7 @@ final class AudioCapture {
 
             self.stream = stream
             self.systemHandler = systemHandler
-            self.micHandler = micHandler
+            self.micCapture = micCapture
 
             mixerTask = Task { [weak self] in
                 await self?.runMixerLoop()
@@ -195,7 +205,8 @@ final class AudioCapture {
         }
         stream = nil
         systemHandler = nil
-        micHandler = nil
+        micCapture?.stop()
+        micCapture = nil
         continuation?.finish()
         continuation = nil
         output = nil
@@ -239,28 +250,53 @@ final class AudioCapture {
                     "[AudioCapture] mixer FIRST non-empty drain (system=\(systemSamples.count), mic=\(micSamples.count))"
                 )
             }
-            ticksSinceFirstSample += 1
-            // Periodic depth probe — every ~2 s — to keep an eye on
-            // whether sources are keeping up.
-            if ticksSinceFirstSample % 100 == 0 {
-                let sysCount = systemRing.approximateCount
-                let micCount = micRing.approximateCount
-                Self.log.info(
-                    "mixer tick: system_ring=\(sysCount, privacy: .public) mic_ring=\(micCount, privacy: .public) frames=\(self.frameCount, privacy: .public)"
-                )
-                print(
-                    "[AudioCapture] mixer tick #\(totalTicks): system_ring=\(sysCount) mic_ring=\(micCount) emitted=\(self.frameCount)"
-                )
-            }
 
             // Mix sample-wise. Treat short/empty buffers as silence
             // (zero-fill) so the output cadence stays steady even if
-            // one source briefly stalls.
+            // one source briefly stalls. Track per-source peak so we
+            // can tell at a glance whether anyone is actually
+            // producing signal — Soniox emits no transcripts for
+            // silence, so this is the first thing to check when
+            // "frames flow but no text".
             var mixed = [Float](repeating: 0, count: AudioFormat.mixerFrameSamples)
+            var sysPeak: Float = 0
+            var micPeak: Float = 0
             for i in 0..<AudioFormat.mixerFrameSamples {
                 let s = i < systemSamples.count ? systemSamples[i] : 0
                 let m = i < micSamples.count ? micSamples[i] : 0
+                if abs(s) > sysPeak { sysPeak = abs(s) }
+                if abs(m) > micPeak { micPeak = abs(m) }
                 mixed[i] = max(-1.0, min(1.0, s + m))
+            }
+            // Smooth peak with exponential decay. ~0.85^50 ≈ 3e-4
+            // so a peak falls below visibility within ~1 s of
+            // silence — fast enough that the VAD bar tracks
+            // speech, slow enough that 20 ms ticks don't flicker.
+            // Snap below the noise floor (~-80 dB) to exactly
+            // zero, otherwise long silences let the value drift
+            // into denormal float territory and the dB readout
+            // shows nonsense like "-888 dB".
+            let decay: Float = 0.85
+            let floor: Float = 1e-4
+            currentSysPeak = max(sysPeak, currentSysPeak * decay)
+            currentMicPeak = max(micPeak, currentMicPeak * decay)
+            if currentSysPeak < floor { currentSysPeak = 0 }
+            if currentMicPeak < floor { currentMicPeak = 0 }
+
+            ticksSinceFirstSample += 1
+            // Heartbeat every ~10 s — confirms the mixer is alive
+            // and shows current per-source peaks. Frequent
+            // diagnostic spam moved out of here once the path
+            // stabilised; if mic/system go silent unexpectedly,
+            // grep this line for the dB readout.
+            if ticksSinceFirstSample % 500 == 0 {
+                let sysDb: Float = currentSysPeak > 0 ? 20 * log10f(currentSysPeak) : -Float.infinity
+                let micDb: Float = currentMicPeak > 0 ? 20 * log10f(currentMicPeak) : -Float.infinity
+                let sysDbStr = sysDb.isFinite ? String(format: "%.1f dB", sysDb) : "-∞ dB"
+                let micDbStr = micDb.isFinite ? String(format: "%.1f dB", micDb) : "-∞ dB"
+                print(
+                    "[AudioCapture] mixer ~\(totalTicks / 50)s: emitted=\(self.frameCount) sys=\(sysDbStr) mic=\(micDbStr)"
+                )
             }
 
             let frame = AudioFormat.packS16LE(mixed)
@@ -320,6 +356,7 @@ final class SCAudioHandler: NSObject, SCStreamOutput, @unchecked Sendable {
             }
             return
         }
+
         // Lazy-initialize the converter on the first sample buffer
         // (we need the input ASBD that SCKit actually delivers).
         if converter == nil {
@@ -343,6 +380,12 @@ final class SCAudioHandler: NSObject, SCStreamOutput, @unchecked Sendable {
         ) else {
             return
         }
+
+        // See MicCapture.swift for the explanation: signalling
+        // `.endOfStream` puts the converter into a drained state,
+        // so we have to `reset()` between calls or every buffer
+        // after the first returns 0 output frames.
+        converter.reset()
 
         var consumed = false
         var conversionError: NSError?
@@ -376,12 +419,6 @@ final class SCAudioHandler: NSObject, SCStreamOutput, @unchecked Sendable {
         let buffer = UnsafeBufferPointer(start: channelData[0], count: frameLength)
         ring.append(ArraySlice(Array(buffer)))
         samplesAppended &+= UInt64(frameLength)
-        // Log roughly every second of converted audio (~16k samples).
-        if samplesAppended % 16_000 < UInt64(frameLength) {
-            Self.log.info(
-                "[\(self.sourceLabel, privacy: .public)] \(self.samplesAppended, privacy: .public) samples appended (~\(self.samplesAppended / 16_000, privacy: .public)s)"
-            )
-        }
     }
 
     /// Build an `AVAudioPCMBuffer` from a SCKit `CMSampleBuffer`.

@@ -40,16 +40,21 @@ struct MenuBarContent: View {
 
         Divider()
 
-        // Meeting lifecycle — wired in Phase 2g (compose) and 2f (control)
-        Button("Start meeting…") {
-            // TODO Phase 2g: open compose window, then send start_meeting
+        // Meeting lifecycle. "Start meeting…" pops the compose
+        // window; "Stop meeting" only appears while a meeting is
+        // active. The overlay (VAD + transcripts) opens from the
+        // compose view's submit, not here.
+        if !model.isMeetingActive {
+            Button("Start meeting…") {
+                openWindow(id: "meeting-compose")
+                NSApp.activate(ignoringOtherApps: true)
+            }
+            .disabled(!model.canStartMeeting)
+        } else {
+            Button("Stop meeting") {
+                Task { await model.stopMeeting() }
+            }
         }
-        .disabled(true)
-
-        Button("Stop meeting") {
-            // TODO Phase 2g: send stop_meeting intent
-        }
-        .disabled(true)
 
         // Browse — wired in Phase 2h (depends on Phase 4 REST API)
         Button("Meetings…") {
@@ -76,39 +81,10 @@ struct MenuBarContent: View {
 
         Divider()
 
-        // Debug: starts/stops a meeting end-to-end from the Mac
-        // alone. Sequences capture + /audio + start_meeting in the
-        // right order. Phase 2g replaces this with a proper compose
-        // window (description input + Extract Tags + Start).
-        Button(testMeetingMenuLabel) {
-            Task { await model.toggleTestMeeting() }
-        }
-        .disabled(!model.isTestMeetingActive && !model.canStartTestMeeting)
-
-        Divider()
-
         Button("Quit Meeting Companion") {
             NSApplication.shared.terminate(nil)
         }
         .keyboardShortcut("q")
-    }
-
-    /// Reflects the test-meeting state: audio capture + streamer +
-    /// the server-side meeting (kicked via start_meeting after the
-    /// audio path is up).
-    private var testMeetingMenuLabel: String {
-        switch model.audioCapture.state {
-        case .stopped:
-            return "Start test meeting (debug)"
-        case .error(let msg):
-            return "Audio error · \(msg.prefix(40))"
-        case .starting:
-            return "Starting…"
-        case .running:
-            let captured = model.audioCapture.frameCount
-            let streamed = model.audioStreamer.framesSent
-            return "Stop test meeting (\(streamed)/\(captured) frames sent)"
-        }
     }
 
     private func openSettings() {

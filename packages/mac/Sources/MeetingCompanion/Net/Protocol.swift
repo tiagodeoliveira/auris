@@ -52,11 +52,17 @@ struct RegisterDeviceIntent: Encodable {
     }
 }
 
-/// Begin a meeting on the server. The debug "Start test meeting"
-/// flow uses no description and no metadata; Phase 2g's compose
-/// window adds those fields back.
+/// Begin a meeting on the server. `description` is the user's
+/// free-text prompt entered in the compose window; `nil` is a
+/// valid value (server treats it as an unlabeled meeting).
+/// Phase 2g-2 will add the metadata field once Extract Tags lands.
 struct StartMeetingIntent: Encodable {
     let type: String = "start_meeting"
+    let description: String?
+
+    init(description: String? = nil) {
+        self.description = description
+    }
 }
 
 struct StopMeetingIntent: Encodable {
@@ -74,6 +80,15 @@ enum TypedServerEvent: Sendable {
     case deviceRegistered(Device)
     case devicesChanged([Device])
     case audioSourceDeviceChanged(String?)
+    /// Live, in-flight transcript preview from the STT provider.
+    /// Replaces the previous interim text wholesale on each event.
+    case transcriptInterim(String)
+    /// Finalised utterance from the STT provider — append to the
+    /// rolling transcript view. Emitted by the server when its
+    /// internal buffer is flushed (punctuation / length cap /
+    /// silence). Distinct from `transcriptInterim` which is the
+    /// still-mutable preview.
+    case transcriptCommitted(String)
     case unknown(type: String)
 }
 
@@ -128,6 +143,14 @@ func decodeServerEvent(from text: String) throws -> TypedServerEvent? {
         struct Wrap: Decodable { let device_id: String? }
         let w = try decoder.decode(Wrap.self, from: data)
         return .audioSourceDeviceChanged(w.device_id)
+    case "transcript_interim":
+        struct Wrap: Decodable { let text: String }
+        let w = try decoder.decode(Wrap.self, from: data)
+        return .transcriptInterim(w.text)
+    case "transcript_committed":
+        struct Wrap: Decodable { let text: String }
+        let w = try decoder.decode(Wrap.self, from: data)
+        return .transcriptCommitted(w.text)
     default:
         return .unknown(type: envelope.type)
     }

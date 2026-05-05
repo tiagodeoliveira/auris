@@ -100,7 +100,10 @@ final class AudioStreamer {
                 }
                 framesSent &+= 1
                 bytesSent &+= UInt64(frame.count)
-                if framesSent % 100 == 0 {
+                // Heartbeat every ~10 s (50 fps × 500 frames).
+                // The server logs its own ingest progress every
+                // 5 s, so this is just the Mac-side counterpart.
+                if framesSent % 500 == 0 {
                     print("[AudioStreamer] pump: \(framesSent) frames sent (\(bytesSent) bytes)")
                 }
             } catch {

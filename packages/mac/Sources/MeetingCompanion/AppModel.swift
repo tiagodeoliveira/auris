@@ -30,6 +30,20 @@ final class AppModel {
     /// from `snapshot.devices` and per-event `devices_changed`.
     private(set) var availableDevices: [Device] = []
 
+    /// Latest in-flight transcript preview from the server. Replaced
+    /// wholesale on each `transcript_interim` event; the meeting
+    /// overlay binds to this for live display.
+    private(set) var transcriptInterim: String = ""
+
+    /// Committed transcript chunks, appended in order. The server
+    /// signals "this utterance is done" by emitting an empty
+    /// `transcript_interim`, at which point we move whatever was
+    /// in `transcriptInterim` here. The overlay shows
+    /// `transcriptHistory` + `transcriptInterim` together so the
+    /// user sees a growing, scrollable transcript rather than a
+    /// constantly-replaced single line.
+    private(set) var transcriptHistory: [String] = []
+
     /// The capabilities this Mac advertises. Frozen at app start; will
     /// reflect granted permissions once 2d (permissions onboarding) lands.
     private let advertisedCapabilities: [Capability] = [
@@ -57,6 +71,14 @@ final class AppModel {
             {
                 self?.permissionMonitor.refresh()
             }
+        }
+        // Auto-connect on launch when we already have credentials.
+        // Phase 3 will replace the token with an OAuth-derived
+        // identity, but the same isConfigured gate applies — the
+        // app should never silently sit disconnected just because
+        // the user didn't open the menu yet.
+        if canConnect {
+            connect()
         }
     }
 
@@ -130,24 +152,24 @@ final class AppModel {
         availableDevices = []
     }
 
-    /// True when the Mac is mid-test-meeting (audio capture running).
-    var isTestMeetingActive: Bool {
+    /// True when a meeting is in progress (audio capture running).
+    var isMeetingActive: Bool {
         switch audioCapture.state {
         case .running, .starting: true
         default: false
         }
     }
 
-    /// True when starting a test meeting is meaningful — connected to
+    /// True when starting a meeting is meaningful — connected to
     /// the server, permissions in hand, no capture currently running.
-    var canStartTestMeeting: Bool {
+    var canStartMeeting: Bool {
         webSocket.state == .connected
             && permissionMonitor.allGranted
             && audioCapture.state == .stopped
     }
 
-    /// Debug affordance: starts a meeting end-to-end from the Mac
-    /// alone, no PWA / websocat needed. Sequence is critical:
+    /// Start a meeting end-to-end from the Mac. The sequence is
+    /// order-sensitive:
     ///
     ///   1. Start audio capture (creates the AsyncStream).
     ///   2. Open the /audio WS streamer; first frame installs the
@@ -157,20 +179,12 @@ final class AppModel {
     ///      receiver out of the slot at this point.
     ///
     /// Reversing 3↔4 leaves the meeting in a "no audio source bound"
-    /// state — the server's NotConnected error path. Phase 2g's
-    /// compose-window flow uses the same sequence with description +
-    /// extract tags layered on top.
-    func toggleTestMeeting() async {
-        if isTestMeetingActive {
-            await stopTestMeeting()
-        } else {
-            await startTestMeeting()
-        }
-    }
+    /// state — the server's NotConnected error path. Phase 2g-2 will
+    /// add metadata (extracted tags) to the intent.
+    func startMeeting(description: String? = nil) async {
+        guard canStartMeeting else { return }
 
-    private func startTestMeeting() async {
-        guard canStartTestMeeting else { return }
-
+        clearTranscript()
         do {
             try await audioCapture.start()
         } catch {
@@ -203,8 +217,8 @@ final class AppModel {
         }
 
         do {
-            try await webSocket.send(intent: StartMeetingIntent())
-            print("[AppModel] start_meeting sent")
+            try await webSocket.send(intent: StartMeetingIntent(description: description))
+            print("[AppModel] start_meeting sent (description=\(description ?? "nil"))")
         } catch {
             print("[AppModel] start_meeting send failed: \(error)")
             audioStreamer.stop()
@@ -212,7 +226,7 @@ final class AppModel {
         }
     }
 
-    private func stopTestMeeting() async {
+    func stopMeeting() async {
         // Send stop_meeting first so the server tears down its
         // pipeline cleanly before we cut the audio source.
         do {
@@ -250,11 +264,29 @@ final class AppModel {
         case .audioSourceDeviceChanged:
             // Phase 2g+ will react to the bound source; not needed yet.
             break
+        case .transcriptInterim(let text):
+            transcriptInterim = text
+        case .transcriptCommitted(let text):
+            transcriptHistory.append(text)
+            // Bound history so a marathon meeting doesn't grow
+            // the array unboundedly. 500 lines ≈ a long
+            // transcript; older lines scroll out of view anyway
+            // so dropping them is harmless.
+            if transcriptHistory.count > 500 {
+                transcriptHistory.removeFirst(transcriptHistory.count - 500)
+            }
         case .unknown:
             // Unknown events fall through silently; we'll add cases
             // as we light up more flows.
             break
         }
+    }
+
+    /// Clear the live transcript on meeting boundaries — keeps the
+    /// overlay from carrying state across meetings.
+    func clearTranscript() {
+        transcriptInterim = ""
+        transcriptHistory = []
     }
 
     // MARK: - Helpers

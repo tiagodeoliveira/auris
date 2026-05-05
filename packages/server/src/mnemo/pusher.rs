@@ -116,6 +116,7 @@ async fn handle_event(client: &MnemoClient, state: &mut PusherState, event: Even
         | Event::DisplayTagChanged { .. }
         | Event::PriorContextChanged { .. }
         | Event::TranscriptInterim { .. }
+        | Event::TranscriptCommitted { .. }
         | Event::Status { .. }
         | Event::Error { .. }
         | Event::DeviceRegistered { .. }
