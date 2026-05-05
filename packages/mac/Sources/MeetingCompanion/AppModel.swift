@@ -130,29 +130,99 @@ final class AppModel {
         availableDevices = []
     }
 
-    /// Phase 2e/2f₂ debug affordance: start audio capture AND stream
-    /// the resulting frames to the server's /audio endpoint. The
-    /// Phase 2g compose-meeting flow will replace this with proper
-    /// meeting-bound start/stop.
-    func toggleAudioCapture() async {
+    /// True when the Mac is mid-test-meeting (audio capture running).
+    var isTestMeetingActive: Bool {
         switch audioCapture.state {
-        case .stopped, .error:
-            do {
-                try await audioCapture.start()
-                if let frames = audioCapture.output {
-                    audioStreamer.start(
-                        serverURL: settings.serverURL,
-                        token: settings.token,
-                        frames: frames)
-                }
-            } catch {
-                // surfaced via audioCapture.state
-                _ = error
+        case .running, .starting: true
+        default: false
+        }
+    }
+
+    /// True when starting a test meeting is meaningful — connected to
+    /// the server, permissions in hand, no capture currently running.
+    var canStartTestMeeting: Bool {
+        webSocket.state == .connected
+            && permissionMonitor.allGranted
+            && audioCapture.state == .stopped
+    }
+
+    /// Debug affordance: starts a meeting end-to-end from the Mac
+    /// alone, no PWA / websocat needed. Sequence is critical:
+    ///
+    ///   1. Start audio capture (creates the AsyncStream).
+    ///   2. Open the /audio WS streamer; first frame installs the
+    ///      receiver into the server's RemoteAudioSource slot.
+    ///   3. Wait for the streamer to confirm streaming state.
+    ///   4. Send start_meeting on the control WS — server takes the
+    ///      receiver out of the slot at this point.
+    ///
+    /// Reversing 3↔4 leaves the meeting in a "no audio source bound"
+    /// state — the server's NotConnected error path. Phase 2g's
+    /// compose-window flow uses the same sequence with description +
+    /// extract tags layered on top.
+    func toggleTestMeeting() async {
+        if isTestMeetingActive {
+            await stopTestMeeting()
+        } else {
+            await startTestMeeting()
+        }
+    }
+
+    private func startTestMeeting() async {
+        guard canStartTestMeeting else { return }
+
+        do {
+            try await audioCapture.start()
+        } catch {
+            return  // surfaced via audioCapture.state
+        }
+        guard let frames = audioCapture.output else { return }
+
+        audioStreamer.start(
+            serverURL: settings.serverURL,
+            token: settings.token,
+            frames: frames)
+
+        // Wait up to 2 s for the streamer to confirm the /audio WS
+        // is open and at least one frame has shipped — only then is
+        // it safe to send start_meeting (the server's
+        // RemoteAudioSource needs the install() side to have run).
+        let deadline = Date().addingTimeInterval(2.0)
+        while audioStreamer.state != .streaming, Date() < deadline {
+            if case .error = audioStreamer.state {
+                audioCapture.stop()
+                return
             }
-        case .running, .starting:
+            try? await Task.sleep(for: .milliseconds(50))
+        }
+        guard audioStreamer.state == .streaming else {
+            print("[AppModel] audio streamer did not reach .streaming within 2s; aborting")
+            audioStreamer.stop()
+            audioCapture.stop()
+            return
+        }
+
+        do {
+            try await webSocket.send(intent: StartMeetingIntent())
+            print("[AppModel] start_meeting sent")
+        } catch {
+            print("[AppModel] start_meeting send failed: \(error)")
             audioStreamer.stop()
             audioCapture.stop()
         }
+    }
+
+    private func stopTestMeeting() async {
+        // Send stop_meeting first so the server tears down its
+        // pipeline cleanly before we cut the audio source.
+        do {
+            try await webSocket.send(intent: StopMeetingIntent())
+            print("[AppModel] stop_meeting sent")
+        } catch {
+            print("[AppModel] stop_meeting send failed: \(error)")
+        }
+        audioStreamer.stop()
+        audioCapture.stop()
     }
 
     // MARK: - Event handling

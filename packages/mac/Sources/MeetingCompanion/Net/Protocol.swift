@@ -52,6 +52,17 @@ struct RegisterDeviceIntent: Encodable {
     }
 }
 
+/// Begin a meeting on the server. The debug "Start test meeting"
+/// flow uses no description and no metadata; Phase 2g's compose
+/// window adds those fields back.
+struct StartMeetingIntent: Encodable {
+    let type: String = "start_meeting"
+}
+
+struct StopMeetingIntent: Encodable {
+    let type: String = "stop_meeting"
+}
+
 // MARK: - Events (Server → Mac)
 
 /// Decoded form of incoming frames. Only the events the Mac currently

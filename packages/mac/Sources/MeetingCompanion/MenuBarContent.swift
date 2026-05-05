@@ -76,13 +76,14 @@ struct MenuBarContent: View {
 
         Divider()
 
-        // Debug: smoke-test audio capture without a server-bound
-        // meeting. Replaced by Phase 2g's proper Start/Stop Meeting
-        // flow once compose UI lands.
-        Button(audioCaptureMenuLabel) {
-            Task { await model.toggleAudioCapture() }
+        // Debug: starts/stops a meeting end-to-end from the Mac
+        // alone. Sequences capture + /audio + start_meeting in the
+        // right order. Phase 2g replaces this with a proper compose
+        // window (description input + Extract Tags + Start).
+        Button(testMeetingMenuLabel) {
+            Task { await model.toggleTestMeeting() }
         }
-        .disabled(!model.permissionMonitor.allGranted)
+        .disabled(!model.isTestMeetingActive && !model.canStartTestMeeting)
 
         Divider()
 
@@ -92,21 +93,21 @@ struct MenuBarContent: View {
         .keyboardShortcut("q")
     }
 
-    /// Reflects the current AudioCapture + AudioStreamer state.
-    /// While running, shows a frame counter so the user can confirm
-    /// SCKit is delivering AND the streamer is shipping.
-    private var audioCaptureMenuLabel: String {
+    /// Reflects the test-meeting state: audio capture + streamer +
+    /// the server-side meeting (kicked via start_meeting after the
+    /// audio path is up).
+    private var testMeetingMenuLabel: String {
         switch model.audioCapture.state {
         case .stopped:
-            return "Test audio capture (debug)"
+            return "Start test meeting (debug)"
         case .error(let msg):
             return "Audio error · \(msg.prefix(40))"
         case .starting:
-            return "Starting audio capture…"
+            return "Starting…"
         case .running:
             let captured = model.audioCapture.frameCount
             let streamed = model.audioStreamer.framesSent
-            return "Stop audio capture (\(streamed)/\(captured) frames sent)"
+            return "Stop test meeting (\(streamed)/\(captured) frames sent)"
         }
     }
 
