@@ -13,13 +13,11 @@ export type GlassesView = "idle" | "listening" | "active_list" | "active_detail"
 export type WsStatus = "connecting" | "open" | "reconnecting" | "closed" | "error";
 
 export interface Settings {
-  serverUrl: string;
   /** Legacy shared-secret token. Kept on the type for backward
    * compatibility during the OAuth migration; nothing on the wire
    * uses it anymore. The Auth0 access token is fetched live via
    * `auth.getAccessToken()` and never persisted to settings. */
   serverToken: string;
-  sonioxKey: string;
   lastMetadata: Record<string, string>;
 }
 
@@ -105,7 +103,7 @@ export function activeItems(s: AppState): Item[] {
 
 export function defaultAppState(): AppState {
   return {
-    settings: { serverUrl: "", serverToken: "", sonioxKey: "", lastMetadata: {} },
+    settings: { serverToken: "", lastMetadata: {} },
     wsStatus: "closed",
     wsLastEventAt: null,
     protocolVersionMatched: false,

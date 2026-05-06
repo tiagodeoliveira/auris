@@ -4,7 +4,7 @@ import type { AppState } from "./types";
 
 function defaultState(): AppState {
   return {
-    settings: { serverUrl: "", serverToken: "", sonioxKey: "", lastMetadata: {} },
+    settings: { serverToken: "", lastMetadata: {} },
     wsStatus: "closed",
     wsLastEventAt: null,
     protocolVersionMatched: false,

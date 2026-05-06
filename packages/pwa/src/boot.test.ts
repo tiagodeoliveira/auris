@@ -7,11 +7,9 @@ import { defaultAppState } from "./types";
 describe("boot", () => {
   test("loads settings and stores them", async () => {
     const bridge = createMockBridge();
-    bridge.storage["mc.serverUrl"] = "ws://test:7331";
     bridge.storage["mc.serverToken"] = "tok";
     const store = createStore(defaultAppState());
     await boot({ bridge, store, env: {} });
-    expect(store.get().settings.serverUrl).toBe("ws://test:7331");
     expect(store.get().settings.serverToken).toBe("tok");
   });
 

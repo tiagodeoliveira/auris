@@ -328,24 +328,30 @@ fn make_app_router(handle: ServerHandle) -> Router {
     let ws_router = Router::new()
         .route("/", get(ws_control_handler))
         .route("/audio", get(ws_audio_handler))
+        .route("/stt", get(crate::stt_ws::ws_handler))
         .with_state(handle);
     api_router.merge(ws_router).layer(CorsLayer::permissive())
 }
 
-/// Auth params shared by both WS handlers — the token is in the
+/// Auth params shared by all WS handlers — the token is in the
 /// query string by convention (URLSessionWebSocketTask doesn't
 /// expose custom headers ergonomically, and the PWA mirrors that).
 #[derive(Debug, Deserialize)]
-struct WsAuthParams {
-    token: Option<String>,
+pub struct WsAuthParams {
+    pub token: Option<String>,
 }
 
 /// 401 response for failed WS auth. We can't send a Close frame
 /// before the upgrade completes, so a plain HTTP 401 is the right
 /// way to reject — clients see the failed handshake and won't try
 /// to read frames.
-fn auth_failed(reason: &'static str) -> Response {
+pub fn auth_failed_response(reason: &'static str) -> Response {
     (StatusCode::UNAUTHORIZED, reason).into_response()
+}
+
+/// Local alias for the in-file callers that still use the short name.
+fn auth_failed(reason: &'static str) -> Response {
+    auth_failed_response(reason)
 }
 
 async fn ws_control_handler(

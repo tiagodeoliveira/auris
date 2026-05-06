@@ -6,18 +6,14 @@ interface BridgeLike {
 }
 
 const KEYS = {
-  serverUrl: "mc.serverUrl",
   serverToken: "mc.serverToken",
-  sonioxKey: "mc.sonioxKey",
   lastMetadata: "mc.lastMetadata",
 } as const;
 
 type StorageKey = keyof typeof KEYS;
 
 const ENV_KEYS: Partial<Record<StorageKey, string>> = {
-  serverUrl: "VITE_DEFAULT_SERVER_URL",
   serverToken: "VITE_DEFAULT_SERVER_TOKEN",
-  sonioxKey: "VITE_DEFAULT_SONIOX_KEY",
 };
 
 // Browser localStorage fallback. The Even Hub `bridge.setLocalStorage`
@@ -44,17 +40,13 @@ export async function loadSettings(
   bridge: BridgeLike,
   env: Record<string, string | undefined>,
 ): Promise<Settings> {
-  const [bridgeUrl, bridgeToken, bridgeKey, bridgeMeta] = await Promise.all([
-    bridge.getLocalStorage(KEYS.serverUrl),
+  const [bridgeToken, bridgeMeta] = await Promise.all([
     bridge.getLocalStorage(KEYS.serverToken),
-    bridge.getLocalStorage(KEYS.sonioxKey),
     bridge.getLocalStorage(KEYS.lastMetadata),
   ]);
 
   // Prefer bridge value; fall back to browser localStorage if bridge returns empty.
-  const url = bridgeUrl || lsGet(KEYS.serverUrl);
   const token = bridgeToken || lsGet(KEYS.serverToken);
-  const key = bridgeKey || lsGet(KEYS.sonioxKey);
   const meta = bridgeMeta || lsGet(KEYS.lastMetadata);
 
   let lastMetadata: Record<string, string> = {};
@@ -70,9 +62,7 @@ export async function loadSettings(
   }
 
   return {
-    serverUrl: url || env[ENV_KEYS.serverUrl!] || "ws://localhost:7331",
     serverToken: token || env[ENV_KEYS.serverToken!] || "",
-    sonioxKey: key || env[ENV_KEYS.sonioxKey!] || "",
     lastMetadata,
   };
 }

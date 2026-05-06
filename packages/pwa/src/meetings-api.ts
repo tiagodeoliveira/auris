@@ -79,7 +79,7 @@ export class MeetingsApi {
     private readonly tokenProvider: () => Promise<string>,
   ) {}
 
-  /** Build from `store.settings.serverUrl` + a token provider. */
+  /** Build from the build-time `SERVER_URL` constant + a token provider. */
   static from(serverUrl: string, tokenProvider: () => Promise<string>): MeetingsApi | null {
     const base = deriveApiBase(serverUrl);
     if (!base) return null;

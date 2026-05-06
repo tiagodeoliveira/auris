@@ -17,6 +17,11 @@ struct MeetingOverlayView: View {
     @State private var addingMetadata = false
     @FocusState private var descriptionFocused: Bool
 
+    /// Owns the compose-panel mic button's lifecycle. Created lazily
+    /// on first use so we don't spin up a mic / WS for users who
+    /// never click it.
+    @State private var dictation: DictationController? = nil
+
     /// IDs of items the user has expanded to reveal `detail`.
     /// Persists across tab switches so re-selecting a tab restores
     /// what was expanded; cleared when a new meeting begins (the
@@ -128,6 +133,39 @@ struct MeetingOverlayView: View {
                     .scrollContentBackground(.hidden)
                     .focused($descriptionFocused)
                     .frame(minHeight: 64)
+                    // While dictation is active the controller owns
+                    // the field — disable native editing so the user
+                    // doesn't race with incoming server frames.
+                    .disabled(dictation?.isLocked == true)
+
+                // Mic button — bottom-right corner of the input,
+                // small enough to not crowd the placeholder text.
+                VStack {
+                    Spacer()
+                    HStack {
+                        Spacer()
+                        Button {
+                            ensureDictation().toggle()
+                        } label: {
+                            Image(systemName: micIcon)
+                                .font(.system(size: 14, weight: .semibold))
+                                .foregroundStyle(micTint)
+                                .frame(width: 26, height: 26)
+                                .background(
+                                    Circle().fill(MCTheme.panel.opacity(0.85))
+                                )
+                                .overlay(
+                                    Circle().strokeBorder(
+                                        dictation?.isLocked == true
+                                            ? MCTheme.danger : MCTheme.border)
+                                )
+                        }
+                        .buttonStyle(.plain)
+                        .help(dictation?.isLocked == true
+                            ? "Stop dictation" : "Dictate description")
+                    }
+                }
+                .padding(6)
             }
             .padding(6)
             .background(MCTheme.input)
@@ -136,6 +174,15 @@ struct MeetingOverlayView: View {
                 RoundedRectangle(cornerRadius: 10)
                     .strokeBorder(MCTheme.border)
             )
+            // Keep the description field in sync with the controller
+            // while dictating — the controller writes to its own
+            // `text` property; this mirrors back to the @State the
+            // TextEditor binds to.
+            .onChange(of: dictation?.text ?? "") { _, newValue in
+                if dictation?.isLocked == true {
+                    description = newValue
+                }
+            }
 
             MetadataChipEditor(
                 metadata: model.metadata,
@@ -452,6 +499,39 @@ struct MeetingOverlayView: View {
         if !model.permissionMonitor.allGranted { return "Permissions not granted" }
         if model.audioCapture.state != .stopped { return "Audio capture busy" }
         return ""
+    }
+
+    /// Lazily build the controller on first mic-button click. Keeps
+    /// the WS / mic capture out of the picture for users who never
+    /// dictate, and lets us capture the AppModel reference here
+    /// without needing it at view-init time.
+    private func ensureDictation() -> DictationController {
+        if let d = dictation { return d }
+        let d = DictationController(
+            serverURL: model.settings.serverURL,
+            tokenProvider: { [model] in try await model.auth0.getAccessToken() }
+        )
+        // Adopt whatever's currently in the description field as the
+        // dictation prefix so we append rather than wipe.
+        d.text = description
+        dictation = d
+        return d
+    }
+
+    private var micIcon: String {
+        switch dictation?.state {
+        case .listening, .starting: "mic.fill"
+        default: "mic"
+        }
+    }
+
+    private var micTint: Color {
+        switch dictation?.state {
+        case .listening: MCTheme.danger
+        case .starting, .stopping: MCTheme.amber
+        case .error: MCTheme.danger
+        default: MCTheme.muted
+        }
     }
 }
 

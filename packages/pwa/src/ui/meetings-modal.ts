@@ -13,6 +13,7 @@ import {
   type MeetingDetail,
   type MeetingSummary,
 } from "../meetings-api";
+import { SERVER_URL } from "../server-url";
 
 export function mountMeetingsModal(parent: HTMLElement, store: Store, auth: AuthBundle): void {
   const overlay = document.createElement("div");
@@ -74,7 +75,7 @@ export function mountMeetingsModal(parent: HTMLElement, store: Store, auth: Auth
   let detailError: string | null = null;
 
   function makeApi(): MeetingsApi | null {
-    return MeetingsApi.from(store.get().settings.serverUrl, () => auth.getAccessToken());
+    return MeetingsApi.from(SERVER_URL, () => auth.getAccessToken());
   }
 
   async function reloadList(): Promise<void> {

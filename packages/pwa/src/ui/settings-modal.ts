@@ -1,6 +1,6 @@
 import type { Store } from "../store";
 import type { AuthBundle } from "../auth";
-import { saveSetting } from "../storage";
+import { SERVER_URL } from "../server-url";
 
 interface BridgeLike {
   setLocalStorage(key: string, value: string): Promise<boolean>;
@@ -10,8 +10,8 @@ interface BridgeLike {
 export function mountSettingsModal(
   parent: HTMLElement,
   store: Store,
-  bridge: BridgeLike,
-  onSave: () => void,
+  _bridge: BridgeLike,
+  _onSave: () => void,
   auth: AuthBundle,
 ): void {
   const overlay = document.createElement("div");
@@ -47,7 +47,9 @@ export function mountSettingsModal(
   account.append(accountLabel, accountWho, logoutBtn);
   modal.appendChild(account);
 
-  // Connection status row
+  // Connection status row. The server URL is baked at build time
+  // (see `server-url.ts`); the user shouldn't be configuring it,
+  // mirroring the Mac app.
   const statusRow = document.createElement("div");
   statusRow.className = "settings-status-row";
   const statusDot = document.createElement("span");
@@ -57,40 +59,15 @@ export function mountSettingsModal(
   statusRow.append(statusDot, statusLabel);
   modal.appendChild(statusRow);
 
-  // Form fields. Server URL stays (you might point at a hosted
-  // server vs localhost). Token is gone — auth is the JWT now.
-  // Soniox key still applies (the PWA's dictation flow runs against
-  // the user's own Soniox account, not the server).
-  const urlInput = field("Server URL", "ws://localhost:7331", "text");
-  const sonioxInput = field("Soniox API key", "", "password");
-  modal.append(urlInput.wrap, sonioxInput.wrap);
-
-  // Actions
+  // Close button — no editable fields, so a plain dismiss is enough.
   const actions = document.createElement("div");
   actions.className = "settings-actions";
-  const cancelBtn = document.createElement("button");
-  cancelBtn.className = "btn-ghost";
-  cancelBtn.textContent = "Close";
-  cancelBtn.addEventListener("click", () => store.update({ settingsModalOpen: false }));
-  const saveBtn = document.createElement("button");
-  saveBtn.className = "btn-primary";
-  saveBtn.style.flex = "1";
-  saveBtn.textContent = "Save & Reconnect";
-  saveBtn.addEventListener("click", async () => {
-    const settings = {
-      serverUrl: urlInput.input.value,
-      serverToken: store.get().settings.serverToken, // legacy, unused
-      sonioxKey: sonioxInput.input.value,
-      lastMetadata: store.get().settings.lastMetadata,
-    };
-    await Promise.all([
-      saveSetting(bridge, "serverUrl", settings.serverUrl),
-      saveSetting(bridge, "sonioxKey", settings.sonioxKey),
-    ]);
-    store.update({ settings, settingsModalOpen: false });
-    onSave();
-  });
-  actions.append(cancelBtn, saveBtn);
+  const closeBtn = document.createElement("button");
+  closeBtn.className = "btn-primary";
+  closeBtn.style.flex = "1";
+  closeBtn.textContent = "Close";
+  closeBtn.addEventListener("click", () => store.update({ settingsModalOpen: false }));
+  actions.append(closeBtn);
   modal.appendChild(actions);
 
   let wasOpen = false;
@@ -99,8 +76,6 @@ export function mountSettingsModal(
     const isOpen = s.settingsModalOpen;
     overlay.classList.toggle("open", isOpen);
     if (isOpen && !wasOpen) {
-      urlInput.input.value = s.settings.serverUrl;
-      sonioxInput.input.value = s.settings.sonioxKey;
       const id = s.auth;
       accountWho.textContent = id?.email ?? id?.name ?? id?.sub ?? "(not signed in)";
     }
@@ -112,7 +87,7 @@ export function mountSettingsModal(
     statusDot.dataset.state =
       ws === "open" ? "ok" : ws === "connecting" || ws === "reconnecting" ? "pending" : "off";
     if (ws === "open") {
-      statusLabel.textContent = `CONNECTED · ${s.settings.serverUrl || "ws://localhost:7331"}`;
+      statusLabel.textContent = `CONNECTED · ${SERVER_URL}`;
     } else if (ws === "connecting") {
       statusLabel.textContent = "CONNECTING…";
     } else if (ws === "reconnecting") {
@@ -125,19 +100,5 @@ export function mountSettingsModal(
   syncStatusRow();
   store.subscribe((s) => s.settingsModalOpen, syncOpenState);
   store.subscribe((s) => s.wsStatus, syncStatusRow);
-  store.subscribe((s) => s.settings.serverUrl, syncStatusRow);
   store.subscribe((s) => (s.auth ? s.auth.sub : ""), syncOpenState);
-}
-
-function field(labelText: string, placeholder: string, type: string) {
-  const wrap = document.createElement("label");
-  wrap.className = "settings-field";
-  const lab = document.createElement("span");
-  lab.className = "label-mono";
-  lab.textContent = labelText;
-  const input = document.createElement("input");
-  input.type = type;
-  input.placeholder = placeholder;
-  wrap.append(lab, input);
-  return { wrap, input };
 }

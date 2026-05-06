@@ -12,6 +12,7 @@ pub mod mnemo;
 pub mod persistence;
 pub mod state;
 pub mod stt;
+pub mod stt_ws;
 pub mod summarizer;
 pub mod ws;
 

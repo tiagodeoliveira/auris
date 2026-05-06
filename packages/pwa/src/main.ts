@@ -12,6 +12,7 @@ import type { CtaActions } from "./ui/cta-region";
 import { ListeningSession } from "./listening";
 import { initAuth, readAuth0Config, type AuthBundle } from "./auth";
 import { mountLoginScreen } from "./ui/login-screen";
+import { SERVER_URL } from "./server-url";
 
 async function start() {
   const bridge = await waitForEvenAppBridge();
@@ -67,7 +68,7 @@ function bootAuthenticated(
 ): void {
   function makeSocket() {
     return new ReconnectingSocket({
-      url: store.get().settings.serverUrl,
+      url: SERVER_URL,
       tokenProvider: () => auth.getAccessToken(),
       onEvent: (event) => handleServerEvent(event, store),
       onStatus: (status) => store.update({ wsStatus: status }),
@@ -81,7 +82,10 @@ function bootAuthenticated(
     sock = makeSocket();
   };
 
-  const listening = new ListeningSession(bridge as any, store);
+  const listening = new ListeningSession(bridge as any, store, {
+    getServerUrl: () => SERVER_URL,
+    getAccessToken: () => auth.getAccessToken(),
+  });
 
   bridge.onEvenHubEvent((e: unknown) => {
     const event = e as Record<string, unknown> & { audioEvent?: { audioPcm?: Uint8Array } };
