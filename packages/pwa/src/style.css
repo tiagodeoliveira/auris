@@ -1013,3 +1013,69 @@ textarea {
   padding: 8px 0;
   text-align: left;
 }
+
+/* Moment cards inside the meeting detail. Thumbnail on the left,
+   timestamp + note + summary stacked on the right. */
+.meetings-moment-card {
+  display: flex;
+  gap: 12px;
+  padding: 8px;
+  background: rgba(255, 255, 255, 0.03);
+  border-radius: var(--radius);
+  margin-bottom: 8px;
+}
+.meetings-moment-thumb {
+  width: 140px;
+  height: 88px;
+  object-fit: cover;
+  border-radius: 6px;
+  border: 1px solid var(--border-light);
+  flex-shrink: 0;
+  background: rgba(255, 255, 255, 0.04);
+}
+.meetings-moment-thumb.failed {
+  opacity: 0.5;
+}
+.meetings-moment-body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.meetings-moment-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.meetings-moment-t {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+.meetings-moment-kind {
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  color: var(--text-muted);
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 3px;
+  padding: 1px 5px;
+}
+.meetings-moment-note {
+  font-size: 13px;
+  color: var(--text-light);
+}
+.meetings-moment-summary {
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--text-light);
+}
+.meetings-moment-summary.pending {
+  font-style: italic;
+  color: var(--text-muted);
+}
+.meetings-moment-summary.failed {
+  color: var(--accent-orange, #e89c4a);
+}

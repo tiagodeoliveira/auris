@@ -58,6 +58,11 @@ pub struct ServerHandle {
     /// "occasional small writes from intent handlers"; we're
     /// nowhere near needing read replicas or sharding.
     pub db: sqlx::SqlitePool,
+    /// Internal broadcast: each moment created via the REST POST is
+    /// published here. The async summary worker (spawned at boot)
+    /// subscribes; nothing else does today. Held so api.rs can
+    /// receive a clone via `ApiState`.
+    pub moment_created_tx: broadcast::Sender<crate::api::MomentCreated>,
 }
 
 pub async fn run_server(
@@ -104,6 +109,7 @@ pub async fn run_server_with_listener(
     // Other modes' items are not persisted (they're derived from
     // transcripts and can be re-run if ever needed).
     crate::persistence::spawn_task(state.clone(), &events_tx);
+    let (moment_created_tx, _) = broadcast::channel::<crate::api::MomentCreated>(64);
     let handle = ServerHandle {
         state,
         events_tx,
@@ -114,7 +120,14 @@ pub async fn run_server_with_listener(
         llm,
         audio_source: Arc::new(crate::audio::RemoteAudioSource::new()),
         db,
+        moment_created_tx,
     };
+
+    // Async LLM worker that fills in moment summaries. Subscribes
+    // to `moment_created_tx`; reads transcript JSONL ±N seconds
+    // around each moment, prompts the LLM, writes summary back to
+    // SQLite. See `summarizer/moment.rs`.
+    crate::summarizer::moment::spawn_worker(handle.clone());
 
     // If we recovered an active meeting, fire a synthetic
     // `MeetingStateChanged Active` so the subscribers we just spawned
@@ -203,6 +216,7 @@ fn make_app_router(handle: ServerHandle) -> Router {
     let api_state = crate::api::ApiState {
         db: handle.db.clone(),
         token: handle.token.clone(),
+        moment_created_tx: handle.moment_created_tx.clone(),
     };
     let api_router = crate::api::make_router(api_state);
     let ws_router = Router::new()
@@ -724,15 +738,19 @@ async fn dispatch_intent(
         }
     }
     if let Some(req) = outcome.mark_moment {
+        let moment_id = uuid::Uuid::new_v4().to_string();
         match crate::db::insert_moment(
             &handle.db,
+            &moment_id,
             &req.meeting_id,
+            "manual",
             req.t as i64,
             req.note.as_deref(),
+            None,
         )
         .await
         {
-            Ok(moment_id) => tracing::info!(
+            Ok(()) => tracing::info!(
                 meeting_id = %req.meeting_id, moment_id = %moment_id, t = req.t,
                 "moment persisted"
             ),

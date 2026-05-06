@@ -14,7 +14,7 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow = "1"
-axum = { version = "0.7", default-features = false, features = ["http1", "json", "query", "tokio", "tracing", "ws"] }
+axum = { version = "0.7", default-features = false, features = ["http1", "json", "query", "tokio", "tracing", "ws", "multipart"] }
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
 clap = { version = "4", features = ["derive", "env"] }
 dotenvy = "0.15"

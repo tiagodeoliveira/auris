@@ -211,6 +211,20 @@ export function mountMeetingsModal(parent: HTMLElement, store: Store): void {
       root.appendChild(block);
     }
 
+    // Moments
+    if (detail.moments && detail.moments.length > 0) {
+      const mBlock = document.createElement("div");
+      mBlock.className = "meetings-detail-block";
+      const mHead = document.createElement("div");
+      mHead.className = "meetings-detail-heading";
+      mHead.textContent = "Moments";
+      mBlock.appendChild(mHead);
+      for (const moment of detail.moments) {
+        mBlock.appendChild(buildMomentCard(moment));
+      }
+      root.appendChild(mBlock);
+    }
+
     // Transcript
     const tBlock = document.createElement("div");
     tBlock.className = "meetings-detail-block";
@@ -245,6 +259,89 @@ export function mountMeetingsModal(parent: HTMLElement, store: Store): void {
     root.appendChild(tBlock);
 
     return root;
+  }
+
+  /** Build a single moment card. Lives inside the modal closure so
+   * it can use `makeApi()` for auth'd screenshot fetches. */
+  function buildMomentCard(moment: import("../meetings-api").Moment): HTMLElement {
+    const card = document.createElement("div");
+    card.className = "meetings-moment-card";
+
+    if (moment.screenshot_url) {
+      const img = document.createElement("img");
+      img.className = "meetings-moment-thumb";
+      img.alt = "moment screenshot";
+      // `<img src>` can't carry an Authorization header, so we
+      // lazy-fetch the bytes with our token and swap in a blob URL.
+      const api = makeApi();
+      if (api) {
+        api
+          .fetchScreenshot(moment.screenshot_url)
+          .then((blobUrl) => {
+            img.src = blobUrl;
+          })
+          .catch(() => {
+            img.alt = "screenshot failed to load";
+            img.classList.add("failed");
+          });
+      }
+      card.appendChild(img);
+    }
+
+    const right = document.createElement("div");
+    right.className = "meetings-moment-body";
+
+    const meta = document.createElement("div");
+    meta.className = "meetings-moment-meta";
+    const tStamp = document.createElement("span");
+    tStamp.className = "meetings-moment-t";
+    tStamp.textContent = formatOffset(moment.t);
+    meta.appendChild(tStamp);
+    if (moment.kind && moment.kind !== "manual") {
+      const kindBadge = document.createElement("span");
+      kindBadge.className = "meetings-moment-kind";
+      kindBadge.textContent = moment.kind.toUpperCase();
+      meta.appendChild(kindBadge);
+    }
+    right.appendChild(meta);
+
+    if (moment.note && moment.note.trim()) {
+      const note = document.createElement("div");
+      note.className = "meetings-moment-note";
+      note.textContent = moment.note;
+      right.appendChild(note);
+    }
+
+    const summary = document.createElement("div");
+    summary.className = "meetings-moment-summary";
+    if (moment.summary_status === "done" && moment.summary) {
+      summary.textContent = moment.summary;
+    } else if (moment.summary_status === "pending") {
+      summary.textContent = "Generating summary…";
+      summary.classList.add("pending");
+    } else if (moment.summary_status === "failed") {
+      summary.textContent = moment.summary || "Summary failed.";
+      summary.classList.add("failed");
+    } else {
+      summary.textContent = moment.summary || "";
+      summary.classList.add("pending");
+    }
+    right.appendChild(summary);
+
+    card.appendChild(right);
+    return card;
+  }
+
+  /** Render a `mm:ss` (or `h:mm:ss` for long meetings) offset
+   * from a moment's `t` (ms-since-meeting-start). */
+  function formatOffset(ms: number): string {
+    const total = Math.max(0, Math.floor(ms / 1000));
+    const s = total % 60;
+    const m = Math.floor(total / 60) % 60;
+    const h = Math.floor(total / 3600);
+    const pad = (n: number) => String(n).padStart(2, "0");
+    if (h > 0) return `${h}:${pad(m)}:${pad(s)}`;
+    return `${m}:${pad(s)}`;
   }
 
   // Open/close synchronization. On open: reload. On close: drop

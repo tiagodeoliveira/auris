@@ -236,6 +236,18 @@ struct MeetingOverlayView: View {
 
             HStack(spacing: 6) {
                 Button {
+                    Task { await model.markMoment() }
+                } label: {
+                    Image(systemName: "bookmark.circle.fill")
+                        .font(.system(size: 18))
+                        .foregroundStyle(.yellow)
+                }
+                .buttonStyle(.plain)
+                .keyboardShortcut("m", modifiers: [.command, .shift])
+                .disabled(!model.isMeetingActive)
+                .help("Mark moment (⇧⌘M)")
+
+                Button {
                     Task { await model.stopMeeting() }
                 } label: {
                     Image(systemName: "stop.circle.fill")
@@ -260,6 +272,20 @@ struct MeetingOverlayView: View {
                 .frame(width: 18)
             }
             .frame(maxWidth: .infinity)
+
+            // Transient toast for moment capture: lives in the
+            // status column so it doesn't shift the transcript.
+            // Cleared by `AppModel.scheduleMomentStatusClear` after
+            // ~2s.
+            if let status = model.momentStatus, !status.isEmpty {
+                Text(status)
+                    .font(.caption2)
+                    .foregroundStyle(.yellow)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .frame(maxWidth: .infinity)
+                    .transition(.opacity)
+            }
         }
     }
 

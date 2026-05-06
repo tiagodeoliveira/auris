@@ -142,7 +142,7 @@ private struct MeetingsTab: View {
             ProgressView()
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if let detail {
-            MeetingDetailView(detail: detail)
+            MeetingDetailView(detail: detail, model: model)
         } else {
             Text(meetings.isEmpty ? "" : "Select a meeting")
                 .foregroundStyle(.secondary)
@@ -226,9 +226,10 @@ private struct MeetingRow: View {
     }
 }
 
-// Right-pane detail. Description + timing + metadata + transcript.
+// Right-pane detail. Description + timing + metadata + moments + transcript.
 private struct MeetingDetailView: View {
     let detail: MeetingDetail
+    @Bindable var model: AppModel
 
     var body: some View {
         ScrollView {
@@ -244,6 +245,11 @@ private struct MeetingDetailView: View {
                     metadataBlock
                 }
 
+                if let moments = detail.moments, !moments.isEmpty {
+                    Divider()
+                    momentsBlock(moments)
+                }
+
                 Divider()
 
                 transcriptBlock
@@ -251,6 +257,16 @@ private struct MeetingDetailView: View {
             .padding(20)
             .frame(maxWidth: .infinity, alignment: .topLeading)
             .textSelection(.enabled)
+        }
+    }
+
+    @ViewBuilder
+    private func momentsBlock(_ moments: [Moment]) -> some View {
+        Text("Moments").font(.headline)
+        VStack(alignment: .leading, spacing: 10) {
+            ForEach(moments) { moment in
+                MomentCard(moment: moment, meetingId: detail.id, model: model)
+            }
         }
     }
 
@@ -328,6 +344,157 @@ private struct TranscriptRow: View {
             Text(item.text)
                 .font(.body)
                 .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+}
+
+/// One row in the moments list. Layout: screenshot thumbnail (if
+/// any) on the left, timestamp + note + summary stacked on the
+/// right. Pending summaries render in italic secondary; failed
+/// summaries render in red.
+private struct MomentCard: View {
+    let moment: Moment
+    let meetingId: String
+    @Bindable var model: AppModel
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            if let rel = moment.screenshotURL,
+                let api = MeetingsAPI.fromWSURL(model.settings.serverURL, token: model.settings.token),
+                let url = api.screenshotURL(forRelativePath: rel)
+            {
+                AuthorizedImage(url: url, token: model.settings.token)
+                    .frame(width: 120, height: 75)
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 6)
+                            .strokeBorder(Color.gray.opacity(0.25))
+                    )
+            }
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 8) {
+                    Text(formatOffset(moment.t))
+                        .font(.system(.caption, design: .monospaced).weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    if moment.kind != "manual" {
+                        Text(moment.kind.uppercased())
+                            .font(.system(size: 9, weight: .semibold))
+                            .tracking(0.5)
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 1)
+                            .background {
+                                RoundedRectangle(cornerRadius: 3)
+                                    .fill(Color.gray.opacity(0.18))
+                            }
+                    }
+                }
+                if let note = moment.note, !note.isEmpty {
+                    Text(note)
+                        .font(.callout)
+                        .foregroundStyle(.primary)
+                }
+                summaryView
+            }
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+        }
+        .padding(8)
+        .background(Color.white.opacity(0.04))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+
+    @ViewBuilder
+    private var summaryView: some View {
+        switch moment.summaryStatus {
+        case "done":
+            if let s = moment.summary, !s.isEmpty {
+                Text(s).font(.body)
+            } else {
+                // Empty summary on done is unusual but possible; treat as info.
+                Text("(empty summary)").font(.callout).foregroundStyle(.secondary)
+            }
+        case "pending":
+            Text("Generating summary…")
+                .font(.callout).italic()
+                .foregroundStyle(.secondary)
+        case "failed":
+            Text(moment.summary ?? "Summary failed.")
+                .font(.callout)
+                .foregroundStyle(.red)
+        default:
+            Text(moment.summary ?? "")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    /// `12345` ms → `"00:12"` (m:ss for short meetings, h:mm:ss for
+    /// long ones). Used so users can scan when each moment was hit.
+    private func formatOffset(_ ms: Int64) -> String {
+        let total = max(0, ms) / 1000
+        let s = Int(total % 60)
+        let m = Int((total / 60) % 60)
+        let h = Int(total / 3600)
+        if h > 0 {
+            return String(format: "%d:%02d:%02d", h, m, s)
+        }
+        return String(format: "%d:%02d", m, s)
+    }
+}
+
+/// Loads an image from a URL with a Bearer header and renders it.
+/// Replaces `AsyncImage` for our auth'd screenshot fetch — the
+/// stock loader can't add headers. Reloads when `url` changes;
+/// state is per-row so navigating between meetings doesn't keep
+/// stale bytes in memory.
+private struct AuthorizedImage: View {
+    let url: URL
+    let token: String
+    @State private var image: NSImage?
+    @State private var failed = false
+
+    var body: some View {
+        Group {
+            if let image {
+                Image(nsImage: image)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+            } else if failed {
+                placeholder("photo.badge.exclamationmark", color: .secondary)
+            } else {
+                placeholder("photo", color: .secondary)
+            }
+        }
+        .task(id: url) {
+            await load()
+        }
+    }
+
+    private func placeholder(_ system: String, color: Color) -> some View {
+        ZStack {
+            Color.gray.opacity(0.12)
+            Image(systemName: system)
+                .foregroundStyle(color)
+                .font(.title2)
+        }
+    }
+
+    private func load() async {
+        var req = URLRequest(url: url)
+        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        do {
+            let (data, resp) = try await URLSession.shared.data(for: req)
+            if let http = resp as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+                failed = true
+                return
+            }
+            if let img = NSImage(data: data) {
+                image = img
+            } else {
+                failed = true
+            }
+        } catch {
+            failed = true
         }
     }
 }

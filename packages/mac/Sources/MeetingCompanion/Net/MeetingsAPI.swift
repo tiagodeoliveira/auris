@@ -35,11 +35,37 @@ struct MeetingDetail: Decodable, Identifiable, Sendable {
     let startedAt: Date
     let endedAt: Date?
     let transcript: [Item]
+    /// Moments captured during this meeting, oldest first. Empty
+    /// when the meeting has none. Older server builds (before the
+    /// moments-API commit) omit the field entirely; the optional
+    /// decode keeps Mac builds compatible.
+    let moments: [Moment]?
 
     enum CodingKeys: String, CodingKey {
-        case id, description, metadata, transcript
+        case id, description, metadata, transcript, moments
         case startedAt = "started_at"
         case endedAt = "ended_at"
+    }
+}
+
+/// One captured moment. `screenshotURL` is server-relative
+/// (`/meetings/:id/moments/:id/screenshot`); resolve against the
+/// REST base when fetching.
+struct Moment: Decodable, Identifiable, Sendable, Equatable {
+    let id: String
+    let kind: String
+    let t: Int64
+    let note: String?
+    let summary: String?
+    let summaryStatus: String
+    let screenshotURL: String?
+    let createdAt: Date
+
+    enum CodingKeys: String, CodingKey {
+        case id, kind, t, note, summary
+        case summaryStatus = "summary_status"
+        case screenshotURL = "screenshot_url"
+        case createdAt = "created_at"
     }
 }
 
@@ -99,6 +125,88 @@ struct MeetingsAPI: Sendable {
         try await fetch(path: "meetings/\(id)")
     }
 
+    /// `POST /meetings/:id/moments` — multipart with `t` (required),
+    /// optional note text, optional PNG screenshot bytes. Returns
+    /// the freshly-created moment (summary will be `pending` for a
+    /// few seconds while the server-side worker fills it in).
+    func createMoment(
+        meetingId: String,
+        t: Int64,
+        note: String?,
+        screenshotPNG: Data?
+    ) async throws -> Moment {
+        let url = baseURL.appendingPathComponent("meetings/\(meetingId)/moments")
+        let boundary = "MCBoundary-\(UUID().uuidString)"
+        var body = Data()
+
+        // `t` field
+        appendFormField(&body, boundary: boundary, name: "t", text: String(t))
+
+        // Optional `note`
+        if let note, !note.isEmpty {
+            appendFormField(&body, boundary: boundary, name: "note", text: note)
+        }
+
+        // Optional `screenshot` file
+        if let png = screenshotPNG, !png.isEmpty {
+            appendFileField(
+                &body,
+                boundary: boundary,
+                name: "screenshot",
+                filename: "screenshot.png",
+                contentType: "image/png",
+                data: png
+            )
+        }
+
+        // Closing boundary
+        body.append("--\(boundary)--\r\n".data(using: .utf8)!)
+
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        req.setValue(
+            "multipart/form-data; boundary=\(boundary)",
+            forHTTPHeaderField: "Content-Type"
+        )
+        req.httpBody = body
+
+        let data: Data
+        let resp: URLResponse
+        do {
+            (data, resp) = try await URLSession.shared.upload(for: req, from: body)
+        } catch {
+            throw MeetingsAPIError.transport(error)
+        }
+        guard let http = resp as? HTTPURLResponse else {
+            throw MeetingsAPIError.http(0)
+        }
+        switch http.statusCode {
+        case 200..<300: break
+        case 401: throw MeetingsAPIError.unauthorized
+        case 404: throw MeetingsAPIError.notFound
+        default: throw MeetingsAPIError.http(http.statusCode)
+        }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .custom(decodeRFC3339Date)
+        do {
+            return try decoder.decode(Moment.self, from: data)
+        } catch {
+            throw MeetingsAPIError.decode(error)
+        }
+    }
+
+    /// Build `<base>/meetings/:meeting_id/moments/:moment_id/screenshot`
+    /// for a given relative `screenshot_url`. Used by the meeting
+    /// detail view to render thumbnails (with a Bearer header).
+    func screenshotURL(forRelativePath relative: String) -> URL? {
+        // `relative` is a server-rooted path like
+        // `/meetings/abc/moments/def/screenshot`. Strip the leading
+        // slash and append onto the base.
+        let trimmed = relative.hasPrefix("/") ? String(relative.dropFirst()) : relative
+        return URL(string: trimmed, relativeTo: baseURL)?.absoluteURL
+    }
+
     // MARK: - Internals
 
     private func fetch<T: Decodable>(path: String) async throws -> T {
@@ -131,6 +239,42 @@ struct MeetingsAPI: Sendable {
             throw MeetingsAPIError.decode(error)
         }
     }
+}
+
+/// Append a `Content-Disposition: form-data; name=...` text part.
+/// Used by `createMoment` to encode `t` and `note`.
+private func appendFormField(
+    _ body: inout Data,
+    boundary: String,
+    name: String,
+    text: String
+) {
+    body.append("--\(boundary)\r\n".data(using: .utf8)!)
+    body.append(
+        "Content-Disposition: form-data; name=\"\(name)\"\r\n\r\n".data(using: .utf8)!
+    )
+    body.append(text.data(using: .utf8)!)
+    body.append("\r\n".data(using: .utf8)!)
+}
+
+/// Append a `Content-Disposition: form-data; name=...; filename=...`
+/// binary part. Used for the optional screenshot upload.
+private func appendFileField(
+    _ body: inout Data,
+    boundary: String,
+    name: String,
+    filename: String,
+    contentType: String,
+    data: Data
+) {
+    body.append("--\(boundary)\r\n".data(using: .utf8)!)
+    body.append(
+        "Content-Disposition: form-data; name=\"\(name)\"; filename=\"\(filename)\"\r\n"
+            .data(using: .utf8)!
+    )
+    body.append("Content-Type: \(contentType)\r\n\r\n".data(using: .utf8)!)
+    body.append(data)
+    body.append("\r\n".data(using: .utf8)!)
 }
 
 /// Decode RFC 3339 / ISO 8601 timestamps with *or without* fractional

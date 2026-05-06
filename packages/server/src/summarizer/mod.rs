@@ -8,5 +8,6 @@
 
 pub mod actions;
 pub mod highlights;
+pub mod moment;
 pub mod open_questions;
 pub mod transcript;

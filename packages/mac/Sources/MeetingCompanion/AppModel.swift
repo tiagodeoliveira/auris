@@ -60,6 +60,20 @@ final class AppModel {
     /// server's view diverged from ours and we should resync.
     private(set) var currentMeetingId: String? = nil
 
+    /// Wall-clock time the meeting started locally. Used to compute
+    /// the `t` ms-offset when the user marks a moment. `nil` when no
+    /// meeting is active or when we connected mid-meeting and the
+    /// snapshot only told us *that* the meeting was active, not
+    /// when it started — moments captured in that window approximate
+    /// `t` from the meeting's `started_at` (server-side wall clock)
+    /// once we fetch the meeting detail.
+    private(set) var meetingStartedAt: Date? = nil
+
+    /// Transient one-shot status line for moment capture. Visible
+    /// in the overlay for ~2s after a capture, then cleared. Lets
+    /// us confirm the capture without spawning a custom toast view.
+    private(set) var momentStatus: String? = nil
+
     /// Which tab the Settings window should show on next open.
     /// "Settings…" leaves it where the user last was; "Meetings…"
     /// flips it to `.meetings` before opening the window. Bound by
@@ -247,6 +261,9 @@ final class AppModel {
 
         clearTranscript()
         guard await startAudioStream() else { return }
+        // Stamp the local start so `markMoment` can compute `t`
+        // without round-tripping the server. Cleared on teardown.
+        meetingStartedAt = Date()
 
         do {
             try await webSocket.send(intent: StartMeetingIntent(description: description))
@@ -255,6 +272,7 @@ final class AppModel {
             print("[AppModel] start_meeting send failed: \(error)")
             audioStreamer.stop()
             audioCapture.stop()
+            meetingStartedAt = nil
         }
     }
 
@@ -281,6 +299,74 @@ final class AppModel {
         metadata = [:]
         extractingMetadata = false
         audioToBackendPaused = false
+        meetingStartedAt = nil
+        momentStatus = nil
+    }
+
+    /// Mark a moment in the active meeting. Captures a screenshot
+    /// of the primary display, computes `t` ms-since-meeting-start,
+    /// and POSTs both to `/meetings/:id/moments`. The server-side
+    /// async worker fills in the LLM summary a few seconds later.
+    /// Updates `momentStatus` so the overlay can flash a confirmation.
+    func markMoment(note: String? = nil) async {
+        guard let meetingId = currentMeetingId else {
+            momentStatus = "No active meeting"
+            scheduleMomentStatusClear()
+            return
+        }
+        guard let api = MeetingsAPI.fromWSURL(settings.serverURL, token: settings.token) else {
+            momentStatus = "Invalid server URL"
+            scheduleMomentStatusClear()
+            return
+        }
+
+        momentStatus = "Capturing…"
+
+        // Compute t. If we don't have a local start (e.g. recovered
+        // mid-meeting from a server reboot), best-effort with 0 — the
+        // moment still lands; the timeline ordering will be slightly
+        // off until the user starts a fresh meeting.
+        let t: Int64
+        if let start = meetingStartedAt {
+            t = Int64(max(0, Date().timeIntervalSince(start) * 1000))
+        } else {
+            t = 0
+        }
+
+        // Screenshot capture is best-effort — if it fails we still
+        // try to post the moment (without an image). The user gets
+        // a status hint either way.
+        var screenshot: Data? = nil
+        do {
+            screenshot = try await ScreenshotCapture.capturePrimaryDisplay()
+        } catch {
+            print("[AppModel] screenshot capture failed: \(error.localizedDescription)")
+            momentStatus = "No screenshot · sending"
+        }
+
+        do {
+            _ = try await api.createMoment(
+                meetingId: meetingId,
+                t: t,
+                note: note,
+                screenshotPNG: screenshot
+            )
+            momentStatus = screenshot == nil ? "Moment saved (no screenshot)" : "Moment saved"
+        } catch {
+            print("[AppModel] createMoment failed: \(error.localizedDescription)")
+            momentStatus = "Save failed: \(error.localizedDescription)"
+        }
+        scheduleMomentStatusClear()
+    }
+
+    /// Clear `momentStatus` after a short delay so the toast-like
+    /// label fades cleanly. Always schedules; cancelling the timer
+    /// on rapid successive captures isn't worth the bookkeeping.
+    private func scheduleMomentStatusClear() {
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(2))
+            self?.momentStatus = nil
+        }
     }
 
     func toggleBackendAudio() {

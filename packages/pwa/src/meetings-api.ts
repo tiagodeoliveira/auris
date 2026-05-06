@@ -21,6 +21,25 @@ export interface MeetingDetail extends MeetingSummary {
   /** Inlined transcript items, one per finalized utterance. Empty
    * array when the meeting has no committed transcript yet. */
   transcript: Item[];
+  /** Moments captured during this meeting, oldest first. Older
+   * server builds (before the moments-API commit) omit the field;
+   * the optional shape keeps clients forward-compat. */
+  moments?: Moment[];
+}
+
+export interface Moment {
+  id: string;
+  kind: string;
+  /** ms-since-meeting-start. */
+  t: number;
+  note: string | null;
+  summary: string | null;
+  summary_status: "pending" | "done" | "failed" | string;
+  /** Server-rooted relative path, e.g. `/meetings/abc/moments/def/screenshot`,
+   * or `null` when no screenshot was captured. Resolve against the
+   * REST base when fetching with the bearer header. */
+  screenshot_url: string | null;
+  created_at: string;
 }
 
 export class MeetingsApiError extends Error {
@@ -70,6 +89,31 @@ export class MeetingsApi {
 
   detail(id: string): Promise<MeetingDetail> {
     return this.request<MeetingDetail>(`/meetings/${encodeURIComponent(id)}`);
+  }
+
+  /**
+   * Fetch a screenshot's bytes with the bearer header and return a
+   * blob URL the caller can put in `<img src>`. Caller is responsible
+   * for `URL.revokeObjectURL` on the returned URL when it's no longer
+   * displayed (we typically revoke when the modal closes).
+   */
+  async fetchScreenshot(relativeOrFullUrl: string): Promise<string> {
+    const path = relativeOrFullUrl.startsWith("/") ? relativeOrFullUrl.slice(1) : relativeOrFullUrl;
+    const url = this.baseUrl + "/" + path;
+    let resp: Response;
+    try {
+      resp = await fetch(url, {
+        headers: { Authorization: `Bearer ${this.token}` },
+        cache: "no-store",
+      });
+    } catch (e) {
+      throw new MeetingsApiError(e instanceof Error ? e.message : "Network error", 0);
+    }
+    if (!resp.ok) {
+      throw new MeetingsApiError(`screenshot fetch returned ${resp.status}`, resp.status);
+    }
+    const blob = await resp.blob();
+    return URL.createObjectURL(blob);
   }
 
   private async request<T>(path: string): Promise<T> {
