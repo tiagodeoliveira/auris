@@ -93,7 +93,7 @@ pub struct ServerHandle {
     /// Single connection pool is fine — the access pattern is
     /// "occasional small writes from intent handlers"; we're
     /// nowhere near needing read replicas or sharding.
-    pub db: sqlx::SqlitePool,
+    pub db: sqlx::PgPool,
     /// Internal broadcast: each moment created via the REST POST is
     /// published here. The async summary worker (spawned at boot)
     /// subscribes; nothing else does today. Held so api.rs can
@@ -680,7 +680,7 @@ struct RecoveredUserMeeting {
 }
 
 async fn recover_active_meetings(
-    db: &sqlx::SqlitePool,
+    db: &sqlx::PgPool,
     state: &Arc<Mutex<ServerState>>,
 ) -> Vec<RecoveredUserMeeting> {
     // Test escape hatch: integration tests share a process and would

@@ -26,7 +26,7 @@ use axum::{
 };
 use chrono::{DateTime, Utc};
 use serde::Serialize;
-use sqlx::SqlitePool;
+use sqlx::PgPool;
 use tokio::sync::broadcast;
 use tower_http::cors::CorsLayer;
 
@@ -47,7 +47,7 @@ pub struct MomentCreated {
 
 #[derive(Clone)]
 pub struct ApiState {
-    pub db: SqlitePool,
+    pub db: PgPool,
     /// Auth mode chosen at boot. Each handler resolves the request's
     /// bearer token to a local `users.id` via this — either a real
     /// JWT validation against Auth0 or the dev-bypass synthetic user.
@@ -96,13 +96,10 @@ async fn list_meetings(
     headers: HeaderMap,
 ) -> Result<Json<Vec<MeetingSummary>>, ApiError> {
     let user_id = require_user(&headers, &state).await?;
-    // Pre-OAuth meeting rows have NULL user_id; they're treated as
-    // belonging to nobody and never returned. Once stage 3 makes the
-    // column NOT NULL, the predicate becomes a plain `= ?1`.
     let rows: Vec<MeetingRow> = sqlx::query_as(
         r#"SELECT id, description, metadata, started_at, ended_at
            FROM meetings
-           WHERE user_id = ?1
+           WHERE user_id = $1
            ORDER BY started_at DESC"#,
     )
     .bind(&user_id)
@@ -174,7 +171,7 @@ async fn get_meeting(
     let user_id = require_user(&headers, &state).await?;
     let row: Option<MeetingRow> = sqlx::query_as(
         r#"SELECT id, description, metadata, started_at, ended_at
-           FROM meetings WHERE id = ?1 AND user_id = ?2"#,
+           FROM meetings WHERE id = $1 AND user_id = $2"#,
     )
     .bind(&id)
     .bind(&user_id)
@@ -288,7 +285,7 @@ async fn get_moment_screenshot(
         r#"SELECT m.meeting_id, m.asset_path
              FROM moments m
              JOIN meetings me ON me.id = m.meeting_id
-            WHERE m.id = ?1 AND me.user_id = ?2"#,
+            WHERE m.id = $1 AND me.user_id = $2"#,
     )
     .bind(&moment_id)
     .bind(&user_id)
@@ -341,7 +338,7 @@ async fn upload_moment_screenshot(
         r#"SELECT m.meeting_id
              FROM moments m
              JOIN meetings me ON me.id = m.meeting_id
-            WHERE m.id = ?1 AND me.user_id = ?2"#,
+            WHERE m.id = $1 AND me.user_id = $2"#,
     )
     .bind(&moment_id)
     .bind(&user_id)
@@ -483,28 +480,13 @@ mod tests {
     use super::*;
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
-    use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
     use tower::ServiceExt;
-
-    async fn pool() -> SqlitePool {
-        let opts = SqliteConnectOptions::new()
-            .filename(":memory:")
-            .create_if_missing(true)
-            .foreign_keys(true);
-        let pool = SqlitePoolOptions::new()
-            .max_connections(1)
-            .connect_with(opts)
-            .await
-            .unwrap();
-        sqlx::migrate!("./migrations").run(&pool).await.unwrap();
-        pool
-    }
 
     /// Build a router in `AuthMode::Disabled` (every request maps
     /// to the synthetic `dev|local` user). Returns the router *and*
     /// the local `users.id` so test fixtures can insert meetings
     /// under the right owner.
-    async fn router_with_dev_user(pool: SqlitePool) -> (Router, String) {
+    async fn router_with_dev_user(pool: PgPool) -> (Router, String) {
         let (moment_created_tx, _) = broadcast::channel::<MomentCreated>(8);
         let dev_user = crate::db::upsert_user_by_auth0_sub(
             &pool,
@@ -529,9 +511,8 @@ mod tests {
         String::from_utf8(body.to_vec()).unwrap()
     }
 
-    #[tokio::test]
-    async fn list_returns_meetings_newest_first() {
-        let pool = pool().await;
+    #[sqlx::test]
+    async fn list_returns_meetings_newest_first(pool: PgPool) {
         let (app, uid) = router_with_dev_user(pool.clone()).await;
         let earlier = Utc::now() - chrono::Duration::minutes(60);
         let later = Utc::now();
@@ -558,9 +539,8 @@ mod tests {
         assert_eq!(v[1]["id"], "older");
     }
 
-    #[tokio::test]
-    async fn detail_404_for_missing_meeting() {
-        let pool = pool().await;
+    #[sqlx::test]
+    async fn detail_404_for_missing_meeting(pool: PgPool) {
         let (app, _uid) = router_with_dev_user(pool).await;
         let resp = app
             .oneshot(
@@ -574,9 +554,8 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
     }
 
-    #[tokio::test]
-    async fn detail_returns_meeting_with_empty_transcript() {
-        let pool = pool().await;
+    #[sqlx::test]
+    async fn detail_returns_meeting_with_empty_transcript(pool: PgPool) {
         let (app, uid) = router_with_dev_user(pool.clone()).await;
         crate::db::insert_meeting(&pool, "m1", &uid, Utc::now(), Some("hi"), r#"{"a":"b"}"#)
             .await
@@ -598,9 +577,8 @@ mod tests {
         assert!(v["transcript"].as_array().unwrap().is_empty());
     }
 
-    #[tokio::test]
-    async fn detail_404_when_meeting_belongs_to_other_user() {
-        let pool = pool().await;
+    #[sqlx::test]
+    async fn detail_404_when_meeting_belongs_to_other_user(pool: PgPool) {
         // Insert a meeting under a *different* user.
         let other = crate::db::upsert_user_by_auth0_sub(&pool, "other|user", None, None)
             .await

@@ -32,7 +32,12 @@ pub async fn spawn_test_server() -> TestServer {
     spawn_test_server_with_token("test-token").await
 }
 
-pub async fn spawn_test_server_with_token(token: &str) -> TestServer {
+pub async fn spawn_test_server_with_token(_token: &str) -> TestServer {
+    // Auth-disabled mode — every request maps to the synthetic
+    // `dev|local` user. Removes the JWT validation path from the
+    // critical path of these integration tests; the auth-on path is
+    // exercised separately in the auth-focused unit tests.
+    std::env::set_var("MEETING_COMPANION_AUTH_DISABLED", "1");
     // Disable LLM extraction in tests by default. The actual extract path
     // never fires from spawn_extraction; the LlmClient is constructed only
     // because the run_server signature requires one.
@@ -53,7 +58,6 @@ pub async fn spawn_test_server_with_token(token: &str) -> TestServer {
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let addr = listener.local_addr().expect("addr");
     let (tx, rx) = oneshot::channel();
-    let token = token.to_string();
 
     let llm = std::sync::Arc::new(
         meeting_companion_server::llm::LlmClient::from_env()
@@ -61,9 +65,10 @@ pub async fn spawn_test_server_with_token(token: &str) -> TestServer {
             .expect("LLM client init in tests"),
     );
 
+    let auth = meeting_companion_server::ws::AuthMode::Disabled;
     tokio::spawn(async move {
         let _ =
-            meeting_companion_server::ws::run_server_with_listener(listener, token, llm, rx).await;
+            meeting_companion_server::ws::run_server_with_listener(listener, auth, llm, rx).await;
     });
     TestServer {
         addr,

@@ -251,7 +251,7 @@ impl AuthValidator {
 /// needed past this point.
 pub async fn resolve_user_id(
     auth: &crate::ws::AuthMode,
-    db: &sqlx::SqlitePool,
+    db: &sqlx::PgPool,
     token: Option<&str>,
 ) -> anyhow::Result<String> {
     match auth {

@@ -95,7 +95,7 @@ pub fn spawn_worker(handle: ServerHandle) {
 }
 
 async fn process_one(
-    db: &sqlx::SqlitePool,
+    db: &sqlx::PgPool,
     llm: &Arc<LlmClient>,
     req: &MomentCreated,
 ) -> anyhow::Result<()> {

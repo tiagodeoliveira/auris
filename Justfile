@@ -1,6 +1,25 @@
 default:
     @just --list
 
+# --- Database --------------------------------------------------------------
+
+# Bring up the local Postgres container in the background.
+# Connects via DATABASE_URL=postgres://meeting_companion:dev@localhost:5432.
+db-up:
+    docker compose up -d postgres
+
+# Stop the Postgres container (data persists in the named volume).
+db-down:
+    docker compose stop postgres
+
+# Wipe the database — drops the volume so the next `db-up` starts fresh.
+db-reset:
+    docker compose down -v
+
+# Open `psql` against the local instance.
+db-shell:
+    docker compose exec postgres psql -U meeting_companion meeting_companion
+
 # --- Run -------------------------------------------------------------------
 
 # Run the server with real Auth0 JWT validation (port 7331).
@@ -28,13 +47,15 @@ pwa-sim:
 
 # Print integrated-stack run instructions (three terminals).
 stack:
+    @echo "First-time setup:  just db-up        (brings up the Postgres container)"
+    @echo ""
     @echo "Open three terminals and run, in order:"
     @echo "  Terminal 1:  just server-run"
     @echo "  Terminal 2:  just pwa-dev"
     @echo "  Terminal 3:  just pwa-sim    (this also starts the simulator)"
     @echo ""
     @echo "Or for terminals 2+3 combined:  just pwa-sim   (it runs vite + simulator concurrently)"
-    @echo "PWA settings modal opens on first run; enter ws://localhost:7331 + token 'dev' + your Soniox key."
+    @echo "Server URL is baked at build time; you only need to sign in via Auth0."
 
 # Build the Mac app (debug).
 mac-build:

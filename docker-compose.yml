@@ -1,0 +1,38 @@
+# Local development stack. Today this only brings up Postgres — the
+# server itself is run via `cargo run` so iteration time stays fast.
+# When the server lands on a remote host this same compose file (or a
+# stripped-down variant) can drive the production deployment, with
+# the `postgres` service replaced by a managed RDS-style endpoint.
+#
+# Quickstart:
+#   docker compose up -d postgres
+#   cp packages/server/.env.example packages/server/.env
+#   just server-run
+#
+# Wiping data:
+#   docker compose down -v        # removes the volume → fresh DB next start
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: meeting-companion-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: meeting_companion
+      POSTGRES_PASSWORD: dev
+      POSTGRES_DB: meeting_companion
+    ports:
+      # Bound to localhost only — the server connects from the host
+      # via DATABASE_URL=postgres://...@localhost:5432. Don't expose
+      # this on 0.0.0.0; production gets a separate compose file.
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - meeting-companion-pg-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U meeting_companion -d meeting_companion"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  meeting-companion-pg-data:

@@ -1,28 +1,32 @@
-//! SQLite persistence layer.
+//! Postgres persistence layer.
 //!
-//! One file (`<DATA_DIR>/server.db`) with migrations applied at boot.
-//! `<DATA_DIR>` defaults to `./data` and can be overridden with the
-//! `MEETING_COMPANION_DATA_DIR` env var; `<DATA_DIR>/blobs/` is
-//! reserved for non-relational artefacts (transcripts, screenshots)
-//! that future phases will write alongside this database.
+//! Connection string comes from `DATABASE_URL`; the `docker-compose.yml`
+//! at the repo root brings up a local Postgres on `5432` matching the
+//! default in `.env.example`.
+//!
+//! `<DATA_DIR>` (env var `MEETING_COMPANION_DATA_DIR`, default `./data`)
+//! is still used for blob storage — transcript JSONL, moment screenshots
+//! — but no longer hosts the relational store. The two surfaces are
+//! independent so the server can scale horizontally with Postgres in
+//! front while blob storage moves to S3 (or stays local during dev).
 //!
 //! All write paths run inside small, focused transactions on the
-//! `SqlitePool`. The pool itself is held by `ServerHandle`; intent
+//! `PgPool`. The pool itself is held by `ServerHandle`; intent
 //! handlers reach for it after `apply_intent` returns, keeping the
 //! `ServerState` mutex free of any I/O.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
-use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
-use sqlx::SqlitePool;
+use sqlx::postgres::{PgPoolOptions, Postgres};
+use sqlx::PgPool;
 use tracing::info;
 
 /// Absolute path to the data directory (`<DATA_DIR>` in the docs).
 /// Resolves the env var, expands `~`, and creates the directory if
-/// it doesn't exist yet. The same path will host the `blobs/`
-/// subtree for non-DB artefacts in later phases.
+/// it doesn't exist yet. Hosts `blobs/` for transcript JSONL and
+/// moment screenshots; the relational store lives in Postgres.
 pub fn data_dir() -> Result<PathBuf> {
     let raw = std::env::var("MEETING_COMPANION_DATA_DIR").unwrap_or_else(|_| "./data".to_string());
     let expanded = if let Some(stripped) = raw.strip_prefix("~/") {
@@ -36,30 +40,25 @@ pub fn data_dir() -> Result<PathBuf> {
     Ok(expanded)
 }
 
-/// Open the SQLite pool against `<DATA_DIR>/server.db` and run any
-/// pending migrations. Idempotent on already-migrated databases.
-pub async fn open_pool() -> Result<SqlitePool> {
-    let dir = data_dir()?;
-    let db_path = dir.join("server.db");
-    let pool = open_pool_at(&db_path).await?;
-    info!(path = %db_path.display(), "sqlite ready");
+/// Open the Postgres pool against `$DATABASE_URL` and run pending
+/// migrations. Idempotent on already-migrated databases.
+pub async fn open_pool() -> Result<PgPool> {
+    let url = std::env::var("DATABASE_URL").context(
+        "DATABASE_URL is required (e.g. postgres://meeting_companion:dev@localhost:5432/meeting_companion). \
+         Run `docker compose up -d postgres` from the repo root for a local instance."
+    )?;
+    let pool = open_pool_at(&url).await?;
+    info!("postgres ready");
     Ok(pool)
 }
 
-/// Test/integration entrypoint: open against an arbitrary path
-/// (e.g. `:memory:` via the connect options).
-pub async fn open_pool_at(db_path: &Path) -> Result<SqlitePool> {
-    let opts = SqliteConnectOptions::new()
-        .filename(db_path)
-        .create_if_missing(true)
-        .foreign_keys(true)
-        .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal);
-
-    let pool = SqlitePoolOptions::new()
+/// Test/integration entrypoint: open against an arbitrary URL.
+pub async fn open_pool_at(url: &str) -> Result<PgPool> {
+    let pool = PgPoolOptions::new()
         .max_connections(8)
-        .connect_with(opts)
+        .connect(url)
         .await
-        .with_context(|| format!("failed to open sqlite at {}", db_path.display()))?;
+        .with_context(|| format!("failed to open postgres at {}", redact_url(url)))?;
 
     sqlx::migrate!("./migrations")
         .run(&pool)
@@ -67,6 +66,34 @@ pub async fn open_pool_at(db_path: &Path) -> Result<SqlitePool> {
         .context("sqlx migrations failed")?;
 
     Ok(pool)
+}
+
+/// Render a connection URL with the password masked. Used in error
+/// messages so a misconfigured `DATABASE_URL` doesn't leak the
+/// credential into logs.
+///
+/// Format expected: `scheme://[user[:password]@]host[:port]/path`.
+/// We mask whatever sits between the first `:` after `//` and the
+/// first `@`. Falls through unchanged if no `@` is present.
+fn redact_url(url: &str) -> String {
+    let Some(scheme_end) = url.find("://") else {
+        return url.to_string();
+    };
+    let after_scheme = scheme_end + 3;
+    let Some(at_offset) = url[after_scheme..].find('@') else {
+        return url.to_string();
+    };
+    let at_idx = after_scheme + at_offset;
+    let Some(colon_offset) = url[after_scheme..at_idx].find(':') else {
+        // user only, no password.
+        return url.to_string();
+    };
+    let colon_idx = after_scheme + colon_offset;
+    let mut out = String::with_capacity(url.len());
+    out.push_str(&url[..colon_idx + 1]);
+    out.push_str("***");
+    out.push_str(&url[at_idx..]);
+    out
 }
 
 // MARK: - Users
@@ -92,74 +119,35 @@ pub struct UserRow {
 /// whatever the most recent JWT claimed (Auth0 is authoritative for
 /// these — we just keep a copy for offline reads).
 ///
-/// Returns the row in either case so callers always get the local `id`
-/// to scope their writes against.
+/// One-shot UPSERT using Postgres' `ON CONFLICT ... DO UPDATE ... RETURNING`,
+/// so the row comes back fresh in a single round trip regardless of
+/// whether we inserted or updated.
 pub async fn upsert_user_by_auth0_sub(
-    pool: &SqlitePool,
+    pool: &PgPool,
     auth0_sub: &str,
     email: Option<&str>,
     name: Option<&str>,
 ) -> Result<UserRow> {
-    // Try the read-side first — the steady state is "user already
-    // exists, refresh their fields." A single UPSERT could collapse
-    // these but `INSERT ... ON CONFLICT` with `RETURNING` requires a
-    // schema we'd rather not couple to.
-    let existing: Option<UserRow> = sqlx::query_as(
-        r#"SELECT id, auth0_sub, email, name, created_at, last_seen_at
-             FROM users WHERE auth0_sub = ?1"#,
-    )
-    .bind(auth0_sub)
-    .fetch_optional(pool)
-    .await
-    .with_context(|| format!("upsert_user.lookup({auth0_sub})"))?;
-
-    if let Some(row) = existing {
-        sqlx::query(
-            r#"UPDATE users
-                  SET email = COALESCE(?2, email),
-                      name = COALESCE(?3, name),
-                      last_seen_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
-                WHERE id = ?1"#,
-        )
-        .bind(&row.id)
-        .bind(email)
-        .bind(name)
-        .execute(pool)
-        .await
-        .with_context(|| format!("upsert_user.refresh({auth0_sub})"))?;
-        // Re-read so the returned row reflects the freshly-bumped
-        // `last_seen_at` and any updated email/name.
-        let refreshed: UserRow = sqlx::query_as(
-            r#"SELECT id, auth0_sub, email, name, created_at, last_seen_at
-                 FROM users WHERE id = ?1"#,
-        )
-        .bind(&row.id)
-        .fetch_one(pool)
-        .await
-        .with_context(|| format!("upsert_user.reread({auth0_sub})"))?;
-        return Ok(refreshed);
-    }
-
     let id = uuid::Uuid::new_v4().to_string();
-    sqlx::query(
-        r#"INSERT INTO users (id, auth0_sub, email, name)
-           VALUES (?1, ?2, ?3, ?4)"#,
+    let row: UserRow = sqlx::query_as(
+        r#"
+        INSERT INTO users (id, auth0_sub, email, name)
+        VALUES ($1, $2, $3, $4)
+        ON CONFLICT (auth0_sub) DO UPDATE SET
+            email = COALESCE(EXCLUDED.email, users.email),
+            name = COALESCE(EXCLUDED.name, users.name),
+            last_seen_at = NOW()
+        RETURNING id, auth0_sub, email, name, created_at, last_seen_at
+        "#,
     )
     .bind(&id)
     .bind(auth0_sub)
     .bind(email)
     .bind(name)
-    .execute(pool)
-    .await
-    .with_context(|| format!("upsert_user.insert({auth0_sub})"))?;
-    sqlx::query_as(
-        r#"SELECT id, auth0_sub, email, name, created_at, last_seen_at
-             FROM users WHERE id = ?1"#,
-    )
-    .bind(&id)
     .fetch_one(pool)
     .await
-    .with_context(|| format!("upsert_user.reread_new({auth0_sub})"))
+    .with_context(|| format!("upsert_user({auth0_sub})"))?;
+    Ok(row)
 }
 
 // MARK: - Meetings
@@ -168,7 +156,7 @@ pub async fn upsert_user_by_auth0_sub(
 /// already-serialised JSON object (`HashMap<String, String>` → JSON
 /// object string).
 pub async fn insert_meeting(
-    pool: &SqlitePool,
+    pool: &PgPool,
     id: &str,
     user_id: &str,
     started_at: DateTime<Utc>,
@@ -177,7 +165,7 @@ pub async fn insert_meeting(
 ) -> Result<()> {
     sqlx::query(
         r#"INSERT INTO meetings (id, user_id, started_at, description, metadata)
-           VALUES (?1, ?2, ?3, ?4, ?5)"#,
+           VALUES ($1, $2, $3, $4, $5)"#,
     )
     .bind(id)
     .bind(user_id)
@@ -190,43 +178,16 @@ pub async fn insert_meeting(
     Ok(())
 }
 
-/// Find the most recent meeting whose `ended_at` is NULL. There
-/// should be at most one in normal operation (we clear the field
-/// on `stop_meeting`); if multiple exist due to crash sequencing
-/// we pick the newest by `started_at` and ignore older ones —
-/// boot recovery covers the most likely "the user was mid-meeting
-/// when the server died" case.
-///
-/// Returns `(id, description, metadata_json, started_at)` or `None`.
-pub async fn find_active_meeting(
-    pool: &SqlitePool,
-) -> Result<Option<(String, Option<String>, String, DateTime<Utc>)>> {
-    let row: Option<(String, Option<String>, String, DateTime<Utc>)> = sqlx::query_as(
-        r#"SELECT id, description, metadata, started_at
-             FROM meetings
-            WHERE ended_at IS NULL
-            ORDER BY started_at DESC
-            LIMIT 1"#,
-    )
-    .fetch_optional(pool)
-    .await
-    .context("find_active_meeting")?;
-    Ok(row)
-}
-
 /// Find every unfinished meeting + its owner, one row per. Boot
 /// recovery iterates this and re-spawns each user's pipeline.
-/// Pre-OAuth rows have `user_id IS NULL` — the column was nullable
-/// in migration 0003 to keep the schema buildable through the
-/// transition. We skip those (no user → no UserState to attach to).
 pub async fn find_active_meetings_per_user(
-    pool: &SqlitePool,
+    pool: &PgPool,
 ) -> Result<Vec<(String, String, Option<String>, String, DateTime<Utc>)>> {
     // (user_id, meeting_id, description, metadata_json, started_at)
-    let rows = sqlx::query_as(
+    let rows = sqlx::query_as::<Postgres, (String, String, Option<String>, String, DateTime<Utc>)>(
         r#"SELECT user_id, id, description, metadata, started_at
              FROM meetings
-            WHERE ended_at IS NULL AND user_id IS NOT NULL
+            WHERE ended_at IS NULL
             ORDER BY user_id, started_at DESC"#,
     )
     .fetch_all(pool)
@@ -237,15 +198,11 @@ pub async fn find_active_meetings_per_user(
 
 /// Mark a meeting as ended at the given timestamp. No-op (silently)
 /// if `meeting_id` doesn't exist or has already been ended.
-pub async fn end_meeting(
-    pool: &SqlitePool,
-    meeting_id: &str,
-    ended_at: DateTime<Utc>,
-) -> Result<()> {
+pub async fn end_meeting(pool: &PgPool, meeting_id: &str, ended_at: DateTime<Utc>) -> Result<()> {
     sqlx::query(
         r#"UPDATE meetings
-              SET ended_at = ?1
-            WHERE id = ?2 AND ended_at IS NULL"#,
+              SET ended_at = $1
+            WHERE id = $2 AND ended_at IS NULL"#,
     )
     .bind(ended_at)
     .bind(meeting_id)
@@ -264,11 +221,11 @@ pub async fn end_meeting(
 /// when the id wasn't found *or* was owned by someone else — the
 /// API surfaces both as 404 to avoid leaking existence.
 pub async fn delete_meeting_for_user(
-    pool: &SqlitePool,
+    pool: &PgPool,
     meeting_id: &str,
     user_id: &str,
 ) -> Result<bool> {
-    let res = sqlx::query(r#"DELETE FROM meetings WHERE id = ?1 AND user_id = ?2"#)
+    let res = sqlx::query(r#"DELETE FROM meetings WHERE id = $1 AND user_id = $2"#)
         .bind(meeting_id)
         .bind(user_id)
         .execute(pool)
@@ -287,7 +244,7 @@ pub async fn delete_meeting_for_user(
 /// pre-mint and use the id for the screenshot path before the
 /// row exists; pass a freshly-minted UUID if there's no preference.
 pub async fn insert_moment(
-    pool: &SqlitePool,
+    pool: &PgPool,
     id: &str,
     meeting_id: &str,
     kind: &str,
@@ -297,7 +254,7 @@ pub async fn insert_moment(
 ) -> Result<()> {
     sqlx::query(
         r#"INSERT INTO moments (id, meeting_id, kind, t, note, asset_path)
-           VALUES (?1, ?2, ?3, ?4, ?5, ?6)"#,
+           VALUES ($1, $2, $3, $4, $5, $6)"#,
     )
     .bind(id)
     .bind(meeting_id)
@@ -314,15 +271,15 @@ pub async fn insert_moment(
 /// Replace `summary` + flip `summary_status` to `done` (or `failed`).
 /// Called by the moment-summary worker after the LLM round trip.
 pub async fn update_moment_summary(
-    pool: &SqlitePool,
+    pool: &PgPool,
     moment_id: &str,
     summary: Option<&str>,
     status: &str,
 ) -> Result<()> {
     sqlx::query(
         r#"UPDATE moments
-              SET summary = ?1, summary_status = ?2
-            WHERE id = ?3"#,
+              SET summary = $1, summary_status = $2
+            WHERE id = $3"#,
     )
     .bind(summary)
     .bind(status)
@@ -339,7 +296,7 @@ pub async fn update_moment_summary(
 /// `Ok(None)` if the row didn't exist *or* the meeting belongs to
 /// another user (API surfaces both as 404).
 pub async fn delete_moment_for_user(
-    pool: &SqlitePool,
+    pool: &PgPool,
     moment_id: &str,
     user_id: &str,
 ) -> Result<Option<Option<String>>> {
@@ -349,7 +306,7 @@ pub async fn delete_moment_for_user(
         r#"SELECT m.asset_path
              FROM moments m
              JOIN meetings me ON me.id = m.meeting_id
-            WHERE m.id = ?1 AND me.user_id = ?2"#,
+            WHERE m.id = $1 AND me.user_id = $2"#,
     )
     .bind(moment_id)
     .bind(user_id)
@@ -361,8 +318,8 @@ pub async fn delete_moment_for_user(
     }
     let res = sqlx::query(
         r#"DELETE FROM moments
-            WHERE id = ?1
-              AND meeting_id IN (SELECT id FROM meetings WHERE user_id = ?2)"#,
+            WHERE id = $1
+              AND meeting_id IN (SELECT id FROM meetings WHERE user_id = $2)"#,
     )
     .bind(moment_id)
     .bind(user_id)
@@ -379,11 +336,11 @@ pub async fn delete_moment_for_user(
 /// screenshot upload endpoint that lands an image after a WS-initiated
 /// `mark_moment` already created the row.
 pub async fn update_moment_asset_path(
-    pool: &SqlitePool,
+    pool: &PgPool,
     moment_id: &str,
     asset_path: &str,
 ) -> Result<()> {
-    sqlx::query(r#"UPDATE moments SET asset_path = ?1 WHERE id = ?2"#)
+    sqlx::query(r#"UPDATE moments SET asset_path = $1 WHERE id = $2"#)
         .bind(asset_path)
         .bind(moment_id)
         .execute(pool)
@@ -410,15 +367,12 @@ pub struct MomentRow {
 
 /// List moments for a meeting, oldest first (`t ASC` so the order
 /// matches the meeting's natural timeline).
-pub async fn list_moments_for_meeting(
-    pool: &SqlitePool,
-    meeting_id: &str,
-) -> Result<Vec<MomentRow>> {
+pub async fn list_moments_for_meeting(pool: &PgPool, meeting_id: &str) -> Result<Vec<MomentRow>> {
     let rows = sqlx::query_as::<_, MomentRow>(
         r#"SELECT id, meeting_id, kind, t, note, asset_path,
                   summary, summary_status, created_at
              FROM moments
-            WHERE meeting_id = ?1
+            WHERE meeting_id = $1
             ORDER BY t ASC"#,
     )
     .bind(meeting_id)
@@ -432,37 +386,19 @@ pub async fn list_moments_for_meeting(
 mod tests {
     use super::*;
 
-    async fn pool() -> SqlitePool {
-        // `:memory:` is per-connection in SQLite; SqlitePool would
-        // share isolated DBs across its 8 connections. Use
-        // `mode=memory&cache=shared` via a temp path-like name so
-        // every checkout sees the same in-memory DB.
-        let opts = SqliteConnectOptions::new()
-            .filename(":memory:")
-            .create_if_missing(true)
-            .foreign_keys(true);
-        let pool = SqlitePoolOptions::new()
-            .max_connections(1) // single conn → genuine in-memory isolation
-            .connect_with(opts)
-            .await
-            .unwrap();
-        sqlx::migrate!("./migrations").run(&pool).await.unwrap();
-        pool
-    }
-
     /// Most DB tests need an owner user to satisfy the meetings FK.
-    /// Upsert a fixed test user here to keep each `#[tokio::test]`
-    /// terse.
-    async fn test_user(pool: &SqlitePool) -> String {
-        upsert_user_by_auth0_sub(pool, "test|owner", None, None)
+    /// Each invocation gets a fresh `auth0_sub` so concurrent tests
+    /// inside one DB don't clash on the unique index.
+    async fn test_user(pool: &PgPool) -> String {
+        let sub = format!("test|{}", uuid::Uuid::new_v4());
+        upsert_user_by_auth0_sub(pool, &sub, None, None)
             .await
             .unwrap()
             .id
     }
 
-    #[tokio::test]
-    async fn insert_then_end_meeting_round_trips() {
-        let pool = pool().await;
+    #[sqlx::test]
+    async fn insert_then_end_meeting_round_trips(pool: PgPool) {
         let uid = test_user(&pool).await;
         let id = uuid::Uuid::new_v4().to_string();
         let now = Utc::now();
@@ -471,8 +407,8 @@ mod tests {
             .unwrap();
         end_meeting(&pool, &id, now).await.unwrap();
 
-        let row: (String, Option<String>) =
-            sqlx::query_as("SELECT id, ended_at FROM meetings WHERE id = ?1")
+        let row: (String, Option<DateTime<Utc>>) =
+            sqlx::query_as("SELECT id, ended_at FROM meetings WHERE id = $1")
                 .bind(&id)
                 .fetch_one(&pool)
                 .await
@@ -484,9 +420,8 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn insert_moment_links_to_meeting() {
-        let pool = pool().await;
+    #[sqlx::test]
+    async fn insert_moment_links_to_meeting(pool: PgPool) {
         let uid = test_user(&pool).await;
         let mid = uuid::Uuid::new_v4().to_string();
         insert_meeting(&pool, &mid, &uid, Utc::now(), None, "{}")
@@ -508,7 +443,7 @@ mod tests {
 
         let row: (String, String, i64, Option<String>, Option<String>, String) = sqlx::query_as(
             r#"SELECT meeting_id, kind, t, note, asset_path, summary_status
-                 FROM moments WHERE id = ?1"#,
+                 FROM moments WHERE id = $1"#,
         )
         .bind(&moment_id)
         .fetch_one(&pool)
@@ -522,17 +457,15 @@ mod tests {
         assert_eq!(row.5, "pending", "summary should start as pending");
     }
 
-    #[tokio::test]
-    async fn moment_fk_blocks_orphan_inserts() {
-        let pool = pool().await;
+    #[sqlx::test]
+    async fn moment_fk_blocks_orphan_inserts(pool: PgPool) {
         let id = uuid::Uuid::new_v4().to_string();
         let res = insert_moment(&pool, &id, "no-such-meeting", "manual", 0, None, None).await;
         assert!(res.is_err(), "expected FK violation on orphan moment");
     }
 
-    #[tokio::test]
-    async fn update_moment_summary_round_trips() {
-        let pool = pool().await;
+    #[sqlx::test]
+    async fn update_moment_summary_round_trips(pool: PgPool) {
         let uid = test_user(&pool).await;
         let mid = uuid::Uuid::new_v4().to_string();
         insert_meeting(&pool, &mid, &uid, Utc::now(), None, "{}")
@@ -548,7 +481,7 @@ mod tests {
             .unwrap();
 
         let row: (Option<String>, String) =
-            sqlx::query_as("SELECT summary, summary_status FROM moments WHERE id = ?1")
+            sqlx::query_as("SELECT summary, summary_status FROM moments WHERE id = $1")
                 .bind(&moment_id)
                 .fetch_one(&pool)
                 .await
@@ -557,9 +490,8 @@ mod tests {
         assert_eq!(row.1, "done");
     }
 
-    #[tokio::test]
-    async fn list_moments_returns_oldest_first() {
-        let pool = pool().await;
+    #[sqlx::test]
+    async fn list_moments_returns_oldest_first(pool: PgPool) {
         let uid = test_user(&pool).await;
         let mid = uuid::Uuid::new_v4().to_string();
         insert_meeting(&pool, &mid, &uid, Utc::now(), None, "{}")
@@ -578,5 +510,18 @@ mod tests {
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].id, earlier);
         assert_eq!(rows[1].id, later);
+    }
+
+    #[test]
+    fn redact_url_masks_password() {
+        assert_eq!(
+            redact_url("postgres://user:secret@host:5432/db"),
+            "postgres://user:***@host:5432/db"
+        );
+        // No password — pass through untouched.
+        assert_eq!(
+            redact_url("postgres://user@host/db"),
+            "postgres://user@host/db"
+        );
     }
 }
