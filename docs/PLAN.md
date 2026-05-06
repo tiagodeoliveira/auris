@@ -644,7 +644,119 @@ without OAuth, without mnemo. CI must support this path.
 
 ---
 
-## 6. Horizontal scale (future)
+## 6. Agentic summarizer loop (next)
+
+Replaces the three independent per-mode summarizers (highlights,
+actions, open_questions) with a single agent that reasons about each
+new transcript chunk and decides — if anything — what to push to
+which mode. This is the next thing to build.
+
+### 6.1 Why
+
+Today: three tasks, each on its own heartbeat (15-20 s), each making
+a fresh LLM call against the full rolling transcript every cycle, each
+with a hand-tuned dedupe-by-exact-text gate. Three problems compound:
+
+- **Triple LLM cost per cycle.** Every ~15 s we run three full-context
+  prompts. Most cycles produce nothing new.
+- **No cross-mode reasoning.** A topic the model surfaces as a
+  highlight might also imply an action item. Today neither call sees
+  the other's output, so they can't coordinate.
+- **Heartbeat lag.** A decision spoken at t=5 s gets picked up at
+  t=15-20 s on the next cycle. With chunk-driven reasoning the model
+  could react within seconds of the chunk landing.
+- **Dedupe is fragile.** Exact-text equality on action items / open
+  questions misses paraphrases; a smarter agent that _remembers what
+  it already extracted_ dedupes by intent, not string equality.
+
+### 6.2 Shape
+
+One `meeting_agent` task per active meeting (per user, per the Phase C
+isolation — same per-user lifecycle as today's summarizers).
+Subscribes to the same `TranscriptChunk` broadcast the transcript
+summarizer already drains.
+
+On each chunk:
+
+1. Append the chunk to the agent's working context.
+2. Invoke the LLM with system prompt + working context. Model has
+   access to four tools:
+   - `push_highlight { text, importance }` — append to highlights mode.
+   - `push_action { text, owner, due }` — append to actions mode.
+   - `push_open_question { question, kind, context }` — append to
+     open_questions mode.
+   - `replace_highlights { items: [...] }` — full-replace when the
+     model decides existing highlights are stale (today's `replace`
+     update strategy stays for highlights only).
+3. Each tool call translates to the same `Event::ItemsUpdate` we
+   broadcast today. Wire shape unchanged — only the producer changes.
+4. The model is also free to do nothing this turn.
+
+The transcript-mode pass-through summarizer stays as-is — it's
+non-LLM and just promotes chunks to items.
+
+### 6.3 Context rollover strategy
+
+Working context grows linearly with meeting length and will exceed
+budget on long calls. Strategy:
+
+- **Tail-window verbatim.** Keep the most recent N chunks in full
+  (start with N=80, ~5-10 minutes of speech).
+- **Summarized prefix.** When the tail crosses N, summarize the
+  _displaced_ chunks into a 1-paragraph rolling summary and keep that
+  summary in the system prompt. Each rollover compounds into the
+  same summary slot (re-summarize summary + newly-displaced chunks).
+- **Items-as-memory.** The four mode buffers themselves act as
+  long-term memory: the agent's prompt includes the current state of
+  highlights / actions / open_questions, so it doesn't need raw
+  transcript to remember what's already been extracted.
+
+This is roughly the "running summary + sliding window" pattern;
+formalize it once we have real meeting data showing where context
+gets unwieldy.
+
+### 6.4 Open questions
+
+- **Cost.** Per-chunk LLM calls could be 5-10× current spend. Mitigate
+  by coalescing chunks (don't fire until the buffer has N tokens or
+  silence ≥ M seconds). Worth measuring on a real meeting before
+  optimizing.
+- **Tool-calling vs structured output.** rig supports both. Tool
+  calling reads naturally for "decide which mode to update"; structured
+  output reads naturally for "always emit the same shape." Lean tool
+  calling — the "do nothing this turn" path is a free signal there.
+- **Backwards compatibility.** Wire shape stays the same
+  (`Event::ItemsUpdate { mode, items }`). Clients don't need to know
+  the producer changed. Roll out via a feature flag and run the agent
+  in parallel with the existing summarizers for a few meetings before
+  cutting over.
+- **What about mnemo recaller integration?** Today the per-mode
+  summarizers fold prior-meeting context into their prompt. The agent
+  needs the same — drop the prior-context block into its system prompt
+  on meeting start, same shape as today.
+- **Persistence.** Today's summarizers are stateless across server
+  restarts (state rebuilds from items_per_mode + recalled_context).
+  The agent's _working context_ is just the post-rollover summary +
+  tail-window — both rebuildable from the persisted transcript JSONL
+  and the existing `recalled_context` if we want crash recovery.
+  Probably keep it in memory for v1; revisit if recovery matters.
+
+### 6.5 Migration
+
+- Land behind `MEETING_COMPANION_AGENT_SUMMARIZER=1` env flag;
+  default off so existing behavior is preserved.
+- New module `summarizer/agent.rs` parallel to today's per-mode
+  files. Spawn site is the existing `spawn_live_pipeline` in `ws.rs`
+  — replaces the four summarizer-task spawns with one agent task
+  when the flag is on.
+- Delete the three per-mode summarizers once the agent runs cleanly
+  for a couple of weeks of personal use. Keep `transcript.rs` (it's
+  not LLM-driven). The dedicated tests for each summarizer become
+  agent-level integration tests.
+
+---
+
+## 7. Horizontal scale (future)
 
 Today the server runs as a single replica. Postgres takes care of the
 durable surface, but a lot of _active_ meeting state still lives only
@@ -738,7 +850,7 @@ business need.
 
 ---
 
-## 7. Open follow-ups
+## 8. Open follow-ups
 
 Not blocking the next phase, but flagged for later resolution:
 
@@ -788,6 +900,6 @@ Not blocking the next phase, but flagged for later resolution:
 - **Production host:** picked when we deploy. Hetzner (cheapest +
   full control), Fly.io (zero-ops + container-native), Railway
   (simplest UX) are all viable. Same Docker image runs on any.
-- **Horizontal scale.** See §6 for the full plan; ship the cheap
+- **Horizontal scale.** See §7 for the full plan; ship the cheap
   step (sticky sessions) when one VM hits its ceiling, the full step
   (stateless replicas) when concurrent users justify the work.
