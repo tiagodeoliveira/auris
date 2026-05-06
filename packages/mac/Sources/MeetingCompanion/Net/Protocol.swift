@@ -147,6 +147,22 @@ struct SetModeIntent: Encodable {
     let mode: String
 }
 
+/// Bookmark a moment in the active meeting at offset `t` (ms since
+/// meeting start). Server inserts the row; if a `screen_capture`-
+/// capable device is bound as the audio source, server emits
+/// `capture_moment_screenshot` to that device which then uploads
+/// the PNG via REST. Optional free-text `note` rides along.
+struct MarkMomentIntent: Encodable {
+    let type: String = "mark_moment"
+    let t: Int64
+    let note: String?
+
+    init(t: Int64, note: String? = nil) {
+        self.t = t
+        self.note = note
+    }
+}
+
 // MARK: - Events (Server → Mac)
 
 /// Decoded form of incoming frames. Only the events the Mac currently
@@ -162,11 +178,11 @@ enum TypedServerEvent: Sendable {
     case deviceRegistered(Device)
     case devicesChanged([Device])
     case audioSourceDeviceChanged(String?)
-    /// Server is asking the named device to capture a screenshot for
-    /// a moment that already exists in the DB. Only the device whose
-    /// id matches `targetDeviceId` should react; others ignore.
+    /// Server is asking *this* device (per-connection routing on the
+    /// server side) to capture a screenshot for a moment that already
+    /// exists in the DB. The matching Mac uploads the PNG via
+    /// `POST /meetings/:id/moments/:moment_id/screenshot`.
     case captureMomentScreenshot(
-        targetDeviceId: String,
         meetingId: String,
         momentId: String,
         tMs: Int64
@@ -175,12 +191,6 @@ enum TypedServerEvent: Sendable {
     /// Live, in-flight transcript preview from the STT provider.
     /// Replaces the previous interim text wholesale on each event.
     case transcriptInterim(String)
-    /// Finalised utterance from the STT provider — same content
-    /// also flows as a transcript-mode item via `itemsUpdate`, so
-    /// the overlay no longer needs this directly. Kept decoded so
-    /// future consumers (e.g. system-level captions) don't have to
-    /// re-add the variant.
-    case transcriptCommitted(String)
     /// User switched modes (or the server-side meeting started in a
     /// non-default mode). `items` is the full list for the new mode.
     case modeChanged(mode: String, displayTag: String?, items: [Item])
@@ -275,14 +285,12 @@ func decodeServerEvent(from text: String) throws -> TypedServerEvent? {
         return .audioSourceDeviceChanged(w.device_id)
     case "capture_moment_screenshot":
         struct Wrap: Decodable {
-            let target_device_id: String
             let meeting_id: String
             let moment_id: String
             let t_ms: Int64
         }
         let w = try decoder.decode(Wrap.self, from: data)
         return .captureMomentScreenshot(
-            targetDeviceId: w.target_device_id,
             meetingId: w.meeting_id,
             momentId: w.moment_id,
             tMs: w.t_ms
@@ -295,10 +303,6 @@ func decodeServerEvent(from text: String) throws -> TypedServerEvent? {
         struct Wrap: Decodable { let text: String }
         let w = try decoder.decode(Wrap.self, from: data)
         return .transcriptInterim(w.text)
-    case "transcript_committed":
-        struct Wrap: Decodable { let text: String }
-        let w = try decoder.decode(Wrap.self, from: data)
-        return .transcriptCommitted(w.text)
     case "mode_changed":
         struct Wrap: Decodable {
             let mode: String

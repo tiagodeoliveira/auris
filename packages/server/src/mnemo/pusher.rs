@@ -114,12 +114,10 @@ async fn handle_event(client: &MnemoClient, state: &mut PusherState, event: Even
         }
         // No-ops for memory purposes.
         Event::Snapshot { .. }
-        | Event::AvailableModesChanged { .. }
         | Event::ModeChanged { .. }
         | Event::DisplayTagChanged { .. }
         | Event::PriorContextChanged { .. }
         | Event::TranscriptInterim { .. }
-        | Event::TranscriptCommitted { .. }
         | Event::Status { .. }
         | Event::Error { .. }
         | Event::DeviceRegistered { .. }

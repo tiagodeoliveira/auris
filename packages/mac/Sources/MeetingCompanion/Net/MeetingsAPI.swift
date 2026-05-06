@@ -125,77 +125,6 @@ struct MeetingsAPI: Sendable {
         try await fetch(path: "meetings/\(id)")
     }
 
-    /// `POST /meetings/:id/moments` — multipart with `t` (required),
-    /// optional note text, optional PNG screenshot bytes. Returns
-    /// the freshly-created moment (summary will be `pending` for a
-    /// few seconds while the server-side worker fills it in).
-    func createMoment(
-        meetingId: String,
-        t: Int64,
-        note: String?,
-        screenshotPNG: Data?
-    ) async throws -> Moment {
-        let url = baseURL.appendingPathComponent("meetings/\(meetingId)/moments")
-        let boundary = "MCBoundary-\(UUID().uuidString)"
-        var body = Data()
-
-        // `t` field
-        appendFormField(&body, boundary: boundary, name: "t", text: String(t))
-
-        // Optional `note`
-        if let note, !note.isEmpty {
-            appendFormField(&body, boundary: boundary, name: "note", text: note)
-        }
-
-        // Optional `screenshot` file
-        if let png = screenshotPNG, !png.isEmpty {
-            appendFileField(
-                &body,
-                boundary: boundary,
-                name: "screenshot",
-                filename: "screenshot.png",
-                contentType: "image/png",
-                data: png
-            )
-        }
-
-        // Closing boundary
-        body.append("--\(boundary)--\r\n".data(using: .utf8)!)
-
-        var req = URLRequest(url: url)
-        req.httpMethod = "POST"
-        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        req.setValue(
-            "multipart/form-data; boundary=\(boundary)",
-            forHTTPHeaderField: "Content-Type"
-        )
-        req.httpBody = body
-
-        let data: Data
-        let resp: URLResponse
-        do {
-            (data, resp) = try await URLSession.shared.upload(for: req, from: body)
-        } catch {
-            throw MeetingsAPIError.transport(error)
-        }
-        guard let http = resp as? HTTPURLResponse else {
-            throw MeetingsAPIError.http(0)
-        }
-        switch http.statusCode {
-        case 200..<300: break
-        case 401: throw MeetingsAPIError.unauthorized
-        case 404: throw MeetingsAPIError.notFound
-        default: throw MeetingsAPIError.http(http.statusCode)
-        }
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .custom(decodeRFC3339Date)
-        do {
-            return try decoder.decode(Moment.self, from: data)
-        } catch {
-            throw MeetingsAPIError.decode(error)
-        }
-    }
-
     /// Delete a meeting and all of its moments (FK cascade
     /// server-side). The server also wipes the per-meeting blob
     /// directory holding the transcript JSONL and screenshots.
@@ -298,42 +227,6 @@ struct MeetingsAPI: Sendable {
             throw MeetingsAPIError.decode(error)
         }
     }
-}
-
-/// Append a `Content-Disposition: form-data; name=...` text part.
-/// Used by `createMoment` to encode `t` and `note`.
-private func appendFormField(
-    _ body: inout Data,
-    boundary: String,
-    name: String,
-    text: String
-) {
-    body.append("--\(boundary)\r\n".data(using: .utf8)!)
-    body.append(
-        "Content-Disposition: form-data; name=\"\(name)\"\r\n\r\n".data(using: .utf8)!
-    )
-    body.append(text.data(using: .utf8)!)
-    body.append("\r\n".data(using: .utf8)!)
-}
-
-/// Append a `Content-Disposition: form-data; name=...; filename=...`
-/// binary part. Used for the optional screenshot upload.
-private func appendFileField(
-    _ body: inout Data,
-    boundary: String,
-    name: String,
-    filename: String,
-    contentType: String,
-    data: Data
-) {
-    body.append("--\(boundary)\r\n".data(using: .utf8)!)
-    body.append(
-        "Content-Disposition: form-data; name=\"\(name)\"; filename=\"\(filename)\"\r\n"
-            .data(using: .utf8)!
-    )
-    body.append("Content-Type: \(contentType)\r\n\r\n".data(using: .utf8)!)
-    body.append(data)
-    body.append("\r\n".data(using: .utf8)!)
 }
 
 /// Decode RFC 3339 / ISO 8601 timestamps with *or without* fractional

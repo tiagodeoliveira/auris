@@ -240,7 +240,6 @@ fn flush_buffer(
     buffer_first_start_ms: &mut Option<u64>,
     buffer_last_end_ms: &mut Option<u64>,
     transcript_tx: &broadcast::Sender<TranscriptChunk>,
-    events_tx: &broadcast::Sender<crate::contract::Event>,
     session_started: std::time::Instant,
 ) {
     let trimmed = buffer.trim();
@@ -261,23 +260,14 @@ fn flush_buffer(
         text = %trimmed,
         "transcript"
     );
-    let committed_text = trimmed.to_string();
     let chunk = TranscriptChunk {
         id: uuid::Uuid::new_v4().to_string(),
-        text: committed_text.clone(),
+        text: trimmed.to_string(),
         t_start_ms: t_start,
         t_end_ms: t_end,
         speaker: None,
     };
     let _ = transcript_tx.send(chunk);
-    // Surface the committed segment to WS clients so they can
-    // append it to a rolling transcript view (the Mac overlay,
-    // future PWA reuse). `TranscriptInterim` only carries the
-    // mutable preview, so without this clients can't reliably
-    // tell when a segment has been finalized.
-    let _ = events_tx.send(crate::contract::Event::TranscriptCommitted {
-        text: committed_text,
-    });
     buffer.clear();
     *buffer_first_start_ms = None;
     *buffer_last_end_ms = None;
@@ -346,7 +336,7 @@ async fn try_one_session(
     loop {
         tokio::select! {
             _ = cancel.cancelled() => {
-                flush_buffer(&mut buffer, &mut buffer_first_start_ms, &mut buffer_last_end_ms, transcript_tx, events_tx, session_started);
+                flush_buffer(&mut buffer, &mut buffer_first_start_ms, &mut buffer_last_end_ms, transcript_tx, session_started);
                 emit_live(events_tx, "", "");
                 let _ = writer.close().await;
                 return Ok(());
@@ -366,7 +356,7 @@ async fn try_one_session(
                     }
                     None => {
                         // Audio source ended — close the session
-                        flush_buffer(&mut buffer, &mut buffer_first_start_ms, &mut buffer_last_end_ms, transcript_tx, events_tx, session_started);
+                        flush_buffer(&mut buffer, &mut buffer_first_start_ms, &mut buffer_last_end_ms, transcript_tx, session_started);
                         emit_live(events_tx, "", "");
                         let _ = writer.close().await;
                         return Ok(());
@@ -382,7 +372,7 @@ async fn try_one_session(
                     if let Some(t) = last_token_at {
                         let stale = t.elapsed().as_millis() as u64 >= IDLE_FLUSH_MS;
                         if stale && ends_at_soft_boundary(&buffer) {
-                            flush_buffer(&mut buffer, &mut buffer_first_start_ms, &mut buffer_last_end_ms, transcript_tx, events_tx, session_started);
+                            flush_buffer(&mut buffer, &mut buffer_first_start_ms, &mut buffer_last_end_ms, transcript_tx, session_started);
                             last_token_at = None;
                             emit_live(events_tx, "", "");
                         }
@@ -432,7 +422,7 @@ async fn try_one_session(
                                 if ends_with_terminator(&buffer)
                                     || buffer.len() >= MAX_BUFFER_LEN
                                 {
-                                    flush_buffer(&mut buffer, &mut buffer_first_start_ms, &mut buffer_last_end_ms, transcript_tx, events_tx, session_started);
+                                    flush_buffer(&mut buffer, &mut buffer_first_start_ms, &mut buffer_last_end_ms, transcript_tx, session_started);
                                     last_token_at = None;
                                 }
                                 // Emit a live preview AFTER any flush so the buffer
@@ -447,7 +437,7 @@ async fn try_one_session(
                         }
                     }
                     Some(Ok(Message::Close(_))) | None => {
-                        flush_buffer(&mut buffer, &mut buffer_first_start_ms, &mut buffer_last_end_ms, transcript_tx, events_tx, session_started);
+                        flush_buffer(&mut buffer, &mut buffer_first_start_ms, &mut buffer_last_end_ms, transcript_tx, session_started);
                         emit_live(events_tx, "", "");
                         return Err("Soniox closed connection".into());
                     }

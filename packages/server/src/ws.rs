@@ -35,10 +35,22 @@ use crate::state::ServerState;
 const CLOSE_GOING_AWAY: u16 = 1001;
 const CLOSE_INTERNAL: u16 = 1011;
 
+/// Per-connection event mailbox. Looked up by `connection_id` to
+/// deliver targeted events without leaking them to every client.
+type DirectMailbox = tokio::sync::mpsc::Sender<Event>;
+
+/// Registry of live control connections keyed by `connection_id`.
+/// Populated on accept, removed on disconnect.
+pub type DirectRegistry = Arc<StdMutex<HashMap<String, DirectMailbox>>>;
+
 #[derive(Clone)]
 pub struct ServerHandle {
     pub state: Arc<Mutex<ServerState>>,
     pub events_tx: broadcast::Sender<Event>,
+    /// Per-connection senders for targeted events
+    /// (currently `Event::CaptureMomentScreenshot`). The `events_tx`
+    /// broadcast still handles everything-to-everyone traffic.
+    pub direct_tx: DirectRegistry,
     pub token: Arc<String>,
     pub meeting_cancel: Arc<StdMutex<Option<CancellationToken>>>,
     /// Cancels in-flight metadata extraction. Independent of meeting_cancel
@@ -113,6 +125,7 @@ pub async fn run_server_with_listener(
     let handle = ServerHandle {
         state,
         events_tx,
+        direct_tx: Arc::new(StdMutex::new(HashMap::new())),
         token: Arc::new(token),
         meeting_cancel: Arc::new(StdMutex::new(None)),
         extraction_cancel: Arc::new(StdMutex::new(None)),
@@ -294,6 +307,17 @@ async fn run_control_socket(socket: WebSocket, peer: SocketAddr, handle: ServerH
     let connection_id = uuid::Uuid::new_v4().to_string();
     let mut events_rx = handle.events_tx.subscribe();
 
+    // Per-connection mailbox for targeted events. Bounded — if the
+    // client is so backed up we hit the cap, dropping the targeted
+    // event is preferable to blocking the sender (a moment without a
+    // screenshot is a softer failure than a stuck server).
+    let (direct_mailbox_tx, mut direct_rx) = tokio::sync::mpsc::channel::<Event>(16);
+    handle
+        .direct_tx
+        .lock()
+        .unwrap()
+        .insert(connection_id.clone(), direct_mailbox_tx);
+
     let snapshot = {
         let s = handle.state.lock().await;
         s.snapshot()
@@ -345,6 +369,23 @@ async fn run_control_socket(socket: WebSocket, peer: SocketAddr, handle: ServerH
                     Err(broadcast::error::RecvError::Closed) => break,
                 }
             }
+            // Per-connection targeted events (e.g. CaptureMomentScreenshot).
+            // Channel-closed = the registry dropped our sender, which only
+            // happens during shutdown; treat it as a non-event.
+            direct_evt = direct_rx.recv() => {
+                if let Some(event) = direct_evt {
+                    let json = match serde_json::to_string(&event) {
+                        Ok(j) => j,
+                        Err(e) => {
+                            warn!(?peer, error = %e, "direct event serialize failed");
+                            continue;
+                        }
+                    };
+                    if sink.send(Message::Text(json)).await.is_err() {
+                        break;
+                    }
+                }
+            }
             msg = stream.next() => {
                 match msg {
                     Some(Ok(Message::Text(t))) => {
@@ -363,6 +404,10 @@ async fn run_control_socket(socket: WebSocket, peer: SocketAddr, handle: ServerH
             }
         }
     }
+
+    // Drop the targeted-event mailbox so future sends to this
+    // connection just fall on the floor instead of routing nowhere.
+    handle.direct_tx.lock().unwrap().remove(&connection_id);
 
     // Drop any device registered against this connection; broadcast.
     let removed = {
@@ -772,27 +817,38 @@ async fn dispatch_intent(
                 // screenshot authority. If the source is e.g. a
                 // PWA-only meeting, we skip — moment lands without an
                 // image, which is the documented degraded path.
-                let target = {
+                // Look up the connection_id of the target device so we
+                // can deliver point-to-point via direct_tx instead of
+                // broadcasting and asking every client to filter.
+                let target_connection: Option<String> = {
                     let s = handle.state.lock().await;
                     s.audio_source_device_id.as_ref().and_then(|id| {
                         s.devices_by_connection
-                            .values()
-                            .find(|d| {
+                            .iter()
+                            .find(|(_, d)| {
                                 d.id == *id
                                     && d.online
                                     && d.capabilities
                                         .contains(&crate::contract::Capability::ScreenCapture)
                             })
-                            .map(|d| d.id.clone())
+                            .map(|(conn, _)| conn.clone())
                     })
                 };
-                if let Some(target_device_id) = target {
-                    let _ = handle.events_tx.send(Event::CaptureMomentScreenshot {
-                        target_device_id,
+                if let Some(conn_id) = target_connection {
+                    let event = Event::CaptureMomentScreenshot {
                         meeting_id: req.meeting_id.clone(),
                         moment_id: moment_id.clone(),
                         t_ms: req.t as i64,
-                    });
+                    };
+                    let mailbox = handle.direct_tx.lock().unwrap().get(&conn_id).cloned();
+                    if let Some(tx) = mailbox {
+                        if let Err(e) = tx.try_send(event) {
+                            tracing::warn!(
+                                error = ?e, conn_id = %conn_id,
+                                "capture_moment_screenshot mailbox full or closed"
+                            );
+                        }
+                    }
                 } else {
                     tracing::debug!(
                         moment_id = %moment_id,

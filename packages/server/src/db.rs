@@ -211,6 +211,31 @@ pub async fn update_moment_summary(
     Ok(())
 }
 
+/// Delete a single moment row. Returns `Ok(Some(asset_path))` on a
+/// successful delete (with the screenshot path the caller should
+/// remove from disk), `Ok(None)` if the row didn't exist or had no
+/// screenshot.
+pub async fn delete_moment(pool: &SqlitePool, moment_id: &str) -> Result<Option<Option<String>>> {
+    // Read asset_path before delete so we can clean up the file too.
+    // Using a transaction would be marginally cleaner; not worth the
+    // boilerplate for an op that's already idempotent enough.
+    let asset_path: Option<Option<String>> =
+        sqlx::query_scalar(r#"SELECT asset_path FROM moments WHERE id = ?1"#)
+            .bind(moment_id)
+            .fetch_optional(pool)
+            .await
+            .with_context(|| format!("delete_moment.read_asset({moment_id})"))?;
+    let res = sqlx::query(r#"DELETE FROM moments WHERE id = ?1"#)
+        .bind(moment_id)
+        .execute(pool)
+        .await
+        .with_context(|| format!("delete_moment({moment_id})"))?;
+    if res.rows_affected() == 0 {
+        return Ok(None);
+    }
+    Ok(asset_path)
+}
+
 /// Set or replace a moment's `asset_path`. Used by the late-binding
 /// screenshot upload endpoint that lands an image after a WS-initiated
 /// `mark_moment` already created the row.

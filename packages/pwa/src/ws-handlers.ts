@@ -100,9 +100,6 @@ export function handleServerEvent(event: ServerEvent, store: Store): void {
       store.update(update);
       return;
     }
-    case "available_modes_changed":
-      store.update({ availableModes: event.available_modes });
-      return;
     case "mode_changed":
       store.update({
         currentMode: event.mode,
@@ -162,10 +159,6 @@ export function handleServerEvent(event: ServerEvent, store: Store): void {
     case "error":
       pushToast(store, `${event.code}: ${event.message}`, "warn");
       if (store.get().extractingMetadata) store.update({ extractingMetadata: false });
-      return;
-    case "capture_moment_screenshot":
-      // Targeted at a specific Mac with screen_capture. PWA never
-      // acts on this — it just floats by on the broadcast.
       return;
   }
 }

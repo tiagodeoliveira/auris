@@ -186,9 +186,6 @@ pub enum Event {
         #[serde(skip_serializing_if = "Option::is_none", default)]
         meeting_id: Option<String>,
     },
-    AvailableModesChanged {
-        available_modes: Vec<ModeOption>,
-    },
     ModeChanged {
         mode: String,
         #[serde(skip_serializing_if = "Option::is_none", default)]
@@ -210,13 +207,6 @@ pub enum Event {
         items: Vec<Item>,
     },
     TranscriptInterim {
-        text: String,
-    },
-    /// Emitted when the STT provider finalises an utterance —
-    /// `text` is the committed segment that should be appended to
-    /// any rolling transcript view. Distinct from `TranscriptInterim`
-    /// which is the still-mutable preview.
-    TranscriptCommitted {
         text: String,
     },
     Status {
@@ -248,14 +238,12 @@ pub enum Event {
         device_id: Option<String>,
     },
     /// Sent after a WS-initiated `mark_moment` lands, asking the
-    /// device with `screen_capture` capability bound to the meeting's
-    /// audio source to capture a screenshot and upload it via
-    /// `POST /moments/<moment_id>/screenshot`. The server only emits
-    /// this when there's a viable target — otherwise the moment lands
-    /// without a screenshot. `target_device_id` lets every client
-    /// quickly filter; only the matching device acts.
+    /// recipient to capture a screenshot and upload it via
+    /// `POST /meetings/:id/moments/:moment_id/screenshot`. The
+    /// server delivers this point-to-point — only the
+    /// `screen_capture`-capable device bound as the audio source
+    /// receives it. No client-side filtering needed.
     CaptureMomentScreenshot {
-        target_device_id: String,
         meeting_id: String,
         moment_id: String,
         t_ms: i64,

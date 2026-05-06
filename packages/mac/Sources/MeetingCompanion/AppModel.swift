@@ -315,25 +315,19 @@ final class AppModel {
         momentStatus = nil
     }
 
-    /// Mark a moment in the active meeting. Captures a screenshot
-    /// of the primary display, computes `t` ms-since-meeting-start,
-    /// and POSTs both to `/meetings/:id/moments`. The server-side
-    /// async worker fills in the LLM summary a few seconds later.
-    /// Updates `momentStatus` so the overlay can flash a confirmation.
+    /// Mark a moment in the active meeting. Sends the WS intent and
+    /// trusts the server to insert the row + delegate the screenshot
+    /// back to us via `capture_moment_screenshot` (handled by
+    /// `captureAndUploadMomentScreenshot`). Optimistic UI: the
+    /// `momentStatus` flips to "Moment saved" right away — if the
+    /// intent never lands (e.g. WS is mid-reconnect) the row simply
+    /// won't appear in the meeting history.
     func markMoment(note: String? = nil) async {
-        guard let meetingId = currentMeetingId else {
+        guard currentMeetingId != nil else {
             momentStatus = "No active meeting"
             scheduleMomentStatusClear()
             return
         }
-        guard let api = MeetingsAPI.fromWSURL(settings.serverURL, token: settings.token) else {
-            momentStatus = "Invalid server URL"
-            scheduleMomentStatusClear()
-            return
-        }
-
-        momentStatus = "Capturing…"
-
         // Compute t. If we don't have a local start (e.g. recovered
         // mid-meeting from a server reboot), best-effort with 0 — the
         // moment still lands; the timeline ordering will be slightly
@@ -344,28 +338,11 @@ final class AppModel {
         } else {
             t = 0
         }
-
-        // Screenshot capture is best-effort — if it fails we still
-        // try to post the moment (without an image). The user gets
-        // a status hint either way.
-        var screenshot: Data? = nil
         do {
-            screenshot = try await ScreenshotCapture.capturePrimaryDisplay()
+            try await webSocket.send(intent: MarkMomentIntent(t: t, note: note))
+            momentStatus = "Moment saved"
         } catch {
-            print("[AppModel] screenshot capture failed: \(error.localizedDescription)")
-            momentStatus = "No screenshot · sending"
-        }
-
-        do {
-            _ = try await api.createMoment(
-                meetingId: meetingId,
-                t: t,
-                note: note,
-                screenshotPNG: screenshot
-            )
-            momentStatus = screenshot == nil ? "Moment saved (no screenshot)" : "Moment saved"
-        } catch {
-            print("[AppModel] createMoment failed: \(error.localizedDescription)")
+            print("[AppModel] markMoment send failed: \(error.localizedDescription)")
             momentStatus = "Save failed: \(error.localizedDescription)"
         }
         scheduleMomentStatusClear()
@@ -527,23 +504,16 @@ final class AppModel {
             // capture so we're not double-streaming. Idempotent —
             // audioCapture.start() is a no-op when already running.
             Task { await reconcileAudioSource(boundDeviceId: boundDeviceId) }
-        case .captureMomentScreenshot(let target, let meetingId, let momentId, _):
-            // Targeted broadcast: only the addressed device acts. The
-            // server already filters by capability+online before
-            // emitting, so reaching here means we're it.
-            guard ownDevice?.id == target else { break }
+        case .captureMomentScreenshot(let meetingId, let momentId, _):
+            // Server-side per-connection routing means we only
+            // receive this event when the server picked us; no
+            // client-side filter required.
             Task { await captureAndUploadMomentScreenshot(meetingId: meetingId, momentId: momentId) }
         case .metadataChanged(let next):
             metadata = next
             extractingMetadata = false
         case .transcriptInterim(let text):
             transcriptInterim = text
-        case .transcriptCommitted:
-            // Same content arrives as a transcript-mode `Item` via
-            // `items_update` (server-side transcript summarizer);
-            // the overlay reads from `itemsByMode["transcript"]`.
-            // Variant kept decoded so future consumers can attach.
-            break
         case .modeChanged(let mode, let tag, let items):
             currentMode = mode
             displayTag = tag

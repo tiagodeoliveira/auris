@@ -80,14 +80,6 @@ export type Event =
   | { type: "device_registered"; device: Device }
   | { type: "devices_changed"; devices: Device[] }
   | { type: "audio_source_device_changed"; device_id?: string }
-  | {
-      type: "capture_moment_screenshot";
-      target_device_id: string;
-      meeting_id: string;
-      moment_id: string;
-      t_ms: number;
-    }
-  | { type: "available_modes_changed"; available_modes: ModeOption[] }
   | { type: "mode_changed"; mode: string; display_tag?: string; items: Item[] }
   | { type: "display_tag_changed"; tag?: string }
   | { type: "metadata_changed"; metadata: Record<string, string> }

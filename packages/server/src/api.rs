@@ -1,23 +1,24 @@
-//! REST API for browsing meetings + capturing moments.
+//! REST API for browsing meetings + screenshot transport.
 //!
 //! All endpoints are auth'd by `Authorization: Bearer <token>`
 //! against the same `MEETING_COMPANION_TOKEN` the WS protocol uses.
 //!
-//!   GET  /meetings                                 → summaries (newest first)
-//!   GET  /meetings/:id                             → meeting + transcript + moments
-//!   GET  /meetings/:id/moments                     → just the moments list
-//!   POST /meetings/:id/moments                     → multipart (t, note?, screenshot?)
-//!   GET  /meetings/:id/moments/:moment_id/screenshot → PNG bytes
+//!   GET    /meetings                                       → summaries (newest first)
+//!   GET    /meetings/:id                                   → meeting + transcript + moments
+//!   DELETE /meetings/:id                                   → cascade-delete + blob cleanup
+//!   GET    /meetings/:id/moments/:moment_id/screenshot     → PNG bytes
+//!   POST   /meetings/:id/moments/:moment_id/screenshot     → upload PNG (raw image/png)
+//!   DELETE /moments/:moment_id                             → drop one moment
 //!
-//! Multipart form fields on POST: `t` (string-encoded i64 ms),
-//! `note` (optional text), `screenshot` (optional PNG file). The
-//! moment id is server-minted and returned in the JSON response.
+//! Moment *creation* lives on the WS path (`Intent::MarkMoment`); this
+//! module only handles read paths plus the screenshot transport (the
+//! Mac uploads a PNG here in response to `Event::CaptureMomentScreenshot`).
 
 use std::sync::Arc;
 
 use axum::{
     body::Body,
-    extract::{DefaultBodyLimit, Multipart, Path, State},
+    extract::{DefaultBodyLimit, Path, State},
     http::{header, HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     routing::get,
@@ -69,13 +70,10 @@ pub fn make_router(state: ApiState) -> Router {
         .route("/meetings", get(list_meetings))
         .route("/meetings/:id", get(get_meeting).delete(delete_meeting))
         .route(
-            "/meetings/:id/moments",
-            get(list_moments).post(create_moment),
-        )
-        .route(
             "/meetings/:id/moments/:moment_id/screenshot",
             get(get_moment_screenshot).post(upload_moment_screenshot),
         )
+        .route("/moments/:moment_id", axum::routing::delete(delete_moment))
         .layer(DefaultBodyLimit::max(SCREENSHOT_BODY_LIMIT))
         .layer(CorsLayer::permissive())
         .with_state(state)
@@ -234,151 +232,35 @@ async fn delete_meeting(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// `GET /meetings/:id/moments` — same data as `MeetingDetail.moments`
-/// but without the transcript payload. Useful when a client just
-/// wants to refresh the moments list without the heavier detail fetch.
-async fn list_moments(
+/// `DELETE /moments/:moment_id` — drop a single moment row. Best-
+/// effort screenshot cleanup runs after the DB delete; if it fails
+/// we still return 204 (the row is gone, the file is an orphan).
+async fn delete_moment(
     State(state): State<ApiState>,
-    Path(meeting_id): Path<String>,
+    Path(moment_id): Path<String>,
     headers: HeaderMap,
-) -> Result<Json<Vec<MomentDto>>, ApiError> {
+) -> Result<StatusCode, ApiError> {
     require_bearer(&headers, &state.token)?;
-    let rows = crate::db::list_moments_for_meeting(&state.db, &meeting_id)
+    let result = crate::db::delete_moment(&state.db, &moment_id)
         .await
         .map_err(|e| ApiError::Db(downcast_db(e)))?;
-    let dtos = rows
-        .into_iter()
-        .map(|r| MomentDto::from_row(r, &meeting_id))
-        .collect();
-    Ok(Json(dtos))
-}
-
-/// `POST /meetings/:id/moments` — multipart form. Required field
-/// `t` is the millisecond offset from meeting start. Optional fields
-/// `note` (text) and `screenshot` (PNG bytes). Server mints the
-/// moment id, persists the row, writes the screenshot to disk under
-/// `<DATA_DIR>/blobs/meetings/<meeting_id>/screenshots/<moment_id>.png`,
-/// and publishes a `MomentCreated` event so the async summary worker
-/// picks it up. Returns the new moment as JSON.
-async fn create_moment(
-    State(state): State<ApiState>,
-    Path(meeting_id): Path<String>,
-    headers: HeaderMap,
-    mut multipart: Multipart,
-) -> Result<Json<MomentDto>, ApiError> {
-    require_bearer(&headers, &state.token)?;
-
-    // Confirm the meeting exists before doing any disk I/O. Avoids
-    // orphan screenshot files if the client typo'd a meeting id.
-    let exists: Option<(String,)> = sqlx::query_as("SELECT id FROM meetings WHERE id = ?1")
-        .bind(&meeting_id)
-        .fetch_optional(&state.db)
-        .await
-        .map_err(ApiError::Db)?;
-    if exists.is_none() {
+    let Some(asset_path) = result else {
         return Err(ApiError::NotFound);
-    }
-
-    // Parse multipart fields.
-    let mut t_ms: Option<i64> = None;
-    let mut note: Option<String> = None;
-    let mut screenshot_bytes: Option<Vec<u8>> = None;
-    while let Some(field) = multipart
-        .next_field()
-        .await
-        .map_err(|e| ApiError::BadRequest(format!("multipart parse failed: {e}")))?
-    {
-        match field.name().unwrap_or_default() {
-            "t" => {
-                let s = field
-                    .text()
-                    .await
-                    .map_err(|e| ApiError::BadRequest(format!("read 't' field: {e}")))?;
-                t_ms = Some(
-                    s.parse::<i64>()
-                        .map_err(|_| ApiError::BadRequest(format!("'t' is not an i64: {s:?}")))?,
-                );
-            }
-            "note" => {
-                let s = field
-                    .text()
-                    .await
-                    .map_err(|e| ApiError::BadRequest(format!("read 'note' field: {e}")))?;
-                if !s.is_empty() {
-                    note = Some(s);
+    };
+    if let Some(rel) = asset_path {
+        if let Ok(dir) = crate::db::data_dir() {
+            let abs = dir.join(&rel);
+            if abs.exists() {
+                if let Err(e) = tokio::fs::remove_file(&abs).await {
+                    tracing::warn!(
+                        error = ?e, moment_id = %moment_id, path = %abs.display(),
+                        "delete_moment: screenshot cleanup failed (row already removed)"
+                    );
                 }
             }
-            "screenshot" => {
-                let bytes = field
-                    .bytes()
-                    .await
-                    .map_err(|e| ApiError::BadRequest(format!("read screenshot bytes: {e}")))?;
-                if !bytes.is_empty() {
-                    screenshot_bytes = Some(bytes.to_vec());
-                }
-            }
-            _ => {} // ignore unknown fields — forward-compat
         }
     }
-    let Some(t_ms) = t_ms else {
-        return Err(ApiError::BadRequest("missing 't' field".into()));
-    };
-
-    // Mint id first so the screenshot path is deterministic before
-    // the row exists. Worst case: orphan PNG on disk if the DB write
-    // fails. Acceptable; future cleanup task can reap.
-    let moment_id = uuid::Uuid::new_v4().to_string();
-    let kind = "manual";
-    let asset_path = if let Some(bytes) = screenshot_bytes.as_ref() {
-        let rel = format!("blobs/meetings/{meeting_id}/screenshots/{moment_id}.png");
-        let dir = crate::db::data_dir().map_err(|e| ApiError::Internal(e.to_string()))?;
-        let abs = dir.join(&rel);
-        if let Some(parent) = abs.parent() {
-            tokio::fs::create_dir_all(parent)
-                .await
-                .map_err(|e| ApiError::Internal(format!("mkdir: {e}")))?;
-        }
-        tokio::fs::write(&abs, bytes)
-            .await
-            .map_err(|e| ApiError::Internal(format!("write screenshot: {e}")))?;
-        Some(rel)
-    } else {
-        None
-    };
-
-    crate::db::insert_moment(
-        &state.db,
-        &moment_id,
-        &meeting_id,
-        kind,
-        t_ms,
-        note.as_deref(),
-        asset_path.as_deref(),
-    )
-    .await
-    .map_err(|e| ApiError::Db(downcast_db(e)))?;
-
-    // Publish to the internal channel so the summary worker picks
-    // it up. Receiver count of zero (worker not running) is fine —
-    // the row is persisted; a future restart-with-retry mechanism
-    // could pick up `pending` rows. Out of scope for now.
-    let _ = state.moment_created_tx.send(MomentCreated {
-        meeting_id: meeting_id.clone(),
-        moment_id: moment_id.clone(),
-        kind: kind.to_string(),
-        t_ms,
-    });
-
-    // Re-read the row so the response reflects whatever defaults
-    // the DB applied (created_at, summary_status='pending').
-    let rows = crate::db::list_moments_for_meeting(&state.db, &meeting_id)
-        .await
-        .map_err(|e| ApiError::Db(downcast_db(e)))?;
-    let row = rows
-        .into_iter()
-        .find(|r| r.id == moment_id)
-        .ok_or_else(|| ApiError::Internal("moment vanished after insert".into()))?;
-    Ok(Json(MomentDto::from_row(row, &meeting_id)))
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// `GET /meetings/:id/moments/:moment_id/screenshot` — serves the
