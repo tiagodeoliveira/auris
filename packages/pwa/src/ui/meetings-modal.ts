@@ -271,20 +271,28 @@ export function mountMeetingsModal(parent: HTMLElement, store: Store): void {
       const img = document.createElement("img");
       img.className = "meetings-moment-thumb";
       img.alt = "moment screenshot";
+      img.title = "Click to enlarge";
       // `<img src>` can't carry an Authorization header, so we
       // lazy-fetch the bytes with our token and swap in a blob URL.
       const api = makeApi();
+      let blobURL: string | null = null;
       if (api) {
         api
           .fetchScreenshot(moment.screenshot_url)
-          .then((blobUrl) => {
-            img.src = blobUrl;
+          .then((url) => {
+            blobURL = url;
+            img.src = url;
           })
           .catch(() => {
             img.alt = "screenshot failed to load";
             img.classList.add("failed");
           });
       }
+      // Click to expand. Reuses the already-fetched blob URL so
+      // the lightbox image is instant — no second network round trip.
+      img.addEventListener("click", () => {
+        if (blobURL) openLightbox(blobURL);
+      });
       card.appendChild(img);
     }
 
@@ -330,6 +338,46 @@ export function mountMeetingsModal(parent: HTMLElement, store: Store): void {
 
     card.appendChild(right);
     return card;
+  }
+
+  /** Open a fullscreen lightbox showing the screenshot at natural
+   * size. Click outside the image or hit Esc to dismiss. The
+   * `blobURL` is the same one already attached to the thumbnail —
+   * no re-fetch.
+   */
+  function openLightbox(blobURL: string): void {
+    const lightbox = document.createElement("div");
+    lightbox.className = "meetings-lightbox";
+
+    const img = document.createElement("img");
+    img.src = blobURL;
+    img.className = "meetings-lightbox-img";
+    // Stop clicks on the image itself from bubbling to the
+    // background's dismiss handler.
+    img.addEventListener("click", (e) => e.stopPropagation());
+    lightbox.appendChild(img);
+
+    const close = document.createElement("button");
+    close.className = "meetings-lightbox-close";
+    close.setAttribute("aria-label", "Close");
+    close.textContent = "✕";
+    close.addEventListener("click", (e) => {
+      e.stopPropagation();
+      dismiss();
+    });
+    lightbox.appendChild(close);
+
+    function dismiss() {
+      document.removeEventListener("keydown", onKey);
+      lightbox.remove();
+    }
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") dismiss();
+    }
+    document.addEventListener("keydown", onKey);
+    lightbox.addEventListener("click", dismiss);
+
+    document.body.appendChild(lightbox);
   }
 
   /** Render a `mm:ss` (or `h:mm:ss` for long meetings) offset

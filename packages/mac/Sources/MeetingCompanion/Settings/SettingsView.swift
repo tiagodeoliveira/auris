@@ -351,11 +351,13 @@ private struct TranscriptRow: View {
 /// One row in the moments list. Layout: screenshot thumbnail (if
 /// any) on the left, timestamp + note + summary stacked on the
 /// right. Pending summaries render in italic secondary; failed
-/// summaries render in red.
+/// summaries render in red. Click the thumbnail to expand it in
+/// a sheet for easier reading.
 private struct MomentCard: View {
     let moment: Moment
     let meetingId: String
     @Bindable var model: AppModel
+    @State private var expanded = false
 
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
@@ -363,13 +365,22 @@ private struct MomentCard: View {
                 let api = MeetingsAPI.fromWSURL(model.settings.serverURL, token: model.settings.token),
                 let url = api.screenshotURL(forRelativePath: rel)
             {
-                AuthorizedImage(url: url, token: model.settings.token)
-                    .frame(width: 120, height: 75)
-                    .clipShape(RoundedRectangle(cornerRadius: 6))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 6)
-                            .strokeBorder(Color.gray.opacity(0.25))
-                    )
+                Button {
+                    expanded = true
+                } label: {
+                    AuthorizedImage(url: url, token: model.settings.token)
+                        .frame(width: 120, height: 75)
+                        .clipShape(RoundedRectangle(cornerRadius: 6))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 6)
+                                .strokeBorder(Color.gray.opacity(0.25))
+                        )
+                }
+                .buttonStyle(.plain)
+                .help("Click to enlarge")
+                .sheet(isPresented: $expanded) {
+                    ScreenshotLightbox(url: url, token: model.settings.token)
+                }
             }
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 8) {
@@ -442,6 +453,48 @@ private struct MomentCard: View {
     }
 }
 
+/// Full-size screenshot viewer presented as a sheet. Click the
+/// background or hit Esc to dismiss. The image is wrapped in a
+/// scroll view so screenshots larger than the sheet are still
+/// fully reachable; we don't add explicit pan/zoom for v1.
+private struct ScreenshotLightbox: View {
+    let url: URL
+    let token: String
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Spacer()
+                Button {
+                    dismiss()
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 22))
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .keyboardShortcut(.cancelAction)
+                .help("Close (Esc)")
+                .padding(8)
+            }
+
+            ScrollView([.horizontal, .vertical]) {
+                AuthorizedImage(url: url, token: token, contentMode: .fit)
+                    .frame(minWidth: 700, minHeight: 440)
+                    .padding(16)
+            }
+            .background(Color.black.opacity(0.4))
+            // Click anywhere on the background to dismiss; the
+            // `.fixedSize()` image above doesn't fill the scroll
+            // view, so empty area receives the tap.
+            .contentShape(Rectangle())
+            .onTapGesture { dismiss() }
+        }
+        .frame(minWidth: 720, idealWidth: 1100, minHeight: 480, idealHeight: 700)
+    }
+}
+
 /// Loads an image from a URL with a Bearer header and renders it.
 /// Replaces `AsyncImage` for our auth'd screenshot fetch — the
 /// stock loader can't add headers. Reloads when `url` changes;
@@ -450,6 +503,10 @@ private struct MomentCard: View {
 private struct AuthorizedImage: View {
     let url: URL
     let token: String
+    /// `.fill` for thumbnails (clip to frame), `.fit` for lightbox
+    /// (preserve aspect within available space). Default `.fill`
+    /// matches the original thumbnail behavior.
+    var contentMode: ContentMode = .fill
     @State private var image: NSImage?
     @State private var failed = false
 
@@ -458,7 +515,7 @@ private struct AuthorizedImage: View {
             if let image {
                 Image(nsImage: image)
                     .resizable()
-                    .aspectRatio(contentMode: .fill)
+                    .aspectRatio(contentMode: contentMode)
             } else if failed {
                 placeholder("photo.badge.exclamationmark", color: .secondary)
             } else {
