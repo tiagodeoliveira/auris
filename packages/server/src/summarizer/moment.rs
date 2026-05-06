@@ -130,7 +130,7 @@ async fn process_one(
 
     // Fetch meeting metadata + the user note for prompt context.
     let meeting: Option<(Option<String>, String)> =
-        sqlx::query_as("SELECT description, metadata FROM meetings WHERE id = ?1")
+        sqlx::query_as("SELECT description, metadata FROM meetings WHERE id = $1")
             .bind(&req.meeting_id)
             .fetch_optional(db)
             .await?;
@@ -141,7 +141,7 @@ async fn process_one(
             return Ok(());
         }
     };
-    let note: Option<String> = sqlx::query_scalar("SELECT note FROM moments WHERE id = ?1")
+    let note: Option<String> = sqlx::query_scalar("SELECT note FROM moments WHERE id = $1")
         .bind(&req.moment_id)
         .fetch_optional(db)
         .await?
