@@ -644,10 +644,140 @@ without OAuth, without mnemo. CI must support this path.
 
 ---
 
-## 6. Open follow-ups
+## 6. Horizontal scale (future)
 
-Not blocking Phase 1, but flagged for later resolution:
+Today the server runs as a single replica. Postgres takes care of the
+durable surface, but a lot of _active_ meeting state still lives only
+in the replica's RAM. Two scales worth distinguishing:
 
+### 6.1 What pins a session to one replica today
+
+Friends-and-family scale (one VM, vertical scale): fine. The
+Postgres-per-tenant work landed; the server itself just needs to keep
+running.
+
+The blockers to running N replicas behind a plain round-robin LB:
+
+- **`ServerState` is per-process.** `HashMap<UserId, UserState>` —
+  meeting state, items per mode, devices, rolling transcript,
+  recalled context. Two browser tabs hitting different replicas would
+  see different "active meeting" state.
+- **Pipelines run in-process.** `start_meeting` spawns a Soniox WS,
+  four summarizer tasks, an audio source, mnemo pusher/recaller — all
+  on the receiving replica. Other replicas don't know it exists.
+- **`/audio` must hit the same replica as `start_meeting`.** Audio
+  routes via an in-memory `audio_sources: HashMap<UserId, Arc<RemoteAudioSource>>`.
+  Frames on the wrong replica get dropped.
+- **In-process broadcast bus.** `events_tx` only fans out within one
+  replica. A `mark_moment` on replica A doesn't reach the
+  screenshot-capable Mac connected to replica B.
+- **Blobs on local disk.** Transcript JSONL and moment screenshots
+  live under `<DATA_DIR>/blobs/...` on the replica that wrote them.
+- **Boot recovery double-spawns.** If both replicas restart together,
+  each picks up unfinished meetings → duplicate STT sessions, billed
+  twice.
+
+### 6.2 The cheap step — sticky sessions
+
+Cost: a couple of hours. Buys us N replicas where each user's traffic
+always lands on the same replica.
+
+- LB does consistent-hash on the JWT's `sub` (or on the `?token=`
+  query param it terminates and inspects). Cloudflare, ALB, Traefik,
+  Caddy all support this.
+- Per-replica blob storage stays per-replica — but each user's
+  blobs always live on their replica, so reads work.
+- Boot recovery still races on full-fleet restart; mitigate with a
+  Postgres advisory lock keyed on `user_id` so only one replica
+  resurrects a given pipeline.
+
+This is the right move when "one VM is at capacity" first becomes
+real. Most of the code stays as-is.
+
+### 6.3 The full step — stateless replicas
+
+Cost: a couple of weeks. Replicas become disposable; any of them can
+serve any user.
+
+- **Blob storage moves to S3** (R2 in our cost profile). The
+  `BlobStore` trait already exists in PLAN §3 — implement
+  `S3BlobStore` and switch by env. Local dev keeps `FilesystemBlobStore`.
+- **Active state moves out of `ServerState`'s in-memory map.** Two
+  options:
+  - (a) Keep in-memory, but have replicas coordinate via Postgres
+    advisory locks — only one replica is "owner" of a given user's
+    pipeline at a time. Other replicas proxy the WS to the owner.
+    Cheaper to build, more network hops.
+  - (b) Push the active surface (rolling transcript, items per mode,
+    recalled context) into Redis or Postgres. Replicas become
+    stateless; any of them can serve any user. Higher-latency state
+    reads, more writes per meeting, but truly horizontal.
+- **Broadcast bus moves to Redis pub/sub or NATS.** Each replica
+  subscribes to topics keyed on `user_id`; events from any replica
+  fan out to all WS connections regardless of which replica they
+  landed on.
+- **Pipeline placement.** Decide per-user, with leader election or
+  consistent hashing on `user_id`, which replica runs the
+  STT+summarizer pipeline. The other replicas proxy.
+- **Distributed boot recovery.** Postgres advisory lock per
+  `user_id`; first replica to acquire it claims the pipeline.
+
+We don't need this until paying users exist. The migration is
+_additive_ — each piece can land independently behind a feature flag,
+and the single-replica path keeps working throughout.
+
+### 6.4 Decision triggers
+
+Ship 6.2 when: a single $20/mo VM is regularly above 70% CPU OR a
+single replica's memory growth puts a meeting at risk during long
+sessions.
+
+Ship 6.3 when: we have real concurrent users (>50 simultaneous
+meetings) OR blue/green deploys without a 10-minute drain become a
+business need.
+
+---
+
+## 7. Open follow-ups
+
+Not blocking the next phase, but flagged for later resolution:
+
+### 7.1 Quality / completeness
+
+- **`expand_item` returns lorem ipsum.** `state.rs::synthesize_detail`
+  returns a hardcoded "Detail for X: lorem ipsum dolor sit amet…"
+  placeholder. The intent is plumbed end-to-end (PWA dispatches,
+  server processes, item rebroadcasts with `detail` populated) — only
+  the body is missing. Real implementation: an LLM call against the
+  underlying transcript chunks (or whatever produced the item),
+  prompted to expand on it in 2-3 sentences. Each summarizer mode
+  knows what context was used to produce its items, so the right
+  context is reachable; it's just not piped to a "detail" path yet.
+- **Items-mirror DOM diffing.** `pwa/src/ui/items-mirror.ts` does
+  `pane.innerHTML = ""` and rebuilds every row on every store
+  change. The CSS `animation: items-fade` rule on `.item` was
+  dropped because the full rebuild made it flicker on every update.
+  Right fix: diff against existing DOM keyed by `item.id`, append
+  only new rows, leave existing ones in place. That lets the fade
+  return cleanly (only new items animate in). Small project — a
+  100-line patch in `items-mirror.ts` plus restoring the CSS rule.
+
+### 7.2 Cross-cutting
+
+- **Wire-format codegen.** `contract.rs` (Rust), `Protocol.swift`
+  (Mac), `contract.ts` (PWA) are hand-synced. Every wire change
+  applies in three places; drift surfaces as runtime decode failures.
+  Three options:
+  - (a) **Keep hand-sync.** Cheap; risk grows with surface area.
+  - (b) **protobuf + codegen** across all three (`prost` for Rust,
+    `swift-protobuf` for Mac, `ts-proto` for PWA). One-time setup
+    cost; pays back forever. JSON-on-the-wire stays as a debug aid
+    via protobuf's JSON mapping.
+  - (c) **TS-as-source + `quicktype`** to Rust + Swift. Easiest if
+    you treat the PWA's `contract.ts` as canonical, but loses
+    Rust/Swift's richer enum types.
+    Lean (b) — write the ADR when the next non-trivial wire change
+    comes due.
 - **PWA audio source activation conditions:** when goggles mic
   becomes feasible. Tests needed: BLE audio for long sessions,
   EvenHub WebView mic permissions.
@@ -655,10 +785,9 @@ Not blocking Phase 1, but flagged for later resolution:
   glasses-only). Defer until glasses hardware lands.
 - **Per-user mnemo identity:** depends on a mnemo-side change. Forward
   compatibility today (`attributes.meeting_id`) keeps the door open.
-- **Wire format codegen:** decision at end of Phase 2.
-- **Production host:** picked when Phase 3 ships. Hetzner (cheapest +
+- **Production host:** picked when we deploy. Hetzner (cheapest +
   full control), Fly.io (zero-ops + container-native), Railway
   (simplest UX) are all viable. Same Docker image runs on any.
-- **SQLite → Postgres migration:** if/when concurrent meetings or
-  multi-instance scaleout matters. SQLx makes this a 2-3 day project
-  later. Not on the radar at our scale.
+- **Horizontal scale.** See §6 for the full plan; ship the cheap
+  step (sticky sessions) when one VM hits its ceiling, the full step
+  (stateless replicas) when concurrent users justify the work.
