@@ -40,12 +40,19 @@ const DEFAULT_GRACE_MS: u64 = 12_000;
 
 const SYSTEM_PROMPT: &str = "You summarize a single moment a user explicitly bookmarked \
 during a live meeting. The user marks moments because something noteworthy was happening: \
-a decision, a question, an idea, a turning point. Given the meeting's description and \
-the transcript surrounding the bookmark, produce a tight 2–3 sentence summary of what \
-was being discussed at exactly that point. Anchor on the marked moment, not the whole \
-meeting. If a user note is provided, treat it as the bookmarker's intent — the summary \
-should align with that intent. Do NOT speculate beyond what the transcript supports. \
-If the transcript window is sparse or unrelated, say so honestly in one short sentence.";
+a decision, a question, an idea, a turning point. Given the meeting's description, the \
+transcript surrounding the bookmark, and (when available) a screenshot captured at the \
+moment, produce a tight 2–3 sentence summary of what was being discussed at exactly that \
+point. Anchor on the marked moment, not the whole meeting. \
+\
+When a screenshot is provided, weave concrete visual details into the summary — what was \
+on screen (a slide, a doc, code, a chart, a Figma frame, etc.) and how it connects to the \
+spoken content. Don't describe the screenshot in isolation; integrate it. If the screenshot \
+contradicts or refines the transcript, the screenshot wins for *what was visible*. \
+\
+If a user note is provided, treat it as the bookmarker's intent — the summary should align \
+with that intent. Do NOT speculate beyond what the transcript and screenshot support. If \
+both are sparse or unrelated, say so honestly in one short sentence.";
 
 /// Wire shape the LLM produces. Minimal — we only need the summary
 /// today. Adding more fields later is a non-breaking schema change.
@@ -141,11 +148,12 @@ async fn process_one(
             return Ok(());
         }
     };
-    let note: Option<String> = sqlx::query_scalar("SELECT note FROM moments WHERE id = $1")
-        .bind(&req.moment_id)
-        .fetch_optional(db)
-        .await?
-        .flatten();
+    let row: Option<(Option<String>, Option<String>)> =
+        sqlx::query_as("SELECT note, asset_path FROM moments WHERE id = $1")
+            .bind(&req.moment_id)
+            .fetch_optional(db)
+            .await?;
+    let (note, asset_path) = row.map(|(n, a)| (n, a)).unwrap_or((None, None));
 
     let window = read_transcript_window(&req.meeting_id, req.t_ms, window_ms).await;
 
@@ -158,18 +166,82 @@ async fn process_one(
         &window,
     );
 
-    let extraction: MomentSummaryExtraction = tokio::time::timeout(
-        Duration::from_secs(60),
-        llm.extract_with_prompt::<MomentSummaryExtraction>(SYSTEM_PROMPT, &prompt),
-    )
-    .await
-    .map_err(|_| anyhow::anyhow!("LLM timed out"))?
-    .map_err(|e| anyhow::anyhow!("LLM extract failed: {e}"))?;
+    // Try to read the screenshot. Failures (file not yet uploaded,
+    // disk error, missing path) fall through to a text-only call —
+    // moments with no screenshot are a documented degraded path
+    // (e.g., PWA-only meetings without a screen-capture device).
+    let image = match asset_path.as_deref() {
+        Some(rel) if !rel.is_empty() => read_screenshot_bytes(rel).await,
+        _ => None,
+    };
+
+    let extraction: MomentSummaryExtraction = match image {
+        Some(bytes) => {
+            info!(
+                meeting_id = %req.meeting_id,
+                moment_id = %req.moment_id,
+                bytes = bytes.len(),
+                "moment summary: vision call (screenshot attached)"
+            );
+            llm.extract_with_prompt_and_image::<MomentSummaryExtraction>(
+                SYSTEM_PROMPT,
+                &prompt,
+                bytes,
+                rig::completion::message::ImageMediaType::PNG,
+            )
+            .await
+            .map_err(|e| anyhow::anyhow!("LLM extract (vision) failed: {e}"))?
+        }
+        None => {
+            debug!(
+                meeting_id = %req.meeting_id,
+                moment_id = %req.moment_id,
+                "moment summary: text-only call (no screenshot available)"
+            );
+            llm.extract_with_prompt::<MomentSummaryExtraction>(SYSTEM_PROMPT, &prompt)
+                .await
+                .map_err(|e| anyhow::anyhow!("LLM extract failed: {e}"))?
+        }
+    };
 
     crate::db::update_moment_summary(db, &req.moment_id, Some(extraction.summary.trim()), "done")
         .await?;
     info!(meeting_id = %req.meeting_id, moment_id = %req.moment_id, "moment summary done");
     Ok(())
+}
+
+/// Read a screenshot blob from `<DATA_DIR>/<rel>`. Returns `None` on
+/// any error (file not yet uploaded, missing, unreadable) — the
+/// caller falls back to a text-only LLM call.
+async fn read_screenshot_bytes(rel: &str) -> Option<Vec<u8>> {
+    let dir = match crate::db::data_dir() {
+        Ok(d) => d,
+        Err(e) => {
+            warn!(error = ?e, "data_dir lookup failed for screenshot read");
+            return None;
+        }
+    };
+    let abs = dir.join(rel);
+    match tokio::fs::read(&abs).await {
+        Ok(bytes) if !bytes.is_empty() => Some(bytes),
+        Ok(_) => {
+            warn!(path = %abs.display(), "screenshot file is empty; falling back to text-only");
+            None
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            // Common race: the moment-created broadcast fires
+            // before the Mac finishes uploading the screenshot.
+            // The 12 s grace upstream covers most of this; if the
+            // upload is still in flight we just summarize the
+            // transcript and call it a day.
+            debug!(path = %abs.display(), "screenshot not yet on disk; text-only summary");
+            None
+        }
+        Err(e) => {
+            warn!(error = ?e, path = %abs.display(), "screenshot read failed");
+            None
+        }
+    }
 }
 
 /// Read the transcript JSONL and return only items whose `t` falls

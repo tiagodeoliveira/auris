@@ -4,8 +4,10 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
+use rig::completion::message::{ImageDetail, ImageMediaType, Message, UserContent};
 use rig::extractor::Extractor;
 use rig::prelude::*;
+use rig::OneOrMany;
 use rig_bedrock::client::Client as BedrockClient;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -353,6 +355,82 @@ impl LlmClient {
         tokio::time::timeout(EXTRACTION_TIMEOUT, extractor_call)
             .await
             .map_err(|_| ExtractionError::Timeout(EXTRACTION_TIMEOUT))?
+    }
+
+    /// Same shape as `extract_with_prompt`, but also attaches an image
+    /// to the user turn. The model sees text first, then the image.
+    /// Caller passes raw bytes (e.g. PNG file contents) plus the
+    /// `ImageMediaType` matching the encoding — rig handles the
+    /// per-provider base64-or-binary translation.
+    ///
+    /// Used by the moment summary worker so vision-capable models can
+    /// reason about the screenshot the user captured at the moment,
+    /// not just the surrounding transcript.
+    pub async fn extract_with_prompt_and_image<T>(
+        &self,
+        system_prompt: &str,
+        user_input: &str,
+        image_bytes: Vec<u8>,
+        media_type: ImageMediaType,
+    ) -> Result<T, ExtractionError>
+    where
+        T: schemars::JsonSchema
+            + serde::de::DeserializeOwned
+            + serde::Serialize
+            + Send
+            + Sync
+            + 'static,
+    {
+        // rig's OpenAI provider rejects raw bytes ("Raw file data not
+        // supported, encode as base64 first"); Anthropic + Bedrock
+        // also expect base64 in their wire format. So base64-encode
+        // here once and feed the same string through any provider.
+        use base64::engine::general_purpose::STANDARD as B64;
+        use base64::Engine as _;
+        let encoded = B64.encode(&image_bytes);
+
+        let message = Message::User {
+            content: OneOrMany::many(vec![
+                UserContent::text(user_input.to_string()),
+                UserContent::image_base64(encoded, Some(media_type), Some(ImageDetail::High)),
+            ])
+            .map_err(|e| ExtractionError::Extract(format!("build message: {e}")))?,
+        };
+
+        let extractor_call = async {
+            match &self.backend {
+                LlmBackend::Bedrock { client, model_id } => client
+                    .extractor::<T>(model_id.as_str())
+                    .preamble(system_prompt)
+                    .build()
+                    .extract(message.clone())
+                    .await
+                    .map_err(|e| ExtractionError::Extract(e.to_string())),
+                LlmBackend::OpenAI { client, model_id } => client
+                    .extractor::<T>(model_id.as_str())
+                    .preamble(system_prompt)
+                    .build()
+                    .extract(message.clone())
+                    .await
+                    .map_err(|e| ExtractionError::Extract(e.to_string())),
+                LlmBackend::Anthropic { client, model_id } => client
+                    .extractor::<T>(model_id.as_str())
+                    .preamble(system_prompt)
+                    .build()
+                    .extract(message.clone())
+                    .await
+                    .map_err(|e| ExtractionError::Extract(e.to_string())),
+            }
+        };
+        // Vision calls run longer than text-only — bump from
+        // `EXTRACTION_TIMEOUT` (8s) to a per-image budget. Most
+        // providers return a screenshot summary in 5-15s; a 30s cap
+        // gives headroom for slow paths without freezing the worker
+        // permanently if the API hangs.
+        const VISION_TIMEOUT: Duration = Duration::from_secs(30);
+        tokio::time::timeout(VISION_TIMEOUT, extractor_call)
+            .await
+            .map_err(|_| ExtractionError::Timeout(VISION_TIMEOUT))?
     }
 }
 
