@@ -42,11 +42,6 @@ struct MeetingCompanionApp: App {
         }
         .windowResizability(.contentMinSize)
 
-        Window("Permissions", id: "permissions") {
-            PermissionsView(model: model)
-        }
-        .windowResizability(.contentSize)
-
         // Meeting overlay — the single floating meeting surface. It
         // starts in compose mode when idle, transitions through
         // starting, then becomes the live transcript HUD.

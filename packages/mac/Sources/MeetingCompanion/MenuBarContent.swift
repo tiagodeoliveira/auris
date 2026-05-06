@@ -6,6 +6,7 @@ import SwiftUI
 struct MenuBarContent: View {
     @Bindable var model: AppModel
     @Environment(\.openWindow) private var openWindow
+    @Environment(\.dismissWindow) private var dismissWindow
 
     var body: some View {
         // Header
@@ -50,6 +51,20 @@ struct MenuBarContent: View {
             }
             .disabled(!model.canStartMeeting)
         } else {
+            // While a meeting is active (this Mac is the audio source —
+            // either Mac- or PWA-initiated), let the user surface or
+            // hide the floating overlay. PWA-initiated meetings don't
+            // auto-open the overlay on this Mac, so this is the
+            // primary way to bring it up.
+            Button(model.isOverlayVisible ? "Hide overlay" : "Show overlay") {
+                if model.isOverlayVisible {
+                    dismissWindow(id: "meeting-overlay")
+                } else {
+                    openWindow(id: "meeting-overlay")
+                    NSApp.activate(ignoringOtherApps: true)
+                }
+            }
+
             Button("Stop meeting") {
                 Task { await model.stopMeeting() }
             }
@@ -77,7 +92,8 @@ struct MenuBarContent: View {
         }
 
         Button(permissionsMenuLabel) {
-            openWindow(id: "permissions")
+            model.selectedSettingsTab = .permissions
+            openWindow(id: "settings")
             NSApp.activate(ignoringOtherApps: true)
         }
 

@@ -28,6 +28,16 @@ use crate::ws::ServerHandle;
 /// Override with `MEETING_COMPANION_MOMENT_WINDOW_MS`.
 const DEFAULT_WINDOW_MS: i64 = 15_000;
 
+/// Default grace period before reading the transcript, to give
+/// in-flight Soniox chunks time to finalize. STT providers commit
+/// chunks only on punctuation or silence — the chunk *spanning*
+/// the moment can land several seconds after the user pressed
+/// "Mark moment". Without this delay, the worker reads a JSONL
+/// that's missing the most relevant utterance and the LLM is
+/// forced to say "no transcript".
+/// Override with `MEETING_COMPANION_MOMENT_GRACE_MS`.
+const DEFAULT_GRACE_MS: u64 = 12_000;
+
 const SYSTEM_PROMPT: &str = "You summarize a single moment a user explicitly bookmarked \
 during a live meeting. The user marks moments because something noteworthy was happening: \
 a decision, a question, an idea, a turning point. Given the meeting's description and \
@@ -56,12 +66,24 @@ pub fn spawn_worker(handle: ServerHandle) {
         loop {
             match rx.recv().await {
                 Ok(req) => {
-                    if let Err(e) = process_one(&db, &llm, &req).await {
-                        warn!(error = ?e, moment_id = %req.moment_id, "moment summary failed");
-                        let _ =
-                            crate::db::update_moment_summary(&db, &req.moment_id, None, "failed")
-                                .await;
-                    }
+                    // Each moment runs in its own task so the
+                    // finalization-grace sleep on one doesn't delay
+                    // the next. Moments are infrequent enough that
+                    // unbounded fan-out isn't a concern.
+                    let db = db.clone();
+                    let llm = llm.clone();
+                    tokio::spawn(async move {
+                        if let Err(e) = process_one(&db, &llm, &req).await {
+                            warn!(error = ?e, moment_id = %req.moment_id, "moment summary failed");
+                            let _ = crate::db::update_moment_summary(
+                                &db,
+                                &req.moment_id,
+                                None,
+                                "failed",
+                            )
+                            .await;
+                        }
+                    });
                 }
                 Err(broadcast::error::RecvError::Closed) => return,
                 Err(broadcast::error::RecvError::Lagged(n)) => {
@@ -94,6 +116,17 @@ async fn process_one(
         .ok()
         .and_then(|s| s.parse::<i64>().ok())
         .unwrap_or(DEFAULT_WINDOW_MS);
+
+    // Wait for in-flight STT chunks to finalize. Soniox commits a
+    // chunk only on punctuation or silence; a moment marked mid-
+    // utterance otherwise reads an empty (or stale) transcript window.
+    let grace_ms = std::env::var("MEETING_COMPANION_MOMENT_GRACE_MS")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(DEFAULT_GRACE_MS);
+    if grace_ms > 0 {
+        tokio::time::sleep(Duration::from_millis(grace_ms)).await;
+    }
 
     // Fetch meeting metadata + the user note for prompt context.
     let meeting: Option<(Option<String>, String)> =

@@ -80,6 +80,13 @@ final class AppModel {
     /// `SettingsView`'s TabView so the tab swap is reactive.
     var selectedSettingsTab: SettingsTab = .server
 
+    /// Whether the floating overlay window is currently shown. Driven
+    /// by `MeetingOverlayView`'s onAppear/onDisappear; consumed by
+    /// the menu bar to flip the toggle label between Show/Hide. Lets
+    /// the user surface the overlay even for PWA-initiated meetings,
+    /// which don't auto-open it on this Mac.
+    var isOverlayVisible: Bool = false
+
     /// Items per mode, populated lazily as the server pushes them.
     /// `transcript` mode is fed by the server's transcript
     /// summarizer (one item per committed STT utterance); other

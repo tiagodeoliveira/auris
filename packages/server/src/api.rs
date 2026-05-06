@@ -17,7 +17,7 @@ use std::sync::Arc;
 
 use axum::{
     body::Body,
-    extract::{Multipart, Path, State},
+    extract::{DefaultBodyLimit, Multipart, Path, State},
     http::{header, HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     routing::get,
@@ -59,6 +59,12 @@ pub struct ApiState {
 /// permissive so a future PWA history view served from a different
 /// origin can fetch without server-side allowlisting.
 pub fn make_router(state: ApiState) -> Router {
+    // Full-display PNG screenshots routinely exceed axum's 2 MiB
+    // default; bump to 64 MiB on routes that accept image bytes.
+    // Read-only routes keep the default — there's no client request
+    // body to enforce against on those.
+    const SCREENSHOT_BODY_LIMIT: usize = 64 * 1024 * 1024;
+
     Router::new()
         .route("/meetings", get(list_meetings))
         .route("/meetings/:id", get(get_meeting))
@@ -70,6 +76,7 @@ pub fn make_router(state: ApiState) -> Router {
             "/meetings/:id/moments/:moment_id/screenshot",
             get(get_moment_screenshot).post(upload_moment_screenshot),
         )
+        .layer(DefaultBodyLimit::max(SCREENSHOT_BODY_LIMIT))
         .layer(CorsLayer::permissive())
         .with_state(state)
 }
@@ -513,7 +520,10 @@ impl IntoResponse for ApiError {
         let (status, msg, detail) = match self {
             ApiError::Unauthorized => (StatusCode::UNAUTHORIZED, "unauthorized", None),
             ApiError::NotFound => (StatusCode::NOT_FOUND, "not_found", None),
-            ApiError::BadRequest(d) => (StatusCode::BAD_REQUEST, "bad_request", Some(d)),
+            ApiError::BadRequest(d) => {
+                tracing::warn!(detail = %d, "bad request in api");
+                (StatusCode::BAD_REQUEST, "bad_request", Some(d))
+            }
             ApiError::Internal(d) => {
                 tracing::warn!(detail = %d, "internal error in api");
                 (StatusCode::INTERNAL_SERVER_ERROR, "internal_error", None)

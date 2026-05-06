@@ -85,6 +85,10 @@ struct MeetingOverlayView: View {
             mode = model.isMeetingActive ? .live : .compose
             addingMetadata = false
             descriptionFocused = mode == .compose
+            model.isOverlayVisible = true
+        }
+        .onDisappear {
+            model.isOverlayVisible = false
         }
     }
 

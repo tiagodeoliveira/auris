@@ -1,13 +1,12 @@
 // PermissionsView.swift
-// Window summoned from the menu bar's "Permissions…" item. Shows
-// current state of Microphone + Screen Recording grants and offers
-// a one-click action to request each.
+// Embedded as a tab inside the Settings window. Shows current state
+// of Microphone + Screen Recording grants and offers a one-click
+// action to request each.
 
 import SwiftUI
 
 struct PermissionsView: View {
     @Bindable var model: AppModel
-    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         Form {
@@ -45,8 +44,6 @@ struct PermissionsView: View {
         }
         .formStyle(.grouped)
         .padding()
-        .frame(minWidth: 480, minHeight: 320)
-        .navigationTitle("Permissions")
         .onReceive(
             NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)
         ) { _ in

@@ -15,6 +15,7 @@ import SwiftUI
 enum SettingsTab: String, Hashable, CaseIterable {
     case server
     case meetings
+    case permissions
 }
 
 struct SettingsView: View {
@@ -29,6 +30,10 @@ struct SettingsView: View {
             MeetingsTab(model: model)
                 .tabItem { Label("Meetings", systemImage: "list.bullet.rectangle") }
                 .tag(SettingsTab.meetings)
+
+            PermissionsView(model: model)
+                .tabItem { Label("Permissions", systemImage: "lock.shield") }
+                .tag(SettingsTab.permissions)
         }
         .frame(minWidth: 720, minHeight: 460)
         .navigationTitle("Settings")
