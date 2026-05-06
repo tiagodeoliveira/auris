@@ -43,6 +43,8 @@ struct PermissionsView: View {
             }
         }
         .formStyle(.grouped)
+        .scrollContentBackground(.hidden)
+        .background(Color(red: 0.97, green: 0.98, blue: 1.0))
         .padding()
         .onReceive(
             NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)

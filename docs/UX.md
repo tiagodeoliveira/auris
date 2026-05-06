@@ -1,14 +1,14 @@
 # PWA UX
 
-The PWA is the user's primary control surface during a meeting. It runs
-inside the EvenHub Flutter WebView on a phone and (optionally) inside
-the EvenHub simulator on a laptop during development.
+The PWA is the mobile control surface during a meeting. It runs inside
+the EvenHub Flutter WebView on a phone and inside the EvenHub simulator
+during development; it is not designed as a desktop browser app.
 
 This doc captures the design system, the screen-state model, and the
-interaction patterns. The visual language is intentionally aligned with
-the author's portfolio site at [tiago.sh](https://tiago.sh) — an
-industrial-blueprint aesthetic. See [ADR-0009](adr/0009-pwa-ux-design-system.md)
-for the rationale.
+interaction patterns. The visual language is a shared light theme used
+by both the PWA and the Mac overlay: glassy white/ice panels, blue
+primary actions, amber moment capture, red destructive actions, and
+dark high-contrast text.
 
 ---
 
@@ -19,30 +19,28 @@ variables.
 
 ### Palette
 
-| Token            | Hex                      | Use                                                                   |
-| ---------------- | ------------------------ | --------------------------------------------------------------------- |
-| `--bg-primary`   | `#1a1e23`                | App background.                                                       |
-| `--bg-secondary` | `#141719`                | Top bar, sticky CTA region.                                           |
-| `--bg-card`      | `#1e2328`                | Cards, inputs, settings modal.                                        |
-| `--text-primary` | `#a8b5bd`                | Body text.                                                            |
-| `--text-light`   | `#e4e9ec`                | Headings, primary content.                                            |
-| `--text-muted`   | `#6b7a85`                | Mono labels, hint text, disabled affordances.                         |
-| `--rust-warm`    | `#d4602c`                | Primary accent — focused borders, active states, badges, dashed CTAs. |
-| `--rust-light`   | `#e87a3d`                | Hover states, gradient secondary.                                     |
-| `--rust-glow`    | `rgba(212, 96, 44, 0.4)` | Shadow / glow accents on active CTAs and indicators.                  |
-| `--spark-orange` | `#e87a3d`                | Gradient secondary for the primary button.                            |
-| `--border-dark`  | `#2a3138`                | Section dividers.                                                     |
-| `--border-light` | `#3d4750`                | Input / chip borders.                                                 |
-| `--error`        | (red)                    | Toast / overlay error states.                                         |
+| Token            | Hex       | Use                                                |
+| ---------------- | --------- | -------------------------------------------------- |
+| `--bg-primary`   | `#eef4fb` | App background.                                    |
+| `--bg-secondary` | `#f8fbff` | Top bar, sticky CTA region, soft sections.         |
+| `--bg-card`      | `#ffffff` | Cards, inputs, settings modal.                     |
+| `--text-primary` | `#243044` | Body text.                                         |
+| `--text-light`   | `#17212e` | Headings, primary content.                         |
+| `--text-muted`   | `#6b7b8e` | Mono labels, hint text, disabled affordances.      |
+| `--brand-blue`   | `#2563eb` | Primary action, focus, active modes, memory badge. |
+| `--moment-amber` | `#f2b705` | Moment capture and moment feedback.                |
+| `--danger-red`   | `#e5484d` | Stop/destructive actions and error states.         |
+| `--border-dark`  | `#d5dee9` | Section dividers.                                  |
+| `--border-light` | `#c7d2df` | Input / chip borders.                              |
 
-Dark-only. No light theme.
+The old `--rust-*` variables remain as aliases for compatibility while
+older components are migrated.
 
 ### Typography
 
-Loaded from Google Fonts:
+Loaded from Google Fonts in the PWA:
 
-- **Display** — `Bebas Neue`, used for screen titles ("NEW MEETING",
-  "MEETING IN PROGRESS"). Tight letter-spacing, all-caps.
+- **Display** — `Bebas Neue`, used sparingly for mobile screen titles.
 - **Body** — `Space Grotesk`, used for textareas, item bodies, button
   labels, settings forms.
 - **Mono** — `JetBrains Mono`, used for technical labels (mode tabs,
@@ -53,11 +51,24 @@ The `.label-mono` utility class applies the technical-label treatment.
 
 ### Geometry
 
-- Border radius: `--radius: 8px` baseline; pills use `999px`.
+- Border radius: `--radius: 6px` baseline; pills use `999px`.
 - Border weight: `1px`. Dashed for "draft / not yet committed"
   affordances (`+ ADD`, `EXTRACT TAGS` when armed).
-- Section padding: `24px` horizontal as a baseline; tighter (`16px`,
-  `12px`) for compact sections like the metadata strip.
+- Section padding: `16px` to `24px` horizontal depending on density.
+
+### Mac overlay companion theme
+
+The Mac overlay uses native SwiftUI fonts rather than PWA web fonts, but
+shares the same semantic palette:
+
+- panel `#f7fafe`, card `#ffffff`, input `#eef4fa`
+- text `#17212e`, muted `#647386`
+- blue `#2563eb`, amber `#f2b705`, danger `#e5484d`
+
+The overlay keeps one stable wide footprint across compose, starting,
+and live states. Active meeting mode is a horizontal HUD: status/control
+rail on the left, mode tabs and transcript on the right, moment feedback
+as a separate pill so labels do not truncate.
 
 ---
 

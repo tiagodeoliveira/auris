@@ -25,7 +25,7 @@ export function mountTopBar(parent: HTMLElement, store: Store, onSettings: () =>
   const bleBadge = document.createElement("span");
   bleBadge.className = "top-bar-ble";
   bleBadge.title = "Glasses connected";
-  bleBadge.textContent = "👓";
+  bleBadge.textContent = "GLASSES";
 
   status.append(dot, label, bleBadge);
 
@@ -33,14 +33,14 @@ export function mountTopBar(parent: HTMLElement, store: Store, onSettings: () =>
   meetings.className = "top-bar-icon-btn";
   meetings.setAttribute("aria-label", "Browse meetings");
   meetings.title = "Meetings";
-  meetings.textContent = "📋";
+  meetings.textContent = "☰";
   meetings.addEventListener("click", () => store.update({ meetingsModalOpen: true }));
   bar.appendChild(meetings);
 
   const gear = document.createElement("button");
   gear.className = "top-bar-icon-btn";
   gear.setAttribute("aria-label", "Open settings");
-  gear.innerHTML = "⚙";
+  gear.textContent = "⚙";
   gear.addEventListener("click", onSettings);
   bar.appendChild(gear);
 

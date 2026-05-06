@@ -36,7 +36,7 @@ export function mountComposeRegion(parent: HTMLElement, store: Store, actions: C
   const mic = document.createElement("button");
   mic.className = "compose-mic";
   mic.setAttribute("aria-label", "Toggle voice input");
-  mic.innerHTML = "🎤";
+  mic.textContent = "●";
   mic.addEventListener("click", () => {
     // Toggle: if currently listening, stop dictation but keep the transcript
     // so the user can edit it. Otherwise start a new dictation session.

@@ -37,6 +37,9 @@ struct SettingsView: View {
         }
         .frame(minWidth: 720, minHeight: 460)
         .navigationTitle("Settings")
+        .preferredColorScheme(.light)
+        .tint(SettingsTheme.blue)
+        .background(SettingsTheme.background)
     }
 }
 
@@ -58,13 +61,15 @@ private struct ServerTab: View {
                 Text("Server")
             } footer: {
                 Text(
-                    "For local dev: ws://localhost:7331 with token `dev`. The REST API for browsing meetings is derived from this URL (port + 1)."
+                    "For local dev: ws://localhost:7331 with token `dev`. WebSocket and REST share the same server URL."
                 )
                 .font(.footnote)
                 .foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)
+        .scrollContentBackground(.hidden)
+        .background(SettingsTheme.background)
         .padding()
     }
 }
@@ -158,6 +163,8 @@ private struct MeetingsTab: View {
             }
         }
         .listStyle(.inset)
+        .scrollContentBackground(.hidden)
+        .background(SettingsTheme.sidebar)
         .onDeleteCommand {
             if let id = selectedId {
                 Task { await deleteMeeting(id: id) }
@@ -178,6 +185,7 @@ private struct MeetingsTab: View {
             Text(meetings.isEmpty ? "" : "Select a meeting")
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(SettingsTheme.background)
         }
     }
 
@@ -314,6 +322,8 @@ private struct MeetingDetailView: View {
             .frame(maxWidth: .infinity, alignment: .topLeading)
             .textSelection(.enabled)
         }
+        .scrollContentBackground(.hidden)
+        .background(SettingsTheme.background)
     }
 
     @ViewBuilder
@@ -466,8 +476,12 @@ private struct MomentCard: View {
             .frame(maxWidth: .infinity, alignment: .topLeading)
         }
         .padding(8)
-        .background(Color.white.opacity(0.04))
+        .background(SettingsTheme.card)
         .clipShape(RoundedRectangle(cornerRadius: 8))
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .strokeBorder(SettingsTheme.border)
+        )
     }
 
     @ViewBuilder
@@ -609,5 +623,22 @@ private struct AuthorizedImage: View {
         } catch {
             failed = true
         }
+    }
+}
+
+private enum SettingsTheme {
+    static let background = Color(hex: 0xF7FAFE)
+    static let sidebar = Color(hex: 0xEEF4FB)
+    static let card = Color(hex: 0xFFFFFF)
+    static let border = Color(hex: 0xD5DEE9)
+    static let blue = Color(hex: 0x2563EB)
+}
+
+private extension Color {
+    init(hex: UInt32) {
+        let r = Double((hex >> 16) & 0xff) / 255.0
+        let g = Double((hex >> 8) & 0xff) / 255.0
+        let b = Double(hex & 0xff) / 255.0
+        self.init(red: r, green: g, blue: b)
     }
 }

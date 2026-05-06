@@ -1,11 +1,9 @@
 // MeetingOverlayView.swift
-// Floating status-bar overlay shown while a meeting is active.
-// Layout: narrow left column (mode / level / controls) + wide
-// right column (scrollable transcript). The window reads as a
-// HUD rather than a regular window — borderless rounded
-// translucent rect, floating above other apps, joining all
-// Spaces. Resizable: drag any edge; width gets you more
-// transcript per line, height gets you more rows.
+// Floating always-on-top meeting overlay.
+// Shared visual direction with the PWA: light glass panel, blue primary
+// action, amber moment action, red destructive action, and high-contrast
+// transcript text. The window keeps a stable wide footprint across compose,
+// starting, and live states so the meeting UI doesn't jump when capture starts.
 
 import AppKit
 import SwiftUI
@@ -13,7 +11,6 @@ import SwiftUI
 struct MeetingOverlayView: View {
     @Bindable var model: AppModel
     @Environment(\.dismissWindow) private var dismissWindow
-    @Environment(\.openWindow) private var openWindow
 
     @State private var mode: OverlayMode
     @State private var description: String = ""
@@ -46,13 +43,18 @@ struct MeetingOverlayView: View {
         .frame(
             minWidth: mode.minWidth, idealWidth: mode.idealWidth, maxWidth: .infinity,
             minHeight: mode.minHeight, idealHeight: mode.idealHeight, maxHeight: .infinity)
+        .fixedSize(horizontal: false, vertical: true)
         .background {
-            // Translucent HUD look. Flat dark fill (rather than
-            // a system material) gives us a precise opacity knob.
-            // Tune the 0.84 here if it's still wrong.
             RoundedRectangle(cornerRadius: 12)
-                .fill(Color.black.opacity(0.84))
+                .fill(MCTheme.panel.opacity(0.94))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12)
+                        .strokeBorder(MCTheme.border, lineWidth: 1)
+                )
+                .shadow(color: Color.black.opacity(0.18), radius: 22, y: 10)
         }
+        .foregroundStyle(MCTheme.text)
+        .ignoresSafeArea()
         .background(WindowAccessor { window in
             window.level = .floating
             window.collectionBehavior.insert(.canJoinAllSpaces)
@@ -60,18 +62,14 @@ struct MeetingOverlayView: View {
             window.backgroundColor = .clear
             window.hasShadow = true
             window.isMovableByWindowBackground = true
-            // Strip the title bar chrome so the rounded
-            // translucent rect IS the entire visible window.
-            // Keeps `.titled` in styleMask (some
-            // window-management features depend on it) but hides
-            // the visual chrome via fullSizeContentView +
-            // transparent titlebar + hidden standard buttons.
-            window.titlebarAppearsTransparent = true
-            window.titleVisibility = .hidden
-            window.styleMask.insert(.fullSizeContentView)
+            // Borderless matters here: hiddenTitleBar still reserves
+            // titlebar real estate on some macOS window configurations,
+            // which lets desktop wallpaper show through as a blue strip.
+            window.styleMask = [.borderless, .resizable, .fullSizeContentView]
             window.standardWindowButton(.closeButton)?.isHidden = true
             window.standardWindowButton(.miniaturizeButton)?.isHidden = true
             window.standardWindowButton(.zoomButton)?.isHidden = true
+            window.minSize = NSSize(width: mode.minWidth, height: mode.minHeight)
         })
         .onChange(of: model.isMeetingActive) { _, active in
             if active {
@@ -93,14 +91,14 @@ struct MeetingOverlayView: View {
     }
 
     private var composePanel: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 10) {
                 Image(systemName: "record.circle")
                     .font(.system(size: 15))
-                    .foregroundStyle(.red)
+                    .foregroundStyle(MCTheme.danger)
 
                 Text("Start meeting")
-                    .font(.headline)
+                    .font(.system(size: 17, weight: .semibold))
 
                 Spacer()
 
@@ -109,7 +107,7 @@ struct MeetingOverlayView: View {
                 } label: {
                     Image(systemName: "xmark.circle.fill")
                         .font(.system(size: 16))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(MCTheme.muted)
                 }
                 .buttonStyle(.plain)
                 .help("Cancel")
@@ -118,24 +116,25 @@ struct MeetingOverlayView: View {
             ZStack(alignment: .topLeading) {
                 if description.isEmpty {
                     Text("What's this meeting about? (optional)")
-                        .foregroundStyle(.tertiary)
-                        .padding(.top, 8)
-                        .padding(.leading, 7)
+                        .foregroundStyle(MCTheme.subtle)
+                        .padding(.top, 10)
+                        .padding(.leading, 10)
                         .allowsHitTesting(false)
                 }
 
                 TextEditor(text: $description)
-                    .font(.body)
+                    .font(.system(size: 15))
+                    .foregroundStyle(MCTheme.text)
                     .scrollContentBackground(.hidden)
                     .focused($descriptionFocused)
-                    .frame(minHeight: 84)
+                    .frame(minHeight: 64)
             }
-            .padding(4)
-            .background(Color.white.opacity(0.08))
-            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .padding(6)
+            .background(MCTheme.input)
+            .clipShape(RoundedRectangle(cornerRadius: 10))
             .overlay(
-                RoundedRectangle(cornerRadius: 8)
-                    .strokeBorder(Color.white.opacity(0.16))
+                RoundedRectangle(cornerRadius: 10)
+                    .strokeBorder(MCTheme.border)
             )
 
             MetadataChipEditor(
@@ -157,6 +156,7 @@ struct MeetingOverlayView: View {
                 }
                 .disabled(description.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                     || model.extractingMetadata)
+                .buttonStyle(SecondaryPillButtonStyle())
                 .help("Extract editable tags from the description")
 
                 Spacer()
@@ -164,7 +164,7 @@ struct MeetingOverlayView: View {
                 if !model.canStartMeeting {
                     Text(notReadyHint)
                         .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(MCTheme.muted)
                 }
 
                 Button("Start") {
@@ -172,22 +172,22 @@ struct MeetingOverlayView: View {
                 }
                 .keyboardShortcut(.defaultAction)
                 .disabled(!model.canStartMeeting || model.extractingMetadata)
+                .buttonStyle(PrimaryPillButtonStyle())
             }
         }
-        .foregroundStyle(.primary)
     }
 
     private var startingPanel: some View {
-        HStack(spacing: 14) {
+        HStack(spacing: 16) {
             MicActivityIcon(peak: combinedPeak, isLive: true)
                 .frame(width: 38, height: 48)
 
             VStack(alignment: .leading, spacing: 4) {
                 Text("Starting meeting")
-                    .font(.headline)
+                    .font(.system(size: 17, weight: .semibold))
                 Text("Opening audio stream…")
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(MCTheme.muted)
             }
 
             Spacer()
@@ -198,31 +198,54 @@ struct MeetingOverlayView: View {
     }
 
     private var livePanel: some View {
-        HStack(alignment: .top, spacing: 10) {
-            statusColumn
-                .frame(width: 54)
+        ZStack(alignment: .topTrailing) {
+            HStack(alignment: .top, spacing: 14) {
+                statusColumn
+                    .frame(width: 92)
 
-            Divider()
+                Rectangle()
+                    .fill(MCTheme.border)
+                    .frame(width: 1)
 
-            modeColumn
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                modeColumn
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+
+            VStack(alignment: .trailing, spacing: 8) {
+                actionCluster
+
+                if let status = model.momentStatus, !status.isEmpty {
+                    Text(status)
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(MCTheme.amberText)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 7)
+                        .background(MCTheme.amberSoft)
+                        .clipShape(Capsule())
+                        .overlay(Capsule().strokeBorder(MCTheme.amberBorder))
+                        .transition(.opacity.combined(with: .move(edge: .top)))
+                }
+            }
+            .padding(.top, -2)
         }
     }
 
-    /// Left column: three stacked rows of status + controls.
-    /// Distributed evenly so each lines up roughly with one row
-    /// of transcript text on the right.
+    /// Left column: status only. Actions live in the top-right cluster
+    /// so the mic reads as meeting state rather than another command.
     private var statusColumn: some View {
-        VStack(alignment: .center, spacing: 10) {
+        VStack(alignment: .center, spacing: 0) {
             HStack(spacing: 4) {
                 Image(systemName: model.audioToBackendPaused ? "pause.circle.fill" : "record.circle.fill")
-                    .foregroundStyle(model.audioToBackendPaused ? .yellow : .red)
+                    .foregroundStyle(model.audioToBackendPaused ? MCTheme.amber : MCTheme.danger)
                     .font(.system(size: 10))
                 Text(model.audioToBackendPaused ? "Muted" : "Live")
                     .font(.caption2)
                     .fontWeight(.semibold)
+                    .foregroundStyle(MCTheme.text)
             }
             .frame(maxWidth: .infinity)
+
+            Spacer(minLength: 0)
 
             Button {
                 model.toggleBackendAudio()
@@ -238,59 +261,38 @@ struct MeetingOverlayView: View {
             .frame(maxWidth: .infinity)
             .help(model.audioToBackendPaused ? "Resume backend audio" : "Pause backend audio")
 
-            HStack(spacing: 6) {
-                Button {
-                    Task { await model.markMoment() }
-                } label: {
-                    Image(systemName: "bookmark.circle.fill")
-                        .font(.system(size: 18))
-                        .foregroundStyle(.yellow)
-                }
-                .buttonStyle(.plain)
-                .keyboardShortcut("m", modifiers: [.command, .shift])
-                .disabled(!model.isMeetingActive)
-                .help("Mark moment (⇧⌘M)")
-
-                Button {
-                    Task { await model.stopMeeting() }
-                } label: {
-                    Image(systemName: "stop.circle.fill")
-                        .font(.system(size: 18))
-                        .foregroundStyle(.red)
-                }
-                .buttonStyle(.plain)
-                .help("Stop meeting")
-
-                Menu {
-                    Button("Settings…") {
-                        openWindow(id: "settings")
-                        NSApp.activate(ignoringOtherApps: true)
-                    }
-                } label: {
-                    Image(systemName: "ellipsis.circle")
-                        .font(.system(size: 16))
-                        .foregroundStyle(.secondary)
-                }
-                .menuStyle(.borderlessButton)
-                .menuIndicator(.hidden)
-                .frame(width: 18)
-            }
-            .frame(maxWidth: .infinity)
-
-            // Transient toast for moment capture: lives in the
-            // status column so it doesn't shift the transcript.
-            // Cleared by `AppModel.scheduleMomentStatusClear` after
-            // ~2s.
-            if let status = model.momentStatus, !status.isEmpty {
-                Text(status)
-                    .font(.caption2)
-                    .foregroundStyle(.yellow)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                    .frame(maxWidth: .infinity)
-                    .transition(.opacity)
-            }
+            Spacer(minLength: 0)
         }
+        .frame(maxHeight: .infinity)
+    }
+
+    private var actionCluster: some View {
+        HStack(spacing: 7) {
+            Button {
+                Task { await model.markMoment() }
+            } label: {
+                Image(systemName: "bookmark.circle.fill")
+                    .font(.system(size: 20))
+            }
+            .buttonStyle(IconCircleButtonStyle(tint: MCTheme.amber))
+            .keyboardShortcut("m", modifiers: [.command, .shift])
+            .disabled(!model.isMeetingActive)
+            .help("Mark moment (⇧⌘M)")
+
+            Button {
+                Task { await model.stopMeeting() }
+            } label: {
+                Image(systemName: "stop.circle.fill")
+                    .font(.system(size: 20))
+            }
+            .buttonStyle(IconCircleButtonStyle(tint: MCTheme.danger))
+            .help("Stop meeting")
+
+        }
+        .padding(4)
+        .background(MCTheme.panel.opacity(0.82))
+        .clipShape(Capsule())
+        .overlay(Capsule().strokeBorder(MCTheme.border))
     }
 
     /// Right column: mode-tabs row over a scrollable items list.
@@ -315,14 +317,13 @@ struct MeetingOverlayView: View {
                 } label: {
                     Text(Self.shortLabel(for: mode))
                         .font(.system(size: 10, weight: isActive ? .bold : .semibold))
-                        .tracking(0.4)
-                        .foregroundStyle(isActive ? .primary : .secondary)
-                        .padding(.horizontal, 8)
+                        .tracking(0.6)
+                        .foregroundStyle(isActive ? MCTheme.blue : MCTheme.muted)
+                        .padding(.horizontal, 10)
                         .padding(.vertical, 4)
                         .background {
                             if isActive {
-                                RoundedRectangle(cornerRadius: 5)
-                                    .fill(Color.white.opacity(0.14))
+                                Capsule().fill(MCTheme.blueSoft)
                             }
                         }
                 }
@@ -341,7 +342,7 @@ struct MeetingOverlayView: View {
 
                     if items.isEmpty, interim.isEmpty {
                         Text(emptyHint)
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(MCTheme.muted)
                     } else {
                         ForEach(items) { item in
                             ItemRow(
@@ -352,15 +353,18 @@ struct MeetingOverlayView: View {
                         }
                         if !interim.isEmpty {
                             Text(interim)
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(MCTheme.muted)
+                                .italic()
                         }
                     }
                     Color.clear.frame(height: 1).id("itemsEnd")
                 }
-                .font(.body)
+                .font(.system(size: 16, weight: .regular))
                 .frame(maxWidth: .infinity, alignment: .topLeading)
                 .textSelection(.enabled)
+                .padding(.trailing, 48)
             }
+            .scrollIndicators(.hidden)
             .onChange(of: model.transcriptInterim) { _, _ in
                 guard model.currentMode == "transcript" else { return }
                 withAnimation(.linear(duration: 0.1)) {
@@ -458,34 +462,100 @@ private enum OverlayMode: Equatable {
 
     var minWidth: CGFloat {
         switch self {
-        case .compose: 460
-        case .starting: 360
-        case .live: 520
+        case .compose: 900
+        case .starting: 520
+        case .live: 900
         }
     }
 
     var idealWidth: CGFloat {
         switch self {
-        case .compose: 560
-        case .starting: 420
-        case .live: 820
+        case .compose: 1120
+        case .starting: 620
+        case .live: 1180
         }
     }
 
     var minHeight: CGFloat {
         switch self {
-        case .compose: 275
-        case .starting: 80
-        case .live: 110
+        case .compose: 245
+        case .starting: 96
+        case .live: 152
         }
     }
 
     var idealHeight: CGFloat {
         switch self {
-        case .compose: 315
-        case .starting: 92
-        case .live: 140
+        case .compose: 275
+        case .starting: 112
+        case .live: 174
         }
+    }
+}
+
+private enum MCTheme {
+    static let panel = Color(hex: 0xF7FAFE)
+    static let panelElevated = Color(hex: 0xFFFFFF)
+    static let input = Color(hex: 0xEEF4FA)
+    static let border = Color(hex: 0xD5DEE9)
+    static let text = Color(hex: 0x17212E)
+    static let muted = Color(hex: 0x647386)
+    static let subtle = Color(hex: 0x96A3B4)
+    static let blue = Color(hex: 0x2563EB)
+    static let blueSoft = Color(hex: 0xDBEAFE)
+    static let amber = Color(hex: 0xF2B705)
+    static let amberText = Color(hex: 0x765A00)
+    static let amberSoft = Color(hex: 0xFFF5C7)
+    static let amberBorder = Color(hex: 0xF5D45F)
+    static let danger = Color(hex: 0xE5484D)
+    static let dangerSoft = Color(hex: 0xFFE2E3)
+    static let success = Color(hex: 0x2EA043)
+}
+
+private extension Color {
+    init(hex: UInt32) {
+        let r = Double((hex >> 16) & 0xff) / 255.0
+        let g = Double((hex >> 8) & 0xff) / 255.0
+        let b = Double(hex & 0xff) / 255.0
+        self.init(red: r, green: g, blue: b)
+    }
+}
+
+private struct PrimaryPillButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.system(size: 14, weight: .semibold))
+            .foregroundStyle(.white)
+            .padding(.horizontal, 18)
+            .padding(.vertical, 8)
+            .background(MCTheme.blue.opacity(configuration.isPressed ? 0.82 : 1))
+            .clipShape(Capsule())
+    }
+}
+
+private struct SecondaryPillButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.system(size: 13, weight: .medium))
+            .foregroundStyle(MCTheme.text)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 7)
+            .background(configuration.isPressed ? MCTheme.input.opacity(0.7) : MCTheme.panelElevated)
+            .clipShape(Capsule())
+            .overlay(Capsule().strokeBorder(MCTheme.border))
+    }
+}
+
+private struct IconCircleButtonStyle: ButtonStyle {
+    let tint: Color
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .foregroundStyle(tint)
+            .frame(width: 28, height: 28)
+            .background(configuration.isPressed ? tint.opacity(0.18) : tint.opacity(0.10))
+            .clipShape(Circle())
+            .overlay(Circle().strokeBorder(tint.opacity(0.28)))
     }
 }
 
@@ -509,24 +579,24 @@ private struct ItemRow: View {
                     Text(speaker)
                         .font(.system(size: 10, weight: .semibold))
                         .tracking(0.3)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(MCTheme.muted)
                         .padding(.horizontal, 5)
                         .padding(.vertical, 1)
                         .background {
                             RoundedRectangle(cornerRadius: 3)
-                                .fill(Color.white.opacity(0.10))
+                                .fill(MCTheme.input)
                         }
                 }
 
                 Text(item.text)
-                    .foregroundStyle(.primary)
+                    .foregroundStyle(MCTheme.text)
                     .frame(maxWidth: .infinity, alignment: .leading)
 
                 if item.detail != nil {
                     Button(action: onToggle) {
                         Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
                             .font(.system(size: 10, weight: .semibold))
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(MCTheme.muted)
                             .frame(width: 14, height: 14)
                     }
                     .buttonStyle(.plain)
@@ -537,7 +607,7 @@ private struct ItemRow: View {
             if isExpanded, let detail = item.detail, !detail.isEmpty {
                 Text(detail)
                     .font(.callout)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(MCTheme.muted)
                     .padding(.leading, 8)
                     .padding(.top, 1)
             }
@@ -584,17 +654,17 @@ private struct MetadataChipEditor: View {
                     .buttonStyle(.plain)
                     .font(.caption)
                     .padding(.horizontal, 12)
-                    .padding(.vertical, 7)
-                    .background(Color.white.opacity(0.08))
+                    .padding(.vertical, 5)
+                    .background(MCTheme.panelElevated)
                     .clipShape(Capsule())
-                    .overlay(Capsule().strokeBorder(Color.white.opacity(0.16)))
+                    .overlay(Capsule().strokeBorder(MCTheme.border))
                     .help("Add metadata")
                 }
             }
             .padding(.vertical, 2)
         }
         .scrollIndicators(.hidden)
-        .frame(height: 42)
+        .frame(height: 36)
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
@@ -616,7 +686,7 @@ private struct MetadataChipEditor: View {
 
             Text("=")
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(MCTheme.muted)
 
             TextField("value", text: $newValue)
                 .textFieldStyle(.plain)
@@ -640,17 +710,17 @@ private struct MetadataChipEditor: View {
             } label: {
                 Image(systemName: "xmark.circle.fill")
                     .font(.system(size: 13))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(MCTheme.muted)
             }
             .buttonStyle(.plain)
             .help("Cancel")
         }
         .padding(.horizontal, 8)
-        .padding(.vertical, 7)
+        .padding(.vertical, 5)
         .fixedSize(horizontal: true, vertical: false)
-        .background(Color.white.opacity(0.10))
+        .background(MCTheme.panelElevated)
         .clipShape(Capsule())
-        .overlay(Capsule().strokeBorder(Color.white.opacity(0.20)))
+        .overlay(Capsule().strokeBorder(MCTheme.blue.opacity(0.35)))
     }
 
     private func commitAdd() {
@@ -694,7 +764,7 @@ private struct MetadataChip: View {
             Text(keyName)
                 .font(.caption)
                 .fontWeight(.semibold)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(MCTheme.muted)
                 .lineLimit(1)
                 .fixedSize(horizontal: true, vertical: false)
 
@@ -717,17 +787,17 @@ private struct MetadataChip: View {
             } label: {
                 Image(systemName: "xmark.circle.fill")
                     .font(.system(size: 13))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(MCTheme.muted)
             }
             .buttonStyle(.plain)
             .help("Remove \(keyName)")
         }
         .padding(.horizontal, 8)
-        .padding(.vertical, 7)
+        .padding(.vertical, 5)
         .fixedSize(horizontal: true, vertical: false)
-        .background(Color.white.opacity(0.08))
+        .background(MCTheme.panelElevated)
         .clipShape(Capsule())
-        .overlay(Capsule().strokeBorder(Color.white.opacity(0.16)))
+        .overlay(Capsule().strokeBorder(MCTheme.border))
     }
 
     private func commit() {
@@ -756,7 +826,7 @@ private struct MicActivityIcon: View {
 
             ZStack {
                 RoundedRectangle(cornerRadius: capsuleWidth / 2)
-                    .fill(Color.black.opacity(0.28))
+                    .fill(MCTheme.input)
                     .frame(width: capsuleWidth, height: capsuleHeight)
                     .position(x: w / 2, y: capsuleY + capsuleHeight / 2)
 
@@ -789,12 +859,12 @@ private struct MicActivityIcon: View {
 
     private var fillColor: Color {
         if peak > 0.5 { return .red }
-        if peak > 0.05 { return .green }
-        return Color.gray.opacity(0.5)
+        if peak > 0.05 { return MCTheme.success }
+        return MCTheme.subtle
     }
 
     private var outlineColor: Color {
-        peak > 0.05 ? .green : Color.secondary
+        peak > 0.05 ? MCTheme.success : MCTheme.muted
     }
 }
 
@@ -832,5 +902,11 @@ private struct WindowAccessor: NSViewRepresentable {
         return view
     }
 
-    func updateNSView(_ nsView: NSView, context: Context) {}
+    func updateNSView(_ nsView: NSView, context: Context) {
+        DispatchQueue.main.async {
+            if let window = nsView.window {
+                configure(window)
+            }
+        }
+    }
 }

@@ -50,7 +50,7 @@ export function mountCtaRegion(
 
     if (s.meetingState === "active") {
       wrap.append(
-        iconButton("📍", "Moment", "btn-ghost", actions.markMoment),
+        iconButton("◆", "Moment", "btn-ghost", actions.markMoment),
         iconButton("⏸", "Pause", "btn-ghost", actions.pauseMeeting),
         stopButton(actions.stopMeeting),
       );

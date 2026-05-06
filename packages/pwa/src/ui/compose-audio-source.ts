@@ -62,7 +62,7 @@ export function mountComposeAudioSource(parent: HTMLElement, store: Store): void
       emptyHint.innerHTML = "";
       const icon = document.createElement("span");
       icon.className = "compose-audio-source-empty-icon";
-      icon.textContent = "🎙";
+      icon.textContent = "MIC";
       const text = document.createElement("span");
       text.textContent =
         devices.length === 0
