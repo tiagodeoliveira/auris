@@ -22,9 +22,22 @@ export function mountMeetingsModal(parent: HTMLElement, store: Store): void {
   modal.className = "settings-modal meetings-modal";
   overlay.appendChild(modal);
 
-  // Header
+  // Header. The back button is only meaningful on narrow viewports
+  // when a meeting is selected (we hide the list, show the detail) —
+  // CSS gates its visibility via the `.meetings-modal[data-pane=...]`
+  // attribute below.
   const header = document.createElement("div");
   header.className = "meetings-header";
+  const backBtn = document.createElement("button");
+  backBtn.className = "btn-ghost meetings-back-btn";
+  backBtn.setAttribute("aria-label", "Back to list");
+  backBtn.innerHTML = "‹";
+  backBtn.addEventListener("click", () => {
+    selectedId = null;
+    renderList();
+    renderDetail(null);
+    syncPane();
+  });
   const title = document.createElement("h2");
   title.className = "settings-title";
   title.textContent = "Meetings";
@@ -36,7 +49,7 @@ export function mountMeetingsModal(parent: HTMLElement, store: Store): void {
   reloadBtn.className = "btn-ghost";
   reloadBtn.textContent = "Reload";
   reloadBtn.addEventListener("click", () => void reloadList());
-  header.append(title, reloadBtn, closeBtn);
+  header.append(backBtn, title, reloadBtn, closeBtn);
   modal.appendChild(header);
 
   // Body: list (left) + detail (right)
@@ -96,6 +109,7 @@ export function mountMeetingsModal(parent: HTMLElement, store: Store): void {
     if (!api) return;
     selectedId = id;
     detailError = null;
+    syncPane();
     renderDetail(null, /* loading */ true);
     try {
       const detail = await api.detail(id);
@@ -104,6 +118,14 @@ export function mountMeetingsModal(parent: HTMLElement, store: Store): void {
       detailError = errorMessage(e);
       renderDetail(null);
     }
+  }
+
+  /// Reflect the master/detail state on the modal so the CSS knows
+  /// which pane to show on narrow viewports. `list` = the row picker;
+  /// `detail` = a meeting is selected. On wide viewports the CSS
+  /// shows both panes regardless of this attribute.
+  function syncPane(): void {
+    modal.setAttribute("data-pane", selectedId ? "detail" : "list");
   }
 
   function renderList(): void {
@@ -122,7 +144,19 @@ export function mountMeetingsModal(parent: HTMLElement, store: Store): void {
       listPane.appendChild(empty);
       return;
     }
+    // Group rows by relative bucket (Today / Yesterday / This week
+    // / Older) so a long history scans at a glance. Group order is
+    // fixed; rows within a group keep server order (newest first).
+    let currentBucket: string | null = null;
     for (const m of meetings) {
+      const bucket = relativeBucket(m.started_at);
+      if (bucket !== currentBucket) {
+        const heading = document.createElement("div");
+        heading.className = "meetings-group";
+        heading.textContent = bucket;
+        listPane.appendChild(heading);
+        currentBucket = bucket;
+      }
       const row = document.createElement("button");
       row.className = "meetings-row";
       if (m.id === selectedId) row.classList.add("selected");
@@ -145,8 +179,8 @@ export function mountMeetingsModal(parent: HTMLElement, store: Store): void {
     detailPane.innerHTML = "";
     if (loading) {
       const spinner = document.createElement("div");
-      spinner.className = "meetings-empty";
-      spinner.textContent = "Loading…";
+      spinner.className = "meetings-spinner";
+      spinner.setAttribute("aria-label", "Loading meeting");
       detailPane.appendChild(spinner);
       return;
     }
@@ -404,10 +438,27 @@ export function mountMeetingsModal(parent: HTMLElement, store: Store): void {
       selectedId = null;
       renderDetail(null);
     }
+    syncPane();
     wasOpen = isOpen;
   }
   syncOpen();
   store.subscribe((s) => s.meetingsModalOpen, syncOpen);
+}
+
+/// Coarse bucket for grouping meeting rows by recency. Returns one
+/// of the fixed bucket names so heading order is stable.
+function relativeBucket(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "Older";
+  const now = new Date();
+  const startOfDay = (x: Date) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
+  const today = startOfDay(now);
+  const dayMs = 24 * 60 * 60 * 1000;
+  const target = startOfDay(d);
+  if (target === today) return "Today";
+  if (target === today - dayMs) return "Yesterday";
+  if (target >= today - 6 * dayMs) return "This week";
+  return "Older";
 }
 
 function errorMessage(e: unknown): string {
@@ -430,8 +481,10 @@ function formatDateShort(iso: string): string {
 function formatDateLong(iso: string): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return iso;
+  // Drop the year + the localized "at" connector: on narrow viewports
+  // the long form ("May 6, 2026 at 8:51 AM") wraps awkwardly. Year is
+  // implicit (current year for any meeting you'd practically open).
   return d.toLocaleString(undefined, {
-    year: "numeric",
     month: "short",
     day: "numeric",
     hour: "numeric",

@@ -1,4 +1,11 @@
-//! Active-meeting header. Title + elapsed timer + subtitle + memory badge.
+//! Active-meeting header. Two compact rows:
+//!  Row 1: timer · project chip (if any)  — the always-glanced metadata
+//!         alongside the memory pill (icon + count, hover for breakdown).
+//!  Row 2: meeting title, truncated with ellipsis on overflow.
+//!
+//! Replaces the prior layout that stacked title (large), subtitle, and a
+//! verbose "★ MEMORY · 30 RECALLED" pill, which combined ate ~120px of
+//! vertical space on mobile.
 
 import type { Store } from "../store";
 
@@ -16,28 +23,44 @@ export function mountHeaderStrip(parent: HTMLElement, store: Store): void {
   strip.className = "header-strip";
   parent.appendChild(strip);
 
+  // Row 1: timer + project + memory pill
+  const metaRow = document.createElement("div");
+  metaRow.className = "header-meta-row";
+  strip.appendChild(metaRow);
+
+  const timerEl = document.createElement("span");
+  timerEl.className = "header-timer";
+  metaRow.appendChild(timerEl);
+
+  const projectEl = document.createElement("span");
+  projectEl.className = "header-project";
+  metaRow.appendChild(projectEl);
+
+  const memoryBadge = document.createElement("span");
+  memoryBadge.className = "header-memory-badge";
+  metaRow.appendChild(memoryBadge);
+
+  // Row 2: title (truncated)
   const titleEl = document.createElement("h1");
   titleEl.className = "header-title";
   strip.appendChild(titleEl);
 
-  const subtitleEl = document.createElement("div");
-  subtitleEl.className = "header-subtitle label-mono";
-  strip.appendChild(subtitleEl);
-
-  // Memory badge — visible only when mnemo recall populated prior context.
-  // Hidden otherwise (idle, no mnemo, recall failed, recall returned empty).
-  const memoryBadge = document.createElement("div");
-  memoryBadge.className = "header-memory-badge label-mono";
-  strip.appendChild(memoryBadge);
-
   let timerInterval: ReturnType<typeof setInterval> | null = null;
 
-  function updateSubtitle() {
+  function updateTimer() {
     const s = store.get();
     const startedAt = s.meetingStartedAt ?? Date.now();
-    const elapsed = fmtElapsed(Date.now() - startedAt);
-    const project = s.metadata.project ? ` · ${s.metadata.project}` : "";
-    subtitleEl.textContent = `${elapsed}${project}`;
+    timerEl.textContent = fmtElapsed(Date.now() - startedAt);
+  }
+
+  function updateProject() {
+    const project = store.get().metadata.project;
+    if (project && project.trim()) {
+      projectEl.textContent = project;
+      projectEl.style.display = "inline-flex";
+    } else {
+      projectEl.style.display = "none";
+    }
   }
 
   function updateMemoryBadge() {
@@ -52,8 +75,7 @@ export function mountHeaderStrip(parent: HTMLElement, store: Store): void {
       return;
     }
     memoryBadge.style.display = "inline-flex";
-    memoryBadge.textContent = `★ memory · ${total} recalled`;
-    // Full breakdown on hover; also self-explanatory via spelled-out labels.
+    memoryBadge.innerHTML = `<span class="header-memory-icon">★</span><span class="header-memory-count">${total}</span>`;
     const parts: string[] = [];
     if (pc.preferences > 0) parts.push(`${pc.preferences} preferences`);
     if (pc.facts > 0) parts.push(`${pc.facts} facts`);
@@ -73,14 +95,13 @@ export function mountHeaderStrip(parent: HTMLElement, store: Store): void {
       }
       return;
     }
-    strip.style.display = "block";
+    strip.style.display = "flex";
 
-    const title = s.metadata.title || "Meeting in progress";
-    titleEl.textContent = title;
-
-    updateSubtitle();
+    titleEl.textContent = s.metadata.title || "Meeting in progress";
+    updateTimer();
+    updateProject();
     updateMemoryBadge();
-    if (!timerInterval) timerInterval = setInterval(updateSubtitle, 1000);
+    if (!timerInterval) timerInterval = setInterval(updateTimer, 1000);
   }
 
   render();

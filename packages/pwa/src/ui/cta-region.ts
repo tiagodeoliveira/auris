@@ -50,8 +50,8 @@ export function mountCtaRegion(
 
     if (s.meetingState === "active") {
       wrap.append(
-        button("📍 Moment", "btn-ghost", actions.markMoment),
-        button("Pause", "btn-ghost", actions.pauseMeeting),
+        iconButton("📍", "Moment", "btn-ghost", actions.markMoment),
+        iconButton("⏸", "Pause", "btn-ghost", actions.pauseMeeting),
         stopButton(actions.stopMeeting),
       );
       wrap.style.display = "flex";
@@ -60,7 +60,7 @@ export function mountCtaRegion(
 
     if (s.meetingState === "paused") {
       wrap.append(
-        button("Resume", "btn-primary", actions.resumeMeeting),
+        iconButton("▶", "Resume", "btn-primary", actions.resumeMeeting),
         stopButton(actions.stopMeeting),
       );
       wrap.style.display = "flex";
@@ -72,7 +72,7 @@ export function mountCtaRegion(
   }
 
   function stopButton(onConfirm: () => void): HTMLButtonElement {
-    const btn = button("Stop", "btn-danger", () => {
+    const btn = iconButton("⏹", "Stop", "btn-danger", () => {
       const now = Date.now();
       if (now < stopArmedUntil) {
         stopArmedUntil = 0;
@@ -80,7 +80,8 @@ export function mountCtaRegion(
         render();
       } else {
         stopArmedUntil = now + STOP_CONFIRM_WINDOW_MS;
-        btn.textContent = "Tap again to confirm";
+        btn.classList.add("armed");
+        btn.innerHTML = `<span class="cta-btn-label">Confirm?</span>`;
         setTimeout(() => {
           if (Date.now() >= stopArmedUntil) {
             stopArmedUntil = 0;
@@ -92,14 +93,18 @@ export function mountCtaRegion(
     return btn;
   }
 
-  function button(
-    text: string,
+  /// Build a CTA button with an icon glyph + a label below. Compact
+  /// vertical stack so all three (Moment / Pause / Stop) fit in one
+  /// row on narrow viewports without wrapping.
+  function iconButton(
+    icon: string,
+    label: string,
     variant: "btn-ghost" | "btn-primary" | "btn-danger",
     onClick: () => void,
   ): HTMLButtonElement {
     const b = document.createElement("button");
-    b.className = variant;
-    b.textContent = text;
+    b.className = `${variant} cta-btn`;
+    b.innerHTML = `<span class="cta-btn-icon">${icon}</span><span class="cta-btn-label">${label}</span>`;
     b.addEventListener("click", onClick);
     return b;
   }

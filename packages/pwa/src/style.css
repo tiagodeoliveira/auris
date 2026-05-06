@@ -36,6 +36,19 @@
   /* Layout */
   --radius: 6px;
 
+  /* Spacing scale — multiples of 4. Use these instead of ad-hoc px
+     values so vertical rhythm stays consistent. Components touched
+     in Phase 3 onward should reach for these; older components still
+     have inline px and will be migrated opportunistically. */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 24px;
+  --sp-6: 32px;
+  --sp-7: 48px;
+  --sp-8: 64px;
+
   /* Legacy aliases — components not yet migrated still reference these.
      Tasks 2-4 will replace inline-style usages of these with the new
      tokens. Until then, keeping these aliased prevents the app from
@@ -122,9 +135,13 @@ button:focus-visible {
   outline: 1px solid var(--rust-warm);
   outline-offset: 2px;
 }
+button:active:not(:disabled) {
+  transform: translateY(1px);
+}
 button:disabled {
   opacity: 0.4;
   cursor: not-allowed;
+  transform: none;
 }
 
 /* Primary CTA — rust gradient */
@@ -149,6 +166,10 @@ button:disabled {
   background: transparent;
   color: var(--text-primary);
 }
+.btn-ghost:hover {
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text-light);
+}
 
 /* Danger — red */
 .btn-danger {
@@ -159,6 +180,10 @@ button:disabled {
   font-size: 13px;
   letter-spacing: 2px;
   text-transform: uppercase;
+}
+.btn-danger:hover {
+  filter: brightness(1.1);
+  border-color: transparent;
 }
 
 /* === INPUTS === */
@@ -276,44 +301,70 @@ button.cta:disabled {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 14px 20px;
+  gap: 8px;
+  padding: max(12px, env(safe-area-inset-top, 0px)) 16px 12px;
   border-bottom: 1px solid var(--border-dark);
-  background: rgba(20, 23, 25, 0.6);
+  background: rgba(20, 23, 25, 0.7);
   backdrop-filter: blur(8px);
+  position: sticky;
+  top: 0;
+  z-index: 10;
 }
 .top-bar-status {
-  display: flex;
+  display: inline-flex;
   align-items: center;
   gap: 8px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--border-dark);
+  background: var(--bg-card);
+  font-size: 12px;
+  font-family: var(--font-mono);
+  letter-spacing: 0.4px;
+  color: var(--text-light);
+  min-height: 32px;
 }
 .top-bar-dot {
   width: 8px;
   height: 8px;
   border-radius: 50%;
   display: inline-block;
+  flex-shrink: 0;
 }
 .top-bar-dot[data-state="ok"] {
-  background: var(--rust-warm);
-  box-shadow: 0 0 8px var(--rust-glow);
+  background: #4caf50;
+  box-shadow: 0 0 8px rgba(76, 175, 80, 0.5);
 }
 .top-bar-dot[data-state="pending"] {
-  background: var(--link-blue);
+  background: var(--rust-warm);
   animation: blink 1.2s ease-in-out infinite;
 }
 .top-bar-dot[data-state="off"] {
   background: var(--steel-gray);
-  opacity: 0.5;
+  opacity: 0.6;
+}
+.top-bar-dot[data-state="error"] {
+  background: #d33;
+  box-shadow: 0 0 8px rgba(220, 50, 50, 0.5);
+}
+.top-bar-label {
+  white-space: nowrap;
+}
+.top-bar-ble {
+  font-size: 14px;
+  line-height: 1;
+  margin-left: 2px;
 }
 @keyframes blink {
-  0%, 100% { opacity: 0.4; }
+  0%, 100% { opacity: 0.45; }
   50% { opacity: 1; }
 }
-.top-bar-gear {
+.top-bar-icon-btn {
   background: transparent;
   border: 1px solid var(--border-light);
   color: var(--text-muted);
-  width: 32px;
-  height: 32px;
+  width: 40px;
+  height: 40px;
   padding: 0;
   font-size: 16px;
   border-radius: 50%;
@@ -321,8 +372,9 @@ button.cta:disabled {
   align-items: center;
   justify-content: center;
   transition: all 0.2s ease;
+  flex-shrink: 0;
 }
-.top-bar-gear:hover {
+.top-bar-icon-btn:hover {
   border-color: var(--rust-warm);
   color: var(--rust-warm);
 }
@@ -518,6 +570,21 @@ button.cta:disabled {
   margin: 0 auto;
   width: 100%;
 }
+.compose-audio-source-empty {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px dashed var(--border-dark);
+  border-radius: var(--radius);
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1.4;
+}
+.compose-audio-source-empty-icon {
+  font-size: 16px;
+  opacity: 0.8;
+}
 .compose-audio-source-label {
   font-family: var(--font-mono);
   font-size: 10px;
@@ -537,14 +604,27 @@ button.cta:disabled {
 }
 .compose-start-wrap {
   display: flex;
+  flex-direction: column;
+  gap: 6px;
   padding: 0 24px 32px;
   max-width: 640px;
   margin: 0 auto;
   width: 100%;
 }
 .compose-start {
-  flex: 1;
+  width: 100%;
   padding: 16px 24px;
+}
+.compose-start:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.compose-start-reason {
+  text-align: center;
+  font-size: 12px;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  letter-spacing: 0.3px;
 }
 
 /* === CTA REGION === */
@@ -553,13 +633,36 @@ button.cta:disabled {
   bottom: 0;
   background: var(--bg-primary);
   border-top: 1px solid var(--border-dark);
-  padding: 16px 24px;
+  padding: 12px 16px max(12px, env(safe-area-inset-bottom, 0px));
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   gap: 8px;
 }
 .cta-region button {
-  width: 100%;
+  flex: 1;
+  min-height: 56px;
+  padding: 8px 12px;
+}
+.cta-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+}
+.cta-btn-icon {
+  font-size: 20px;
+  line-height: 1;
+}
+.cta-btn-label {
+  font-size: 11px;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+}
+/* "Tap again to confirm" state — give Stop more visual weight. */
+.cta-region .btn-danger.armed {
+  flex: 2;
+  animation: blink 1.2s ease-in-out infinite;
 }
 
 /* === LISTENING TRANSCRIPT (placeholder; task 5 polishes) === */
@@ -579,48 +682,83 @@ button.cta:disabled {
 }
 
 /* === HEADER STRIP === */
+/* Active-meeting header. Flex column with two rows: a compact meta
+ * row (timer + optional project chip + memory pill) and the title.
+ * Title is truncated with ellipsis; memory pill is a tight icon +
+ * count chip rather than the verbose "★ MEMORY · N RECALLED" form. */
 .header-strip {
-  padding: 24px 24px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 14px 16px 12px;
   border-bottom: 1px solid var(--border-dark);
-  position: relative;
 }
-.header-title {
-  font-family: var(--font-display);
-  font-size: 24px;
-  letter-spacing: 2px;
-  text-transform: uppercase;
-  color: var(--text-light);
-  margin: 0 0 6px;
-  line-height: 1.1;
-}
-.header-subtitle {
+.header-meta-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--font-mono);
   font-size: 12px;
+  letter-spacing: 0.4px;
   color: var(--text-muted);
 }
-/* Memory-context badge — pinned to the right of the strip, only visible
-   when mnemo recall populated prior context. Subdued by default; the
-   rust accent reads as "augmented context active." */
-.header-memory-badge {
-  position: absolute;
-  top: 24px;
-  right: 24px;
+.header-timer {
+  font-variant-numeric: tabular-nums;
+  color: var(--text-light);
+  font-weight: 500;
+}
+.header-project {
   display: inline-flex;
   align-items: center;
-  font-size: 10px;
-  letter-spacing: 1px;
-  padding: 3px 10px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-primary);
+  font-size: 11px;
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.header-memory-badge {
+  margin-left: auto; /* pin to the right of the meta row */
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
   border: 1px solid var(--rust-warm);
   color: var(--rust-warm);
   border-radius: 999px;
   cursor: help;
   background: rgba(212, 96, 44, 0.08);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.header-memory-icon {
+  font-size: 10px;
+  line-height: 1;
+}
+.header-memory-count {
+  font-weight: 500;
+}
+.header-title {
+  font-family: var(--font-display);
+  font-size: 20px;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  color: var(--text-light);
+  margin: 0;
+  line-height: 1.1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* === MODE TABS === */
 .mode-tabs {
   display: flex;
-  gap: 16px;
-  padding: 12px 24px;
+  gap: 4px;
+  padding: 4px 12px 0;
   border-bottom: 1px solid var(--border-dark);
   overflow-x: auto;
   scrollbar-width: none;
@@ -631,18 +769,26 @@ button.cta:disabled {
 .mode-tab {
   background: transparent;
   border: none;
-  padding: 6px 0;
+  padding: 12px 12px 14px;
+  min-height: 44px;
   position: relative;
   color: var(--text-muted);
   font-family: var(--font-mono);
   font-size: 12px;
-  letter-spacing: 2px;
+  letter-spacing: 1.6px;
   text-transform: uppercase;
   flex-shrink: 0;
+  cursor: pointer;
+  transition: color 160ms ease;
 }
 .mode-tab:hover {
   color: var(--text-light);
   border-color: transparent;
+}
+.mode-tab:focus-visible {
+  outline: 2px solid var(--rust-warm);
+  outline-offset: -2px;
+  border-radius: 4px;
 }
 .mode-tab.active {
   color: var(--rust-warm);
@@ -650,9 +796,9 @@ button.cta:disabled {
 .mode-tab.active::after {
   content: "";
   position: absolute;
-  left: 0;
-  right: 0;
-  bottom: -12px;
+  left: 8px;
+  right: 8px;
+  bottom: -1px;
   height: 2px;
   background: linear-gradient(90deg, var(--rust-warm), var(--spark-orange));
 }
@@ -661,20 +807,24 @@ button.cta:disabled {
 .items-pane {
   flex: 1;
   overflow-y: auto;
-  padding: 8px 0;
+  padding: var(--sp-2) 0;
   position: relative;
   min-height: 0;
 }
+@keyframes items-fade {
+  from { opacity: 0; transform: translateY(3px); }
+  to { opacity: 1; transform: translateY(0); }
+}
 .items-empty {
   text-align: center;
-  padding: 48px 24px;
+  padding: var(--sp-7) var(--sp-5);
   opacity: 0.5;
 }
 .item {
   display: grid;
   grid-template-columns: auto 1fr;
   column-gap: 12px;
-  padding: 10px 24px;
+  padding: 10px 16px;
   border-bottom: 1px dashed var(--border-dark);
 }
 .item-time {
@@ -909,7 +1059,44 @@ textarea {
   flex-direction: column;
 }
 .meetings-list.loading {
-  opacity: 0.6;
+  position: relative;
+}
+.meetings-list.loading::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: rgba(20, 23, 25, 0.5);
+  display: flex;
+  pointer-events: none;
+}
+.meetings-list.loading::before {
+  content: "";
+  position: absolute;
+  top: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 22px;
+  height: 22px;
+  border: 2px solid var(--border-light);
+  border-top-color: var(--rust-warm);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+  z-index: 1;
+}
+@keyframes spin {
+  to { transform: translateX(-50%) rotate(360deg); }
+}
+@keyframes spin-centered {
+  to { transform: rotate(360deg); }
+}
+.meetings-spinner {
+  width: 28px;
+  height: 28px;
+  margin: 48px auto;
+  border: 2px solid var(--border-light);
+  border-top-color: var(--rust-warm);
+  border-radius: 50%;
+  animation: spin-centered 0.8s linear infinite;
 }
 .meetings-row {
   display: flex;
@@ -1152,4 +1339,84 @@ textarea {
 }
 .meetings-moment-summary.failed {
   color: var(--accent-orange, #e89c4a);
+}
+
+/* Date-grouping headings inside the meetings list. */
+.meetings-group {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 1.2px;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  padding: 12px 12px 4px;
+}
+.meetings-group:first-child {
+  padding-top: 8px;
+}
+
+/* Back button in the meetings header — only visible on narrow
+ * viewports when a meeting is selected (CSS rule below). */
+.meetings-back-btn {
+  font-size: 22px;
+  line-height: 1;
+  padding: 0 10px;
+  display: none;
+}
+
+/* === MOBILE BREAKPOINT (≤640px) === */
+@media (max-width: 640px) {
+  .compose {
+    padding: 16px;
+    gap: 16px;
+  }
+  .compose-title {
+    font-size: clamp(28px, 9vw, 40px);
+    letter-spacing: 2px;
+  }
+  .compose-input-area textarea {
+    font-size: 16px; /* keeps iOS Safari from auto-zooming on focus */
+  }
+  .compose-audio-source,
+  .compose-start-wrap {
+    padding-left: 16px;
+    padding-right: 16px;
+  }
+
+  .meetings-modal {
+    padding: 16px;
+    height: calc(100dvh - 32px);
+    max-width: 100%;
+  }
+  .meetings-header .settings-title {
+    font-size: 16px;
+  }
+  /* Stack panes: list-only OR detail-only based on `data-pane`. */
+  .meetings-modal .meetings-body {
+    grid-template-columns: 1fr;
+  }
+  .meetings-modal[data-pane="list"] .meetings-detail {
+    display: none;
+  }
+  .meetings-modal[data-pane="detail"] .meetings-list {
+    display: none;
+  }
+  .meetings-modal[data-pane="detail"] .meetings-back-btn {
+    display: inline-flex;
+  }
+  /* When detail is showing, hide Reload — it's a list action. */
+  .meetings-modal[data-pane="detail"] .meetings-header .btn-ghost:not(.meetings-back-btn) {
+    /* keep Close, hide Reload; matched on order via :nth-child below */
+  }
+  .meetings-detail-timing {
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+  .meetings-moment-card {
+    flex-direction: column;
+  }
+  .meetings-moment-thumb {
+    width: 100% !important;
+    height: auto !important;
+    max-height: 200px;
+  }
 }

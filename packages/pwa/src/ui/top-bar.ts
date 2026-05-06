@@ -1,4 +1,10 @@
-//! Always-visible top status row + settings gear + meetings browser.
+//! Always-visible top status row + meetings browser + settings gear.
+//!
+//! Renders a single status pill (dot + label, color follows state)
+//! instead of two side-by-side WS/BLE labels. The glasses (BLE) state
+//! piggybacks on the same pill via a small secondary indicator only
+//! when relevant — most users never pair glasses, so the chrome stays
+//! out of their way.
 
 import type { Store } from "../store";
 
@@ -11,22 +17,20 @@ export function mountTopBar(parent: HTMLElement, store: Store, onSettings: () =>
   status.className = "top-bar-status";
   bar.appendChild(status);
 
-  const wsDot = document.createElement("span");
-  wsDot.className = "top-bar-dot";
-  const wsLabel = document.createElement("span");
-  wsLabel.className = "label-mono";
-  wsLabel.textContent = "WS";
+  const dot = document.createElement("span");
+  dot.className = "top-bar-dot";
+  const label = document.createElement("span");
+  label.className = "top-bar-label";
 
-  const bleDot = document.createElement("span");
-  bleDot.className = "top-bar-dot";
-  const bleLabel = document.createElement("span");
-  bleLabel.className = "label-mono";
-  bleLabel.textContent = "BLE";
+  const bleBadge = document.createElement("span");
+  bleBadge.className = "top-bar-ble";
+  bleBadge.title = "Glasses connected";
+  bleBadge.textContent = "👓";
 
-  status.append(wsDot, wsLabel, bleDot, bleLabel);
+  status.append(dot, label, bleBadge);
 
   const meetings = document.createElement("button");
-  meetings.className = "top-bar-gear";
+  meetings.className = "top-bar-icon-btn";
   meetings.setAttribute("aria-label", "Browse meetings");
   meetings.title = "Meetings";
   meetings.textContent = "📋";
@@ -34,7 +38,7 @@ export function mountTopBar(parent: HTMLElement, store: Store, onSettings: () =>
   bar.appendChild(meetings);
 
   const gear = document.createElement("button");
-  gear.className = "top-bar-gear";
+  gear.className = "top-bar-icon-btn";
   gear.setAttribute("aria-label", "Open settings");
   gear.innerHTML = "⚙";
   gear.addEventListener("click", onSettings);
@@ -42,16 +46,30 @@ export function mountTopBar(parent: HTMLElement, store: Store, onSettings: () =>
 
   function render() {
     const s = store.get();
-    wsDot.dataset.state =
-      s.wsStatus === "open"
-        ? "ok"
-        : s.wsStatus === "connecting" || s.wsStatus === "reconnecting"
-          ? "pending"
-          : "off";
-    bleDot.dataset.state = s.bleConnected ? "ok" : "off";
+    const ws = s.wsStatus;
+    let state: "ok" | "pending" | "off" | "error";
+    let text: string;
+    if (ws === "open") {
+      state = "ok";
+      text = "Connected";
+    } else if (ws === "connecting") {
+      state = "pending";
+      text = "Connecting…";
+    } else if (ws === "reconnecting") {
+      state = "pending";
+      text = "Reconnecting…";
+    } else if (ws === "error") {
+      state = "error";
+      text = "Connection error";
+    } else {
+      state = "off";
+      text = "Offline";
+    }
+    dot.dataset.state = state;
+    label.textContent = text;
+    bleBadge.style.display = s.bleConnected ? "inline" : "none";
   }
 
   render();
-  store.subscribe((s) => s.wsStatus, render);
-  store.subscribe((s) => s.bleConnected, render);
+  store.subscribe((s) => `${s.wsStatus}|${s.bleConnected ? 1 : 0}`, render);
 }

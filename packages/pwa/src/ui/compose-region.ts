@@ -74,14 +74,17 @@ export function mountComposeRegion(parent: HTMLElement, store: Store, actions: C
     }
   });
 
-  // Reflect extracting state + empty-description disable on the button.
-  // Reads from composeDescription so dictation updates (which set
-  // textarea.value programmatically without firing 'input') still flip
-  // the button enabled.
+  // Reflect extracting state + empty-description visibility on the
+  // button. We *hide* (not just disable) the row when the description
+  // is empty — a greyed-out affordance with no clear path to enable
+  // it adds visual noise. Reads from composeDescription so dictation
+  // updates (which set textarea.value programmatically without firing
+  // 'input') still flip the button on.
   function syncExtractBtn() {
     const s = store.get();
     const hasDesc = s.composeDescription.trim().length > 0;
-    extractBtn.disabled = !hasDesc || s.extractingMetadata;
+    extractRow.style.display = hasDesc ? "flex" : "none";
+    extractBtn.disabled = s.extractingMetadata;
     extractBtn.textContent = s.extractingMetadata ? "▸ EXTRACTING…" : "▸ EXTRACT TAGS";
   }
   store.subscribe((s) => `${s.composeDescription}|${s.extractingMetadata}`, syncExtractBtn);
