@@ -3,9 +3,20 @@ default:
 
 # --- Run -------------------------------------------------------------------
 
-# Run the server with a development token (port 7331).
+# Run the server with real Auth0 JWT validation (port 7331).
+# Both Mac and PWA must present a valid access token for the
+# `https://meeting-companion.api` audience.
 server-run:
-    MEETING_COMPANION_TOKEN=dev cargo run -p meeting-companion-server -- --port 7331
+    AUTH0_DOMAIN=dev-jrva0wzk3qkdxcar.us.auth0.com \
+    AUTH0_API_AUDIENCE=https://meeting-companion.api \
+    cargo run -p meeting-companion-server -- --port 7331
+
+# Run the server with auth disabled — every request is attributed to a
+# synthetic dev user. Useful for poking the server with `websocat` /
+# `curl` without launching a browser flow.
+server-run-noauth:
+    MEETING_COMPANION_AUTH_DISABLED=1 \
+    cargo run -p meeting-companion-server -- --port 7331
 
 # Run the PWA dev server (port 5173).
 pwa-dev:

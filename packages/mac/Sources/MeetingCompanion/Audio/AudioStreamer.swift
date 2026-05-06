@@ -42,7 +42,10 @@ final class AudioStreamer {
 
     /// Connection params, retained across reconnect attempts.
     private var serverURL: String?
-    private var token: String?
+    /// Async-fetched on each (re)connect. /audio sessions can outlive
+    /// a JWT (~1h) so the streamer fetches fresh on every retry; the
+    /// caller doesn't have to time refreshes externally.
+    private var tokenProvider: (@MainActor () async throws -> String)?
 
     /// True while transport-level drops should trigger backoff.
     /// `start(...)` enables; `stop()` disables.
@@ -71,11 +74,15 @@ final class AudioStreamer {
     /// and pulls from `frames` until the source ends or `stop()` is
     /// called. Transport-level drops trigger an internal reconnect
     /// loop with exponential backoff.
-    func start(serverURL: String, token: String, frames: AsyncStream<Data>) {
+    func start(
+        serverURL: String,
+        tokenProvider: @escaping @MainActor () async throws -> String,
+        frames: AsyncStream<Data>
+    ) {
         stop()
 
         self.serverURL = serverURL
-        self.token = token
+        self.tokenProvider = tokenProvider
         self.shouldAutoReconnect = true
         self.nextBackoff = Self.backoffBase
         self.consecutiveFailures = 0
@@ -123,7 +130,7 @@ final class AudioStreamer {
         var iterator = frames.makeAsyncIterator()
 
         while !Task.isCancelled, shouldAutoReconnect {
-            guard let task = openSocket() else { return }
+            guard let task = await openSocket() else { return }
 
             // Drain frames until the WS errors (true → reconnect)
             // or the source ends / pump is cancelled (false → exit).
@@ -220,10 +227,18 @@ final class AudioStreamer {
     /// Open a fresh WS for `/audio` using the stored params. Sets
     /// state to `.connecting`. Returns nil + flips state to `.error`
     /// if the URL is invalid (terminal — won't be retried).
-    private func openSocket() -> URLSessionWebSocketTask? {
-        guard let serverURL, let token,
-            let url = Self.buildAudioURL(serverURL: serverURL, token: token)
-        else {
+    private func openSocket() async -> URLSessionWebSocketTask? {
+        guard let serverURL, let provider = tokenProvider else {
+            return nil
+        }
+        let token: String
+        do {
+            token = try await provider()
+        } catch {
+            state = .error("Token fetch failed: \(error.localizedDescription)")
+            return nil
+        }
+        guard let url = Self.buildAudioURL(serverURL: serverURL, token: token) else {
             state = .error("Invalid server URL.")
             shouldAutoReconnect = false
             return nil

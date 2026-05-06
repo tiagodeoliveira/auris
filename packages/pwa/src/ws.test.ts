@@ -61,7 +61,7 @@ describe("ReconnectingSocket", () => {
   test("connects with token in URL", () => {
     const sock = new ReconnectingSocket({
       url: "ws://laptop:7331",
-      token: "tok",
+      tokenProvider: () => "tok",
       onEvent: vi.fn(),
       onStatus: vi.fn(),
     });
@@ -73,7 +73,7 @@ describe("ReconnectingSocket", () => {
     const onStatus = vi.fn();
     new ReconnectingSocket({
       url: "ws://laptop:7331",
-      token: "tok",
+      tokenProvider: () => "tok",
       onEvent: vi.fn(),
       onStatus,
     });
@@ -85,7 +85,7 @@ describe("ReconnectingSocket", () => {
     const onEvent = vi.fn();
     new ReconnectingSocket({
       url: "ws://laptop:7331",
-      token: "tok",
+      tokenProvider: () => "tok",
       onEvent,
       onStatus: vi.fn(),
     });
@@ -98,7 +98,7 @@ describe("ReconnectingSocket", () => {
   test("queues sends while not open, drains on open", () => {
     const sock = new ReconnectingSocket({
       url: "ws://laptop:7331",
-      token: "tok",
+      tokenProvider: () => "tok",
       onEvent: vi.fn(),
       onStatus: vi.fn(),
     });
@@ -112,7 +112,7 @@ describe("ReconnectingSocket", () => {
   test("reconnects with backoff after close", () => {
     new ReconnectingSocket({
       url: "ws://laptop:7331",
-      token: "tok",
+      tokenProvider: () => "tok",
       onEvent: vi.fn(),
       onStatus: vi.fn(),
     });
@@ -126,7 +126,7 @@ describe("ReconnectingSocket", () => {
   test("heartbeat-loss triggers reconnect", () => {
     new ReconnectingSocket({
       url: "ws://laptop:7331",
-      token: "tok",
+      tokenProvider: () => "tok",
       onEvent: vi.fn(),
       onStatus: vi.fn(),
     });
@@ -138,7 +138,7 @@ describe("ReconnectingSocket", () => {
   test("any inbound message resets heartbeat-loss timer", () => {
     new ReconnectingSocket({
       url: "ws://laptop:7331",
-      token: "tok",
+      tokenProvider: () => "tok",
       onEvent: vi.fn(),
       onStatus: vi.fn(),
     });
@@ -155,7 +155,7 @@ describe("ReconnectingSocket", () => {
   test("close stops further reconnection", () => {
     const sock = new ReconnectingSocket({
       url: "ws://laptop:7331",
-      token: "tok",
+      tokenProvider: () => "tok",
       onEvent: vi.fn(),
       onStatus: vi.fn(),
     });

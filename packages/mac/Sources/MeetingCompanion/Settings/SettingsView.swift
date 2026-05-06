@@ -12,8 +12,11 @@ import SwiftUI
 
 /// Tabs available in the Settings window. `String` raw value just
 /// for nice debug output; `SwiftUI.tag(...)` only requires Hashable.
+/// `account` was previously `server` (held the WS URL + shared
+/// token); the URL is now build-time and the token is gone, so the
+/// tab is purely about identity.
 enum SettingsTab: String, Hashable, CaseIterable {
-    case server
+    case account
     case meetings
     case permissions
 }
@@ -23,9 +26,9 @@ struct SettingsView: View {
 
     var body: some View {
         TabView(selection: $model.selectedSettingsTab) {
-            ServerTab(model: model)
-                .tabItem { Label("Server", systemImage: "network") }
-                .tag(SettingsTab.server)
+            AccountTab(model: model)
+                .tabItem { Label("Account", systemImage: "person.crop.circle") }
+                .tag(SettingsTab.account)
 
             MeetingsTab(model: model)
                 .tabItem { Label("Meetings", systemImage: "list.bullet.rectangle") }
@@ -43,25 +46,62 @@ struct SettingsView: View {
     }
 }
 
-// MARK: - Server tab
+// MARK: - Account tab
 
-/// Existing creds form, lifted into its own view.
-private struct ServerTab: View {
+/// Identity surface — Auth0 sign-in / sign-out. The button label is
+/// just "Sign in" because Auth0's Universal Login lets the user pick
+/// their identity provider (Google, email, password, etc.) once they
+/// land on the hosted page; we shouldn't bake one provider into the
+/// CTA when the tenant might enable several.
+private struct AccountTab: View {
     @Bindable var model: AppModel
+    @State private var signInError: String? = nil
+    @State private var signingIn = false
 
     var body: some View {
         Form {
             Section {
-                TextField("Server URL", text: $model.settings.serverURL)
-                    .textFieldStyle(.roundedBorder)
-                    .autocorrectionDisabled()
-                SecureField("Token", text: $model.settings.token)
-                    .textFieldStyle(.roundedBorder)
+                if let id = model.auth0.identity {
+                    HStack(spacing: 12) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(id.name ?? id.email ?? id.sub)
+                                .font(.body)
+                            if let email = id.email, email != id.name {
+                                Text(email)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        Spacer()
+                        Button("Sign out") {
+                            model.auth0.signOut()
+                            model.disconnect()
+                        }
+                    }
+                } else {
+                    Button(signingIn ? "Signing in…" : "Sign in") {
+                        signingIn = true
+                        signInError = nil
+                        Task {
+                            do {
+                                try await model.auth0.signIn()
+                                if model.canConnect { model.connect() }
+                            } catch {
+                                signInError = error.localizedDescription
+                            }
+                            signingIn = false
+                        }
+                    }
+                    .disabled(signingIn)
+                    if let err = signInError {
+                        Text(err).font(.caption).foregroundStyle(.red)
+                    }
+                }
             } header: {
-                Text("Server")
+                Text("Account")
             } footer: {
                 Text(
-                    "For local dev: ws://localhost:7331 with token `dev`. WebSocket and REST share the same server URL."
+                    "Sign in once; the Mac app stores a refresh token and reconnects silently across launches."
                 )
                 .font(.footnote)
                 .foregroundStyle(.secondary)
@@ -191,12 +231,12 @@ private struct MeetingsTab: View {
 
     // Networking
 
-    private func makeAPI() -> MeetingsAPI? {
-        MeetingsAPI.fromWSURL(model.settings.serverURL, token: model.settings.token)
+    private func makeAPI() async -> MeetingsAPI? {
+        try? await model.makeMeetingsAPI()
     }
 
     private func reloadList() async {
-        guard let api = makeAPI() else {
+        guard let api = await makeAPI() else {
             loadError = "Server URL is invalid; check the Server tab."
             return
         }
@@ -219,7 +259,7 @@ private struct MeetingsTab: View {
     }
 
     private func loadDetail(id: String) async {
-        guard let api = makeAPI() else { return }
+        guard let api = await makeAPI() else { return }
         detailLoading = true
         defer { detailLoading = false }
         do {
@@ -233,7 +273,7 @@ private struct MeetingsTab: View {
     /// remove (drop the row up front for snappy UI), with a reload
     /// on failure to put it back if the server actually rejected.
     private func deleteMeeting(id: String) async {
-        guard let api = makeAPI() else { return }
+        guard let api = await makeAPI() else { return }
         let removedIndex = meetings.firstIndex(where: { $0.id == id })
         let removedItem = removedIndex.map { meetings[$0] }
         if let i = removedIndex {
@@ -428,13 +468,12 @@ private struct MomentCard: View {
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
             if let rel = moment.screenshotURL,
-                let api = MeetingsAPI.fromWSURL(model.settings.serverURL, token: model.settings.token),
-                let url = api.screenshotURL(forRelativePath: rel)
+                let url = screenshotURL(rel: rel)
             {
                 Button {
                     expanded = true
                 } label: {
-                    AuthorizedImage(url: url, token: model.settings.token)
+                    AuthorizedImage(url: url, auth0: model.auth0)
                         .frame(width: 120, height: 75)
                         .clipShape(RoundedRectangle(cornerRadius: 6))
                         .overlay(
@@ -445,7 +484,7 @@ private struct MomentCard: View {
                 .buttonStyle(.plain)
                 .help("Click to enlarge")
                 .sheet(isPresented: $expanded) {
-                    ScreenshotLightbox(url: url, token: model.settings.token)
+                    ScreenshotLightbox(url: url, auth0: model.auth0)
                 }
             }
             VStack(alignment: .leading, spacing: 4) {
@@ -509,6 +548,23 @@ private struct MomentCard: View {
         }
     }
 
+    /// Build the absolute screenshot URL from the relative one
+    /// returned by the server. Doesn't need an API instance — just
+    /// the WS URL → REST origin transform.
+    private func screenshotURL(rel: String) -> URL? {
+        guard var c = URLComponents(string: model.settings.serverURL) else { return nil }
+        switch c.scheme?.lowercased() {
+        case "ws": c.scheme = "http"
+        case "wss": c.scheme = "https"
+        default: return nil
+        }
+        c.path = ""
+        c.query = nil
+        guard let base = c.url else { return nil }
+        let trimmed = rel.hasPrefix("/") ? String(rel.dropFirst()) : rel
+        return URL(string: trimmed, relativeTo: base)?.absoluteURL
+    }
+
     /// `12345` ms → `"00:12"` (m:ss for short meetings, h:mm:ss for
     /// long ones). Used so users can scan when each moment was hit.
     private func formatOffset(_ ms: Int64) -> String {
@@ -529,7 +585,7 @@ private struct MomentCard: View {
 /// fully reachable; we don't add explicit pan/zoom for v1.
 private struct ScreenshotLightbox: View {
     let url: URL
-    let token: String
+    let auth0: Auth0Client
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
@@ -550,7 +606,7 @@ private struct ScreenshotLightbox: View {
             }
 
             ScrollView([.horizontal, .vertical]) {
-                AuthorizedImage(url: url, token: token, contentMode: .fit)
+                AuthorizedImage(url: url, auth0: auth0, contentMode: .fit)
                     .frame(minWidth: 700, minHeight: 440)
                     .padding(16)
             }
@@ -572,7 +628,7 @@ private struct ScreenshotLightbox: View {
 /// stale bytes in memory.
 private struct AuthorizedImage: View {
     let url: URL
-    let token: String
+    let auth0: Auth0Client
     /// `.fill` for thumbnails (clip to frame), `.fit` for lightbox
     /// (preserve aspect within available space). Default `.fill`
     /// matches the original thumbnail behavior.
@@ -607,6 +663,13 @@ private struct AuthorizedImage: View {
     }
 
     private func load() async {
+        let token: String
+        do {
+            token = try await auth0.getAccessToken()
+        } catch {
+            failed = true
+            return
+        }
         var req = URLRequest(url: url)
         req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         do {

@@ -7,30 +7,16 @@ import Observation
 
 @Observable
 final class AppSettings {
-    private enum Keys {
-        static let serverURL = "meetingCompanion.serverURL"
-        static let token = "meetingCompanion.token"
-    }
+    /// WebSocket server URL. Hardcoded for now — future builds will
+    /// substitute this at compile time (e.g., dev vs prod targets each
+    /// shipping their own constant baked into the binary). The user
+    /// shouldn't be configuring this in-app.
+    static let serverURLDefault = "ws://localhost:7331"
 
-    /// WebSocket server URL. `ws://` for local dev, `wss://` for prod.
-    var serverURL: String {
-        didSet { UserDefaults.standard.set(serverURL, forKey: Keys.serverURL) }
-    }
+    /// Read-only convenience so call sites stay readable
+    /// (`settings.serverURL`) and we can swap to a per-build value
+    /// without touching every caller.
+    var serverURL: String { Self.serverURLDefault }
 
-    /// Shared-secret token expected by the server's `?token=` query.
-    /// Replaced by a JWT issued via OAuth in Phase 3.
-    var token: String {
-        didSet { UserDefaults.standard.set(token, forKey: Keys.token) }
-    }
-
-    init() {
-        let defaults = UserDefaults.standard
-        self.serverURL = defaults.string(forKey: Keys.serverURL) ?? "ws://localhost:7331"
-        self.token = defaults.string(forKey: Keys.token) ?? ""
-    }
-
-    /// True when both fields look usable enough to attempt a connection.
-    var isConfigured: Bool {
-        !serverURL.isEmpty && !token.isEmpty
-    }
+    init() {}
 }

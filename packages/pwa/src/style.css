@@ -578,6 +578,70 @@ button.cta:disabled {
   color: var(--text-muted);
   opacity: 0.5;
 }
+/* === LOGIN SCREEN === */
+.login-screen {
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  padding: 32px 24px max(32px, env(safe-area-inset-bottom, 0px));
+  text-align: center;
+}
+.login-screen-title {
+  font-family: var(--font-display);
+  font-size: clamp(36px, 8vw, 56px);
+  letter-spacing: 3px;
+  text-transform: uppercase;
+  color: var(--text-light);
+  margin: 0;
+  line-height: 1;
+}
+.login-screen-subtitle {
+  color: var(--text-muted);
+  font-size: 14px;
+  max-width: 320px;
+}
+.login-screen-button {
+  margin-top: 12px;
+  padding: 14px 32px;
+  min-width: 240px;
+}
+.auth-misconfigured {
+  padding: 24px;
+  margin: 32px auto;
+  max-width: 520px;
+  border: 1px dashed var(--danger-red);
+  color: var(--danger-red);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.5;
+  border-radius: var(--radius);
+}
+
+/* === SETTINGS — ACCOUNT === */
+.settings-account {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px;
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius);
+  background: var(--bg-card);
+}
+.settings-account-who {
+  font-size: 14px;
+  color: var(--text-light);
+  font-weight: 500;
+  word-break: break-all;
+}
+.settings-account .btn-ghost {
+  align-self: flex-start;
+  padding: 6px 12px;
+  font-size: 12px;
+}
+
 .compose-audio-source {
   display: flex;
   flex-direction: column;

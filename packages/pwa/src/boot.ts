@@ -54,9 +54,7 @@ export async function boot({ bridge, store, env }: BootOptions): Promise<void> {
     // Status reflection lands in later tasks.
   });
 
-  // 5. Open settings modal on first run when the auth token is missing.
-  //    The server URL has a sensible default; the token does not.
-  if (!settings.serverToken) {
-    store.update({ settingsModalOpen: true });
-  }
+  // (Auth0 login is now the gating step at first run; no token-prompt
+  // needed here. main.ts renders the login screen when there's no
+  // active session.)
 }

@@ -56,7 +56,7 @@ struct MenuBarContent: View {
         } label: {
             Label("Meetings…", systemImage: "list.bullet.rectangle")
         }
-        .disabled(!model.settings.isConfigured)
+        .disabled(!model.auth0.isSignedIn)
 
         Divider()
 
@@ -158,7 +158,7 @@ struct MenuBarContent: View {
         case .connecting: "Connecting…"
         case .reconnecting: "Reconnecting…"
         case .disconnected:
-            model.settings.isConfigured ? "Not connected" : "Not signed in"
+            model.auth0.isSignedIn ? "Not connected" : "Not signed in"
         case .error: "Connection error"
         }
     }
@@ -172,7 +172,7 @@ struct MenuBarContent: View {
             model.ownDevice?.hostname
         case .error(let message):
             message
-        case .disconnected where !model.settings.isConfigured:
+        case .disconnected where !model.auth0.isSignedIn:
             "Open Settings to sign in"
         default:
             nil

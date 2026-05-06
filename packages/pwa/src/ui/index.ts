@@ -1,5 +1,6 @@
 import type { Store } from "../store";
 import type { Intent } from "../types";
+import type { AuthBundle } from "../auth";
 import { mountTopBar } from "./top-bar";
 import { mountComposeRegion } from "./compose-region";
 import { mountComposeAudioSource } from "./compose-audio-source";
@@ -23,6 +24,7 @@ export interface UiContext {
     getLocalStorage(k: string): Promise<string>;
   };
   reconnect: () => void;
+  auth: AuthBundle;
 }
 
 export function mountUI(root: HTMLElement, ctx: UiContext): void {
@@ -48,8 +50,8 @@ export function mountUI(root: HTMLElement, ctx: UiContext): void {
   mountCtaRegion(root, ctx.store, ctx.send, ctx.actions);
 
   // Overlays.
-  mountSettingsModal(root, ctx.store, ctx.bridge, ctx.reconnect);
-  mountMeetingsModal(root, ctx.store);
+  mountSettingsModal(root, ctx.store, ctx.bridge, ctx.reconnect, ctx.auth);
+  mountMeetingsModal(root, ctx.store, ctx.auth);
   mountToasts(root, ctx.store);
   mountErrorOverlay(root, ctx.store);
 }

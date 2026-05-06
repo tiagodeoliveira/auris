@@ -73,14 +73,17 @@ export function deriveApiBase(wsUrl: string): string | null {
 export class MeetingsApi {
   constructor(
     private readonly baseUrl: string,
-    private readonly token: string,
+    /// Async-callable so each request fetches a fresh JWT — the
+    /// Auth0 SDK rotates these silently. Caching at the SDK layer
+    /// means most calls are cheap; we don't need to memoize here.
+    private readonly tokenProvider: () => Promise<string>,
   ) {}
 
-  /** Build from `store.settings.serverUrl` + `serverToken`. */
-  static from(serverUrl: string, token: string): MeetingsApi | null {
+  /** Build from `store.settings.serverUrl` + a token provider. */
+  static from(serverUrl: string, tokenProvider: () => Promise<string>): MeetingsApi | null {
     const base = deriveApiBase(serverUrl);
-    if (!base || !token) return null;
-    return new MeetingsApi(base, token);
+    if (!base) return null;
+    return new MeetingsApi(base, tokenProvider);
   }
 
   list(): Promise<MeetingSummary[]> {
@@ -100,10 +103,11 @@ export class MeetingsApi {
   async fetchScreenshot(relativeOrFullUrl: string): Promise<string> {
     const path = relativeOrFullUrl.startsWith("/") ? relativeOrFullUrl.slice(1) : relativeOrFullUrl;
     const url = this.baseUrl + "/" + path;
+    const token = await this.tokenProvider();
     let resp: Response;
     try {
       resp = await fetch(url, {
-        headers: { Authorization: `Bearer ${this.token}` },
+        headers: { Authorization: `Bearer ${token}` },
         cache: "no-store",
       });
     } catch (e) {
@@ -117,10 +121,11 @@ export class MeetingsApi {
   }
 
   private async request<T>(path: string): Promise<T> {
+    const token = await this.tokenProvider();
     let resp: Response;
     try {
       resp = await fetch(this.baseUrl + path, {
-        headers: { Authorization: `Bearer ${this.token}` },
+        headers: { Authorization: `Bearer ${token}` },
         cache: "no-store",
       });
     } catch (e) {

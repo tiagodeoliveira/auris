@@ -14,9 +14,23 @@ export type WsStatus = "connecting" | "open" | "reconnecting" | "closed" | "erro
 
 export interface Settings {
   serverUrl: string;
+  /** Legacy shared-secret token. Kept on the type for backward
+   * compatibility during the OAuth migration; nothing on the wire
+   * uses it anymore. The Auth0 access token is fetched live via
+   * `auth.getAccessToken()` and never persisted to settings. */
   serverToken: string;
   sonioxKey: string;
   lastMetadata: Record<string, string>;
+}
+
+/** Identity surface for the logged-in user. `null` while we're still
+ * resolving the Auth0 session at boot, or when nobody's signed in. */
+export interface AuthIdentity {
+  email: string | null;
+  name: string | null;
+  picture: string | null;
+  /** Auth0 `sub` (e.g. `google-oauth2|123…`). Stable across logins. */
+  sub: string;
 }
 
 export interface Toast {
@@ -75,6 +89,11 @@ export interface AppState {
   meetingsModalOpen: boolean;
   toasts: Toast[];
   errorOverlay: ErrorOverlay | null;
+  /// Auth0-resolved identity of the active user. `null` while still
+  /// resolving at boot or when signed out — the login screen renders
+  /// in that case. Token itself is *never* in the store; it's fetched
+  /// on demand from the Auth0 client to avoid leaking it to logs/devtools.
+  auth: AuthIdentity | null;
 }
 
 // Re-exported for convenience.
@@ -120,5 +139,6 @@ export function defaultAppState(): AppState {
     meetingsModalOpen: false,
     toasts: [],
     errorOverlay: null,
+    auth: null,
   };
 }

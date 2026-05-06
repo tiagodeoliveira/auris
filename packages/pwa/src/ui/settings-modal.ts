@@ -1,4 +1,5 @@
 import type { Store } from "../store";
+import type { AuthBundle } from "../auth";
 import { saveSetting } from "../storage";
 
 interface BridgeLike {
@@ -11,6 +12,7 @@ export function mountSettingsModal(
   store: Store,
   bridge: BridgeLike,
   onSave: () => void,
+  auth: AuthBundle,
 ): void {
   const overlay = document.createElement("div");
   overlay.className = "settings-overlay";
@@ -26,6 +28,25 @@ export function mountSettingsModal(
   title.textContent = "Settings";
   modal.appendChild(title);
 
+  // Account section — replaces the old shared-token field. Shows
+  // who's signed in and exposes a logout button. The access token
+  // itself never appears in the UI.
+  const account = document.createElement("section");
+  account.className = "settings-account";
+  const accountLabel = document.createElement("div");
+  accountLabel.className = "label-mono";
+  accountLabel.textContent = "Account";
+  const accountWho = document.createElement("div");
+  accountWho.className = "settings-account-who";
+  const logoutBtn = document.createElement("button");
+  logoutBtn.className = "btn-ghost";
+  logoutBtn.textContent = "Sign out";
+  logoutBtn.addEventListener("click", () => {
+    void auth.logout();
+  });
+  account.append(accountLabel, accountWho, logoutBtn);
+  modal.appendChild(account);
+
   // Connection status row
   const statusRow = document.createElement("div");
   statusRow.className = "settings-status-row";
@@ -36,11 +57,13 @@ export function mountSettingsModal(
   statusRow.append(statusDot, statusLabel);
   modal.appendChild(statusRow);
 
-  // Form fields
+  // Form fields. Server URL stays (you might point at a hosted
+  // server vs localhost). Token is gone — auth is the JWT now.
+  // Soniox key still applies (the PWA's dictation flow runs against
+  // the user's own Soniox account, not the server).
   const urlInput = field("Server URL", "ws://localhost:7331", "text");
-  const tokenInput = field("Server token", "", "password");
   const sonioxInput = field("Soniox API key", "", "password");
-  modal.append(urlInput.wrap, tokenInput.wrap, sonioxInput.wrap);
+  modal.append(urlInput.wrap, sonioxInput.wrap);
 
   // Actions
   const actions = document.createElement("div");
@@ -56,13 +79,12 @@ export function mountSettingsModal(
   saveBtn.addEventListener("click", async () => {
     const settings = {
       serverUrl: urlInput.input.value,
-      serverToken: tokenInput.input.value,
+      serverToken: store.get().settings.serverToken, // legacy, unused
       sonioxKey: sonioxInput.input.value,
       lastMetadata: store.get().settings.lastMetadata,
     };
     await Promise.all([
       saveSetting(bridge, "serverUrl", settings.serverUrl),
-      saveSetting(bridge, "serverToken", settings.serverToken),
       saveSetting(bridge, "sonioxKey", settings.sonioxKey),
     ]);
     store.update({ settings, settingsModalOpen: false });
@@ -71,22 +93,16 @@ export function mountSettingsModal(
   actions.append(cancelBtn, saveBtn);
   modal.appendChild(actions);
 
-  // Two sync paths, deliberately split:
-  //   1. Modal open/close + initial input fill — fires only on open transition.
-  //      Filling inputs on every wsStatus change would clobber the user's
-  //      typing, since the WS retry cycle bumps wsStatus ~once a second.
-  //   2. Status row updates — fires on wsStatus / serverUrl changes, but does
-  //      NOT touch input values.
   let wasOpen = false;
   function syncOpenState() {
     const s = store.get();
     const isOpen = s.settingsModalOpen;
     overlay.classList.toggle("open", isOpen);
     if (isOpen && !wasOpen) {
-      // Modal just opened — populate inputs from current store values.
       urlInput.input.value = s.settings.serverUrl;
-      tokenInput.input.value = s.settings.serverToken;
       sonioxInput.input.value = s.settings.sonioxKey;
+      const id = s.auth;
+      accountWho.textContent = id?.email ?? id?.name ?? id?.sub ?? "(not signed in)";
     }
     wasOpen = isOpen;
   }
@@ -110,6 +126,7 @@ export function mountSettingsModal(
   store.subscribe((s) => s.settingsModalOpen, syncOpenState);
   store.subscribe((s) => s.wsStatus, syncStatusRow);
   store.subscribe((s) => s.settings.serverUrl, syncStatusRow);
+  store.subscribe((s) => (s.auth ? s.auth.sub : ""), syncOpenState);
 }
 
 function field(labelText: string, placeholder: string, type: string) {

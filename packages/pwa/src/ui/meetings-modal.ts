@@ -6,6 +6,7 @@
 //! the inner master/detail layout is its own thing.
 
 import type { Store } from "../store";
+import type { AuthBundle } from "../auth";
 import {
   MeetingsApi,
   MeetingsApiError,
@@ -13,7 +14,7 @@ import {
   type MeetingSummary,
 } from "../meetings-api";
 
-export function mountMeetingsModal(parent: HTMLElement, store: Store): void {
+export function mountMeetingsModal(parent: HTMLElement, store: Store, auth: AuthBundle): void {
   const overlay = document.createElement("div");
   overlay.className = "settings-overlay meetings-overlay";
   parent.appendChild(overlay);
@@ -73,8 +74,7 @@ export function mountMeetingsModal(parent: HTMLElement, store: Store): void {
   let detailError: string | null = null;
 
   function makeApi(): MeetingsApi | null {
-    const s = store.get().settings;
-    return MeetingsApi.from(s.serverUrl, s.serverToken);
+    return MeetingsApi.from(store.get().settings.serverUrl, () => auth.getAccessToken());
   }
 
   async function reloadList(): Promise<void> {

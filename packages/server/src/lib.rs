@@ -3,6 +3,7 @@
 
 pub mod api;
 pub mod audio;
+pub mod auth;
 pub mod contract;
 pub mod db;
 pub mod extraction;

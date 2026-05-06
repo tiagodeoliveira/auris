@@ -10,6 +10,8 @@ import { handleServerEvent } from "./ws-handlers";
 import { mountUI } from "./ui";
 import type { CtaActions } from "./ui/cta-region";
 import { ListeningSession } from "./listening";
+import { initAuth, readAuth0Config, type AuthBundle } from "./auth";
+import { mountLoginScreen } from "./ui/login-screen";
 
 async function start() {
   const bridge = await waitForEvenAppBridge();
@@ -20,10 +22,53 @@ async function start() {
     env: import.meta.env,
   });
 
+  // Resolve the Auth0 session before constructing the WS or REST
+  // clients — both of them need a fresh JWT on every (re)connect or
+  // request, fetched through the Auth0 SDK.
+  const auth0Config = readAuth0Config(import.meta.env as Record<string, string | undefined>);
+  if (!auth0Config) {
+    const app = document.querySelector<HTMLDivElement>("#app");
+    if (app) {
+      app.innerHTML = "";
+      const err = document.createElement("div");
+      err.className = "auth-misconfigured";
+      err.textContent =
+        "Auth0 is not configured. Set VITE_AUTH0_DOMAIN, VITE_AUTH0_PWA_CLIENT_ID, and VITE_AUTH0_API_AUDIENCE at build time.";
+      app.appendChild(err);
+    }
+    return;
+  }
+  const auth = await initAuth(auth0Config);
+  store.update({ auth: auth.identity });
+
+  const app = document.querySelector<HTMLDivElement>("#app");
+  if (!app) return;
+
+  // Render the login screen if there's no active session, then stop;
+  // the rest of the app boots only post-login (after the redirect
+  // round-trip we'll re-enter `start()` and skip this branch).
+  if (!auth.identity) {
+    mountLoginScreen(app, auth);
+    return;
+  }
+
+  bootAuthenticated(app, store, bridge, auth);
+}
+
+/// Everything that needed `auth` resolved. Split out from `start()`
+/// so the login branch can short-circuit before constructing the
+/// socket / UI / listening session — none of that should exist
+/// while we're still pre-auth.
+function bootAuthenticated(
+  app: HTMLDivElement,
+  store: ReturnType<typeof createStore>,
+  bridge: Awaited<ReturnType<typeof waitForEvenAppBridge>>,
+  auth: AuthBundle,
+): void {
   function makeSocket() {
     return new ReconnectingSocket({
       url: store.get().settings.serverUrl,
-      token: store.get().settings.serverToken,
+      tokenProvider: () => auth.getAccessToken(),
       onEvent: (event) => handleServerEvent(event, store),
       onStatus: (status) => store.update({ wsStatus: status }),
     });
@@ -91,9 +136,14 @@ async function start() {
     getLocalStorage(k: string): Promise<string>;
   };
 
-  const app = document.querySelector<HTMLDivElement>("#app");
-  if (app)
-    mountUI(app, { store, send: (i) => sock.send(i), actions, bridge: bridgeForUi, reconnect });
+  mountUI(app, {
+    store,
+    send: (i) => sock.send(i),
+    actions,
+    bridge: bridgeForUi,
+    reconnect,
+    auth,
+  });
 }
 
 start().catch((err) => {

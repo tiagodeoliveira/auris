@@ -15,6 +15,7 @@
     "test:integration": "vitest run tests/integration"
   },
   "dependencies": {
+    "@auth0/auth0-spa-js": "^2.19.2",
     "@evenrealities/even_hub_sdk": "^0.0.10"
   },
   "devDependencies": {

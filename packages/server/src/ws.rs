@@ -23,9 +23,27 @@ use tokio_util::sync::CancellationToken;
 use tower_http::cors::CorsLayer;
 use tracing::{info, warn};
 
+use crate::auth::AuthValidator;
 use crate::contract::{Event, Intent};
 use crate::llm::LlmClient;
 use crate::state::ServerState;
+
+/// Auth mode is decided at boot: either we validate JWTs against
+/// Auth0, or we run with a synthetic dev user (env-flag bypass for
+/// `websocat`/`curl` smoke testing without a browser flow).
+pub enum AuthMode {
+    /// `MEETING_COMPANION_AUTH_DISABLED=1` set. Every request is
+    /// attributed to a fixed dev user (`auth0_sub = "dev|local"`).
+    Disabled,
+    /// Real Auth0 validation. Tokens must verify against the tenant's
+    /// JWKS and target our API's audience.
+    Live(AuthValidator),
+}
+
+/// Synthetic Auth0 sub used when the bypass flag is on. Has the same
+/// shape as a real Auth0 sub (`<connection>|<id>`) so DB rows look
+/// uniform.
+pub const DEV_AUTH0_SUB: &str = "dev|local";
 
 // WS close codes per RFC 6455. Tungstenite gave us named variants
 // (`CloseCode::Policy` etc.); axum's `CloseFrame` takes raw `u16`.
@@ -51,7 +69,9 @@ pub struct ServerHandle {
     /// (currently `Event::CaptureMomentScreenshot`). The `events_tx`
     /// broadcast still handles everything-to-everyone traffic.
     pub direct_tx: DirectRegistry,
-    pub token: Arc<String>,
+    /// Auth mode chosen at boot. `Arc` so it's cheap to clone into
+    /// `ApiState` without paying for the `Disabled` enum variant.
+    pub auth: Arc<AuthMode>,
     pub meeting_cancel: Arc<StdMutex<Option<CancellationToken>>>,
     /// Cancels in-flight metadata extraction. Independent of meeting_cancel
     /// so idle-time extractions (Intent::ExtractMetadata) survive
@@ -79,18 +99,18 @@ pub struct ServerHandle {
 
 pub async fn run_server(
     addr: SocketAddr,
-    token: String,
+    auth: AuthMode,
     llm: Arc<LlmClient>,
     shutdown_rx: oneshot::Receiver<()>,
 ) -> Result<()> {
     let listener = TcpListener::bind(addr).await?;
     info!(addr = ?listener.local_addr()?, "listening");
-    run_server_with_listener(listener, token, llm, shutdown_rx).await
+    run_server_with_listener(listener, auth, llm, shutdown_rx).await
 }
 
 pub async fn run_server_with_listener(
     listener: TcpListener,
-    token: String,
+    auth: AuthMode,
     llm: Arc<LlmClient>,
     mut shutdown_rx: oneshot::Receiver<()>,
 ) -> Result<()> {
@@ -126,7 +146,7 @@ pub async fn run_server_with_listener(
         state,
         events_tx,
         direct_tx: Arc::new(StdMutex::new(HashMap::new())),
-        token: Arc::new(token),
+        auth: Arc::new(auth),
         meeting_cancel: Arc::new(StdMutex::new(None)),
         extraction_cancel: Arc::new(StdMutex::new(None)),
         shutdown: shutdown.clone(),
@@ -228,7 +248,7 @@ pub async fn run_server_with_listener(
 fn make_app_router(handle: ServerHandle) -> Router {
     let api_state = crate::api::ApiState {
         db: handle.db.clone(),
-        token: handle.token.clone(),
+        auth: handle.auth.clone(),
         moment_created_tx: handle.moment_created_tx.clone(),
     };
     let api_router = crate::api::make_router(api_state);
@@ -261,19 +281,15 @@ async fn ws_control_handler(
     State(handle): State<ServerHandle>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
 ) -> Response {
-    if !valid_token(auth.token.as_deref(), &handle.token) {
-        warn!(
-            ?peer,
-            reason = if auth.token.is_some() {
-                "mismatch"
-            } else {
-                "missing"
-            },
-            "auth failure (control)"
-        );
-        return auth_failed("invalid token");
-    }
-    ws.on_upgrade(move |socket| run_control_socket(socket, peer, handle))
+    let user_id =
+        match crate::auth::resolve_user_id(&handle.auth, &handle.db, auth.token.as_deref()).await {
+            Ok(uid) => uid,
+            Err(e) => {
+                warn!(?peer, error = %e, "auth failure (control)");
+                return auth_failed("invalid token");
+            }
+        };
+    ws.on_upgrade(move |socket| run_control_socket(socket, peer, handle, user_id))
 }
 
 async fn ws_audio_handler(
@@ -282,25 +298,30 @@ async fn ws_audio_handler(
     State(handle): State<ServerHandle>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
 ) -> Response {
-    if !valid_token(auth.token.as_deref(), &handle.token) {
-        warn!(?peer, "auth failure (/audio)");
-        return auth_failed("invalid token");
-    }
-    ws.on_upgrade(move |socket| run_audio_socket(socket, peer, handle))
-}
-
-fn valid_token(provided: Option<&str>, expected: &str) -> bool {
-    match provided {
-        Some(t) => constant_time_eq(t.as_bytes(), expected.as_bytes()),
-        None => false,
-    }
+    let user_id =
+        match crate::auth::resolve_user_id(&handle.auth, &handle.db, auth.token.as_deref()).await {
+            Ok(uid) => uid,
+            Err(e) => {
+                warn!(?peer, error = %e, "auth failure (/audio)");
+                return auth_failed("invalid token");
+            }
+        };
+    ws.on_upgrade(move |socket| run_audio_socket(socket, peer, handle, user_id))
 }
 
 /// Run the control-plane WS loop on an upgraded `axum` socket.
 /// Sends an initial snapshot, then forwards broadcast events to the
 /// client and dispatches incoming intents until close or shutdown.
-async fn run_control_socket(socket: WebSocket, peer: SocketAddr, handle: ServerHandle) {
-    info!(?peer, "control connection accepted");
+/// `user_id` is the local `users.id` resolved from the request's
+/// JWT (or the synthetic dev user when auth is disabled). It scopes
+/// every DB write originating from this connection.
+async fn run_control_socket(
+    socket: WebSocket,
+    peer: SocketAddr,
+    handle: ServerHandle,
+    user_id: String,
+) {
+    info!(?peer, user_id = %user_id, "control connection accepted");
 
     // Per-connection ID. Used as the key for any device this
     // connection registers; on disconnect we remove the entry.
@@ -389,7 +410,7 @@ async fn run_control_socket(socket: WebSocket, peer: SocketAddr, handle: ServerH
             msg = stream.next() => {
                 match msg {
                     Some(Ok(Message::Text(t))) => {
-                        if let Err(e) = dispatch_intent(&t, &handle, &connection_id, &mut sink).await {
+                        if let Err(e) = dispatch_intent(&t, &handle, &connection_id, &user_id, &mut sink).await {
                             warn!(?peer, error = %e, "dispatch_intent failed");
                             break;
                         }
@@ -437,9 +458,17 @@ async fn run_control_socket(socket: WebSocket, peer: SocketAddr, handle: ServerH
 /// connection churn). The handler caches the current sender locally
 /// to avoid locking on every frame, and refreshes on `Closed` (rx
 /// dropped — meeting ended) or `is_none` (no active meeting yet).
-async fn run_audio_socket(socket: WebSocket, peer: SocketAddr, handle: ServerHandle) {
+async fn run_audio_socket(
+    socket: WebSocket,
+    peer: SocketAddr,
+    handle: ServerHandle,
+    user_id: String,
+) {
+    let _ = &user_id; // Phase B will scope `audio_source` per user; for
+                      // now Phase A is single-tenant in memory and the
+                      // user_id is just a known fact from the JWT.
     let remote = &handle.audio_source;
-    info!(?peer, "/audio connection accepted");
+    info!(?peer, user_id = %user_id, "/audio connection accepted");
 
     let (mut sink, mut stream) = socket.split();
     let mut frames_received: u64 = 0;
@@ -601,11 +630,6 @@ async fn recover_active_meeting(
     Some(id)
 }
 
-fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    use subtle::ConstantTimeEq;
-    a.ct_eq(b).into()
-}
-
 /// Sink alias used by the control-plane intent path. axum's
 /// `WebSocket` is split into a `SplitSink<WebSocket, Message>`;
 /// callers pass a `&mut` to that.
@@ -615,6 +639,7 @@ async fn dispatch_intent(
     text: &str,
     handle: &ServerHandle,
     connection_id: &str,
+    user_id: &str,
     sink: &mut WsSender,
 ) -> Result<()> {
     // 1. Parse as raw JSON object first to distinguish bad_json vs unknown_intent vs bad_payload.
@@ -764,6 +789,7 @@ async fn dispatch_intent(
         if let Err(e) = crate::db::insert_meeting(
             &handle.db,
             &rec.id,
+            user_id,
             rec.started_at,
             rec.description.as_deref(),
             &metadata_json,
@@ -772,7 +798,7 @@ async fn dispatch_intent(
         {
             tracing::warn!(error = ?e, meeting_id = %rec.id, "insert_meeting failed");
         } else {
-            tracing::info!(meeting_id = %rec.id, "meeting persisted");
+            tracing::info!(meeting_id = %rec.id, user_id = %user_id, "meeting persisted");
         }
     }
     if let Some(rec) = outcome.closed_meeting {

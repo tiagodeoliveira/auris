@@ -54,7 +54,11 @@ final class WebSocketClient {
     /// Connection parameters, retained so the reconnect loop can
     /// re-dial without the caller re-supplying them.
     private var serverURL: String?
-    private var token: String?
+    /// Async-fetched on each (re)connect attempt. The Auth0 access
+    /// token expires (~1h) and must be refreshed silently between
+    /// reconnects; storing the closure lets the reconnect loop fetch
+    /// without the caller having to pass a token in.
+    private var tokenProvider: (@MainActor () async throws -> String)?
 
     /// True while a transport-level drop should trigger backoff +
     /// reconnect. Set by `connect(...)`, cleared by `disconnect()`.
@@ -70,15 +74,17 @@ final class WebSocketClient {
     private static let log = Logger(
         subsystem: "com.meeting-companion.mac", category: "WebSocketClient")
 
-    /// Open a WS connection to the given server URL with the given
-    /// auth token. Enables auto-reconnect for the lifetime of this
-    /// session; further drops dial back in with backoff until
-    /// `disconnect()` is called.
-    func connect(serverURL: String, token: String) {
+    /// Open a WS connection to `serverURL` using `tokenProvider` to
+    /// fetch a fresh JWT on each (re)connect. Enables auto-reconnect
+    /// for the lifetime of this session.
+    func connect(
+        serverURL: String,
+        tokenProvider: @escaping @MainActor () async throws -> String
+    ) {
         teardownConnection()
 
         self.serverURL = serverURL
-        self.token = token
+        self.tokenProvider = tokenProvider
         shouldAutoReconnect = true
         nextBackoff = Self.backoffBase
         openSocket()
@@ -107,23 +113,38 @@ final class WebSocketClient {
     }
 
     /// Open a fresh `URLSessionWebSocketTask` using the stored
-    /// `serverURL` + `token`. Called both from `connect()` and from
-    /// the backoff loop.
+    /// `serverURL` + a freshly-fetched token. Called both from
+    /// `connect()` and from the backoff loop.
     private func openSocket() {
-        guard let serverURL, let token else { return }
-        guard let url = Self.buildURL(serverURL: serverURL, token: token) else {
-            state = .error("Invalid server URL.")
-            shouldAutoReconnect = false  // bad config — no point retrying
-            return
-        }
-
+        guard let serverURL, let provider = tokenProvider else { return }
         state = .connecting
-        let task = URLSession.shared.webSocketTask(with: url)
-        self.task = task
-        task.resume()
-
-        receiveLoop = Task { [weak self] in
-            await self?.runReceiveLoop(task: task)
+        Task { [weak self] in
+            guard let self else { return }
+            let token: String
+            do {
+                token = try await provider()
+            } catch {
+                // Auth failure won't fix itself by retrying — that
+                // would just hammer Auth0 with the same bad refresh
+                // token. Surface the error and stop the loop; the
+                // user needs to re-sign-in from Settings → Account.
+                let msg = "Auth failed: \(error.localizedDescription)"
+                print("[WebSocketClient] \(msg)")
+                self.state = .error(msg)
+                self.shouldAutoReconnect = false
+                return
+            }
+            guard let url = Self.buildURL(serverURL: serverURL, token: token) else {
+                self.state = .error("Invalid server URL.")
+                self.shouldAutoReconnect = false  // bad config — no point retrying
+                return
+            }
+            let task = URLSession.shared.webSocketTask(with: url)
+            self.task = task
+            task.resume()
+            self.receiveLoop = Task { [weak self] in
+                await self?.runReceiveLoop(task: task)
+            }
         }
     }
 

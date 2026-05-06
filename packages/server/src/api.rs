@@ -48,7 +48,10 @@ pub struct MomentCreated {
 #[derive(Clone)]
 pub struct ApiState {
     pub db: SqlitePool,
-    pub token: Arc<String>,
+    /// Auth mode chosen at boot. Each handler resolves the request's
+    /// bearer token to a local `users.id` via this — either a real
+    /// JWT validation against Auth0 or the dev-bypass synthetic user.
+    pub auth: Arc<crate::ws::AuthMode>,
     /// Internal broadcast: each freshly-inserted moment is published
     /// here. The async summary worker subscribes; nothing else does
     /// today. Sender is held in `ServerHandle`; this is the cloned
@@ -92,12 +95,17 @@ async fn list_meetings(
     State(state): State<ApiState>,
     headers: HeaderMap,
 ) -> Result<Json<Vec<MeetingSummary>>, ApiError> {
-    require_bearer(&headers, &state.token)?;
+    let user_id = require_user(&headers, &state).await?;
+    // Pre-OAuth meeting rows have NULL user_id; they're treated as
+    // belonging to nobody and never returned. Once stage 3 makes the
+    // column NOT NULL, the predicate becomes a plain `= ?1`.
     let rows: Vec<MeetingRow> = sqlx::query_as(
         r#"SELECT id, description, metadata, started_at, ended_at
            FROM meetings
+           WHERE user_id = ?1
            ORDER BY started_at DESC"#,
     )
+    .bind(&user_id)
     .fetch_all(&state.db)
     .await
     .map_err(ApiError::Db)?;
@@ -163,12 +171,13 @@ async fn get_meeting(
     Path(id): Path<String>,
     headers: HeaderMap,
 ) -> Result<Json<MeetingDetail>, ApiError> {
-    require_bearer(&headers, &state.token)?;
+    let user_id = require_user(&headers, &state).await?;
     let row: Option<MeetingRow> = sqlx::query_as(
         r#"SELECT id, description, metadata, started_at, ended_at
-           FROM meetings WHERE id = ?1"#,
+           FROM meetings WHERE id = ?1 AND user_id = ?2"#,
     )
     .bind(&id)
+    .bind(&user_id)
     .fetch_optional(&state.db)
     .await
     .map_err(ApiError::Db)?;
@@ -211,11 +220,13 @@ async fn delete_meeting(
     Path(meeting_id): Path<String>,
     headers: HeaderMap,
 ) -> Result<StatusCode, ApiError> {
-    require_bearer(&headers, &state.token)?;
-    let removed = crate::db::delete_meeting(&state.db, &meeting_id)
+    let user_id = require_user(&headers, &state).await?;
+    let removed = crate::db::delete_meeting_for_user(&state.db, &meeting_id, &user_id)
         .await
         .map_err(|e| ApiError::Db(downcast_db(e)))?;
     if !removed {
+        // 404 covers both "no such id" and "owned by someone else" —
+        // we don't distinguish so we don't leak existence.
         return Err(ApiError::NotFound);
     }
     if let Ok(dir) = crate::db::data_dir() {
@@ -240,8 +251,8 @@ async fn delete_moment(
     Path(moment_id): Path<String>,
     headers: HeaderMap,
 ) -> Result<StatusCode, ApiError> {
-    require_bearer(&headers, &state.token)?;
-    let result = crate::db::delete_moment(&state.db, &moment_id)
+    let user_id = require_user(&headers, &state).await?;
+    let result = crate::db::delete_moment_for_user(&state.db, &moment_id, &user_id)
         .await
         .map_err(|e| ApiError::Db(downcast_db(e)))?;
     let Some(asset_path) = result else {
@@ -271,13 +282,19 @@ async fn get_moment_screenshot(
     Path((meeting_id, moment_id)): Path<(String, String)>,
     headers: HeaderMap,
 ) -> Result<Response, ApiError> {
-    require_bearer(&headers, &state.token)?;
-    let row: Option<(String, Option<String>)> =
-        sqlx::query_as(r#"SELECT meeting_id, asset_path FROM moments WHERE id = ?1"#)
-            .bind(&moment_id)
-            .fetch_optional(&state.db)
-            .await
-            .map_err(ApiError::Db)?;
+    let user_id = require_user(&headers, &state).await?;
+    // Join to meetings so we only return screenshots the caller owns.
+    let row: Option<(String, Option<String>)> = sqlx::query_as(
+        r#"SELECT m.meeting_id, m.asset_path
+             FROM moments m
+             JOIN meetings me ON me.id = m.meeting_id
+            WHERE m.id = ?1 AND me.user_id = ?2"#,
+    )
+    .bind(&moment_id)
+    .bind(&user_id)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(ApiError::Db)?;
     let Some((row_meeting, Some(asset))) = row else {
         return Err(ApiError::NotFound);
     };
@@ -314,17 +331,23 @@ async fn upload_moment_screenshot(
     headers: HeaderMap,
     bytes: axum::body::Bytes,
 ) -> Result<StatusCode, ApiError> {
-    require_bearer(&headers, &state.token)?;
+    let user_id = require_user(&headers, &state).await?;
     if bytes.is_empty() {
         return Err(ApiError::BadRequest("empty screenshot body".into()));
     }
-    // Confirm the (meeting, moment) pair exists. Without this, a typo
-    // would silently write a PNG that no row ever points at.
-    let row: Option<(String,)> = sqlx::query_as(r#"SELECT meeting_id FROM moments WHERE id = ?1"#)
-        .bind(&moment_id)
-        .fetch_optional(&state.db)
-        .await
-        .map_err(ApiError::Db)?;
+    // Confirm the (meeting, moment) pair exists *and* belongs to
+    // this user — otherwise reject with 404 (don't leak ownership).
+    let row: Option<(String,)> = sqlx::query_as(
+        r#"SELECT m.meeting_id
+             FROM moments m
+             JOIN meetings me ON me.id = m.meeting_id
+            WHERE m.id = ?1 AND me.user_id = ?2"#,
+    )
+    .bind(&moment_id)
+    .bind(&user_id)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(ApiError::Db)?;
     let Some((row_meeting,)) = row else {
         return Err(ApiError::NotFound);
     };
@@ -403,21 +426,21 @@ impl MeetingRow {
     }
 }
 
-/// Validate the `Authorization: Bearer <token>` header against the
-/// configured server token. Constant-time compare to keep timing
-/// attacks off the table.
-fn require_bearer(headers: &HeaderMap, token: &str) -> Result<(), ApiError> {
-    let auth = headers
+/// Validate the `Authorization: Bearer <token>` header against
+/// Auth0 (or short-circuit through the dev bypass) and return the
+/// caller's local `users.id`. Every authenticated handler calls
+/// this as its first step.
+async fn require_user(headers: &HeaderMap, state: &ApiState) -> Result<String, ApiError> {
+    let auth_header = headers
         .get("authorization")
         .and_then(|v| v.to_str().ok())
-        .ok_or(ApiError::Unauthorized)?;
-    let provided = auth.strip_prefix("Bearer ").ok_or(ApiError::Unauthorized)?;
-    use subtle::ConstantTimeEq;
-    if provided.as_bytes().ct_eq(token.as_bytes()).into() {
-        Ok(())
-    } else {
-        Err(ApiError::Unauthorized)
-    }
+        .and_then(|s| s.strip_prefix("Bearer "));
+    crate::auth::resolve_user_id(&state.auth, &state.db, auth_header)
+        .await
+        .map_err(|e| {
+            tracing::debug!(error = %e, "REST auth failed");
+            ApiError::Unauthorized
+        })
 }
 
 #[derive(Debug)]
@@ -477,16 +500,26 @@ mod tests {
         pool
     }
 
-    fn router(pool: SqlitePool, token: &str) -> Router {
-        // Tests don't observe the moment-created broadcast — a
-        // detached sender keeps the type contract satisfied without
-        // a worker subscriber on the other end.
+    /// Build a router in `AuthMode::Disabled` (every request maps
+    /// to the synthetic `dev|local` user). Returns the router *and*
+    /// the local `users.id` so test fixtures can insert meetings
+    /// under the right owner.
+    async fn router_with_dev_user(pool: SqlitePool) -> (Router, String) {
         let (moment_created_tx, _) = broadcast::channel::<MomentCreated>(8);
-        make_router(ApiState {
+        let dev_user = crate::db::upsert_user_by_auth0_sub(
+            &pool,
+            crate::ws::DEV_AUTH0_SUB,
+            Some("dev@local"),
+            Some("Local Dev"),
+        )
+        .await
+        .unwrap();
+        let router = make_router(ApiState {
             db: pool,
-            token: Arc::new(token.to_string()),
+            auth: Arc::new(crate::ws::AuthMode::Disabled),
             moment_created_tx,
-        })
+        });
+        (router, dev_user.id)
     }
 
     async fn body_string(resp: Response) -> String {
@@ -497,48 +530,21 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unauthorized_without_bearer() {
-        let pool = pool().await;
-        let app = router(pool, "secret");
-        let resp = app
-            .oneshot(Request::get("/meetings").body(Body::empty()).unwrap())
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
-    }
-
-    #[tokio::test]
-    async fn unauthorized_on_wrong_token() {
-        let pool = pool().await;
-        let app = router(pool, "secret");
-        let resp = app
-            .oneshot(
-                Request::get("/meetings")
-                    .header("authorization", "Bearer nope")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
-    }
-
-    #[tokio::test]
     async fn list_returns_meetings_newest_first() {
         let pool = pool().await;
+        let (app, uid) = router_with_dev_user(pool.clone()).await;
         let earlier = Utc::now() - chrono::Duration::minutes(60);
         let later = Utc::now();
-        crate::db::insert_meeting(&pool, "older", earlier, Some("first"), "{}")
+        crate::db::insert_meeting(&pool, "older", &uid, earlier, Some("first"), "{}")
             .await
             .unwrap();
-        crate::db::insert_meeting(&pool, "newer", later, Some("second"), "{}")
+        crate::db::insert_meeting(&pool, "newer", &uid, later, Some("second"), "{}")
             .await
             .unwrap();
-        let app = router(pool, "secret");
         let resp = app
             .oneshot(
                 Request::get("/meetings")
-                    .header("authorization", "Bearer secret")
+                    .header("authorization", "Bearer dev")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -555,11 +561,11 @@ mod tests {
     #[tokio::test]
     async fn detail_404_for_missing_meeting() {
         let pool = pool().await;
-        let app = router(pool, "secret");
+        let (app, _uid) = router_with_dev_user(pool).await;
         let resp = app
             .oneshot(
                 Request::get("/meetings/no-such-id")
-                    .header("authorization", "Bearer secret")
+                    .header("authorization", "Bearer dev")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -571,14 +577,14 @@ mod tests {
     #[tokio::test]
     async fn detail_returns_meeting_with_empty_transcript() {
         let pool = pool().await;
-        crate::db::insert_meeting(&pool, "m1", Utc::now(), Some("hi"), r#"{"a":"b"}"#)
+        let (app, uid) = router_with_dev_user(pool.clone()).await;
+        crate::db::insert_meeting(&pool, "m1", &uid, Utc::now(), Some("hi"), r#"{"a":"b"}"#)
             .await
             .unwrap();
-        let app = router(pool, "secret");
         let resp = app
             .oneshot(
                 Request::get("/meetings/m1")
-                    .header("authorization", "Bearer secret")
+                    .header("authorization", "Bearer dev")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -590,5 +596,30 @@ mod tests {
         assert_eq!(v["description"], "hi");
         assert_eq!(v["metadata"]["a"], "b");
         assert!(v["transcript"].as_array().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn detail_404_when_meeting_belongs_to_other_user() {
+        let pool = pool().await;
+        // Insert a meeting under a *different* user.
+        let other = crate::db::upsert_user_by_auth0_sub(&pool, "other|user", None, None)
+            .await
+            .unwrap();
+        crate::db::insert_meeting(&pool, "other-m", &other.id, Utc::now(), None, "{}")
+            .await
+            .unwrap();
+        // Query as the dev user — the meeting exists but belongs to
+        // `other`, so we surface 404 (no existence leak).
+        let (app, _uid) = router_with_dev_user(pool).await;
+        let resp = app
+            .oneshot(
+                Request::get("/meetings/other-m")
+                    .header("authorization", "Bearer dev")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
     }
 }

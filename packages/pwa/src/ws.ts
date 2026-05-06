@@ -2,7 +2,10 @@ import type { Intent, ServerEvent, WsStatus } from "./types";
 
 interface Options {
   url: string;
-  token: string;
+  /// Each (re)connect fetches a fresh token. Sync return preserved
+  /// for tests + the dev-bypass shape; prod paths return a Promise
+  /// (Auth0's `getTokenSilently` is async).
+  tokenProvider: () => string | Promise<string>;
   onEvent: (event: ServerEvent) => void;
   onStatus: (status: WsStatus) => void;
 }
@@ -69,8 +72,38 @@ export class ReconnectingSocket {
     // a transient failure) and any caller that triggers connect()
     // while a previous socket is still in flight.
     this.detachWs();
-    const fullUrl = `${this.opts.url}/?token=${encodeURIComponent(this.opts.token)}`;
     this.opts.onStatus("connecting");
+    // Sync vs async tokenProvider: sync resolves in the same tick
+    // (preserved for tests + the dev-bypass shape); async returns
+    // a Promise we await. Either way the open path lands in
+    // `openWithToken`.
+    let result: string | Promise<string>;
+    try {
+      result = this.opts.tokenProvider();
+    } catch (e) {
+      console.warn("[ws] token fetch failed", e);
+      this.opts.onStatus("error");
+      this.scheduleReconnect();
+      return;
+    }
+    if (typeof result === "string") {
+      this.openWithToken(result);
+    } else {
+      result
+        .then((t) => {
+          if (!this.closed) this.openWithToken(t);
+        })
+        .catch((e) => {
+          console.warn("[ws] token fetch failed", e);
+          this.opts.onStatus("error");
+          this.scheduleReconnect();
+        });
+    }
+  }
+
+  private openWithToken(token: string): void {
+    if (this.closed) return;
+    const fullUrl = `${this.opts.url}/?token=${encodeURIComponent(token)}`;
     const ws = new WebSocket(fullUrl);
     this.ws = ws;
 

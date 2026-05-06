@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use clap::Parser;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -29,13 +29,29 @@ async fn main() -> Result<()> {
         .init();
 
     let args = Args::parse();
-    let token = std::env::var("MEETING_COMPANION_TOKEN")
-        .context("MEETING_COMPANION_TOKEN env var must be set")?;
-    if token.is_empty() {
-        anyhow::bail!("MEETING_COMPANION_TOKEN must be non-empty");
-    }
     let addr: SocketAddr = format!("{}:{}", args.bind, args.port).parse()?;
-    info!(?addr, version = env!("CARGO_PKG_VERSION"), "boot");
+    let auth_disabled = std::env::var("MEETING_COMPANION_AUTH_DISABLED").is_ok();
+    info!(
+        ?addr,
+        version = env!("CARGO_PKG_VERSION"),
+        auth = if auth_disabled { "disabled" } else { "auth0" },
+        "boot"
+    );
+
+    let auth = if auth_disabled {
+        tracing::warn!(
+            "MEETING_COMPANION_AUTH_DISABLED=1: bypass mode, every request maps to a synthetic dev user"
+        );
+        meeting_companion_server::ws::AuthMode::Disabled
+    } else {
+        match meeting_companion_server::auth::AuthValidator::from_env() {
+            Ok(v) => meeting_companion_server::ws::AuthMode::Live(v),
+            Err(e) => {
+                tracing::error!(error = %e, "Auth validator init failed");
+                std::process::exit(2);
+            }
+        }
+    };
 
     let llm = match meeting_companion_server::llm::LlmClient::from_env().await {
         Ok(c) => Arc::new(c),
@@ -56,5 +72,5 @@ async fn main() -> Result<()> {
         let _ = shutdown_tx.send(());
     });
 
-    meeting_companion_server::run_server(addr, token, llm, shutdown_rx).await
+    meeting_companion_server::run_server(addr, auth, llm, shutdown_rx).await
 }

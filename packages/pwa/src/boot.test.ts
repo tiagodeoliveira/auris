@@ -39,16 +39,12 @@ describe("boot", () => {
     expect(store.get().errorOverlay?.title).toMatch(/Failed to initialize/i);
   });
 
-  test("opens settings modal if serverToken is missing", async () => {
+  test("boot does not gate on the legacy server token", async () => {
+    // Pre-OAuth, boot would pop the settings modal when the
+    // shared-secret token was missing. Auth0 owns first-run gating
+    // now (login screen rendered by main.ts before mountUI runs),
+    // so boot itself stays silent regardless of token presence.
     const bridge = createMockBridge();
-    const store = createStore(defaultAppState());
-    await boot({ bridge, store, env: {} });
-    expect(store.get().settingsModalOpen).toBe(true);
-  });
-
-  test("does not open settings modal if serverToken is in storage", async () => {
-    const bridge = createMockBridge();
-    bridge.storage["mc.serverToken"] = "tok";
     const store = createStore(defaultAppState());
     await boot({ bridge, store, env: {} });
     expect(store.get().settingsModalOpen).toBe(false);

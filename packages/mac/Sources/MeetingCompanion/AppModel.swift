@@ -19,6 +19,11 @@ final class AppModel {
     var permissionMonitor: PermissionMonitor
     var audioCapture: AudioCapture
     var audioStreamer: AudioStreamer
+    /// Auth0 native client. Owns refresh + access tokens; surfaces
+    /// `getAccessToken()` to anything that needs to talk to the
+    /// server. Always present; signed-out state means there's no
+    /// refresh token on disk and `isSignedIn == false`.
+    var auth0: Auth0Client
 
     /// This Mac's identity in the server's device registry. Set when
     /// the server replies with `device_registered`; cleared on
@@ -78,7 +83,7 @@ final class AppModel {
     /// "Settings…" leaves it where the user last was; "Meetings…"
     /// flips it to `.meetings` before opening the window. Bound by
     /// `SettingsView`'s TabView so the tab swap is reactive.
-    var selectedSettingsTab: SettingsTab = .server
+    var selectedSettingsTab: SettingsTab = .account
 
     /// Whether the floating overlay window is currently shown. Driven
     /// by `MeetingOverlayView`'s onAppear/onDisappear; consumed by
@@ -121,6 +126,7 @@ final class AppModel {
         self.permissionMonitor = PermissionMonitor()
         self.audioCapture = AudioCapture()
         self.audioStreamer = AudioStreamer()
+        self.auth0 = Auth0Client()
         self.webSocket.onMessage = { [weak self] event in
             self?.handle(event: event)
         }
@@ -158,7 +164,7 @@ final class AppModel {
     /// connection state at a glance.
     var statusSystemImageName: String {
         switch webSocket.state {
-        case .disconnected: settings.isConfigured ? "circle" : "circle.dashed"
+        case .disconnected: auth0.isSignedIn ? "circle" : "circle.dashed"
         case .connecting: "circle.dotted"
         case .reconnecting: "arrow.clockwise.circle"
         case .connected: "circle.fill"
@@ -170,7 +176,7 @@ final class AppModel {
     var statusLine: String {
         switch webSocket.state {
         case .disconnected:
-            settings.isConfigured ? "Not connected" : "Not signed in"
+            auth0.isSignedIn ? "Not connected" : "Not signed in"
         case .connecting: "Connecting…"
         case .reconnecting: "Reconnecting…"
         case .connected:
@@ -183,10 +189,11 @@ final class AppModel {
         }
     }
 
-    /// True when the user can press "Connect" — i.e., settings exist
-    /// and we're not already connecting/connected/reconnecting.
+    /// True when the user can press "Connect" — i.e., signed in,
+    /// server URL set, and the WS is currently dropped.
     var canConnect: Bool {
-        settings.isConfigured && webSocket.state == .disconnected
+        !settings.serverURL.isEmpty && auth0.isSignedIn
+            && webSocket.state == .disconnected
     }
 
     /// True when the user can press "Disconnect". `.reconnecting`
@@ -201,12 +208,30 @@ final class AppModel {
 
     // MARK: - Intent
 
-    /// Open a WS connection using the current settings.
-    /// `WebSocketClient` will dial in, retry with backoff on drops,
-    /// and call `onConnected` once the handshake succeeds — that's
-    /// where `register_device` actually goes out.
+    /// Build a `MeetingsAPI` against the configured server URL with a
+    /// freshly-fetched access token. Throws if the user isn't signed
+    /// in or the URL doesn't parse.
+    func makeMeetingsAPI() async throws -> MeetingsAPI {
+        let token = try await auth0.getAccessToken()
+        guard let api = MeetingsAPI.fromWSURL(settings.serverURL, token: token) else {
+            throw NSError(
+                domain: "AppModel", code: -1,
+                userInfo: [NSLocalizedDescriptionKey: "Invalid server URL"])
+        }
+        return api
+    }
+
+    /// Open a WS connection using the current settings + a token
+    /// fetched from the Auth0 client. `WebSocketClient` calls back
+    /// into the provider on every (re)connect, so an expired access
+    /// token is silently refreshed before the new socket dials in.
     func connect() {
-        webSocket.connect(serverURL: settings.serverURL, token: settings.token)
+        webSocket.connect(
+            serverURL: settings.serverURL,
+            tokenProvider: { [auth0] in
+                try await auth0.getAccessToken()
+            }
+        )
     }
 
     /// Tear down the current WS connection. Server marks our device
@@ -354,8 +379,11 @@ final class AppModel {
     /// screenshot — we just capture and upload. Any failure logs and
     /// drops the screenshot; the moment row + summary are unaffected.
     private func captureAndUploadMomentScreenshot(meetingId: String, momentId: String) async {
-        guard let api = MeetingsAPI.fromWSURL(settings.serverURL, token: settings.token) else {
-            print("[AppModel] capture_moment_screenshot: invalid server URL")
+        let api: MeetingsAPI
+        do {
+            api = try await makeMeetingsAPI()
+        } catch {
+            print("[AppModel] capture_moment_screenshot: API setup failed: \(error.localizedDescription)")
             return
         }
         let png: Data
@@ -586,7 +614,9 @@ final class AppModel {
         audioToBackendPaused = false
         audioStreamer.start(
             serverURL: settings.serverURL,
-            token: settings.token,
+            tokenProvider: { [auth0] in
+                try await auth0.getAccessToken()
+            },
             frames: frames)
 
         // No need to wait for the /audio WS to open before sending

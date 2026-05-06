@@ -38,6 +38,7 @@ function defaultState(): AppState {
     meetingsModalOpen: false,
     toasts: [],
     errorOverlay: null,
+    auth: null,
   };
 }
 

@@ -69,22 +69,118 @@ pub async fn open_pool_at(db_path: &Path) -> Result<SqlitePool> {
     Ok(pool)
 }
 
+// MARK: - Users
+
+/// Server-internal user row. `id` is the UUID we mint; `auth0_sub`
+/// is the stable identity from Auth0 ("auth0|...", "google-oauth2|...",
+/// etc.). The schema keeps `email` + `name` as best-effort copies of
+/// what Auth0 returned at the most recent login.
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct UserRow {
+    pub id: String,
+    pub auth0_sub: String,
+    pub email: Option<String>,
+    pub name: Option<String>,
+    #[allow(dead_code)]
+    pub created_at: DateTime<Utc>,
+    #[allow(dead_code)]
+    pub last_seen_at: DateTime<Utc>,
+}
+
+/// Find or create a `users` row matching `auth0_sub`. Updates `email`,
+/// `name`, and `last_seen_at` on every call so the local mirror tracks
+/// whatever the most recent JWT claimed (Auth0 is authoritative for
+/// these — we just keep a copy for offline reads).
+///
+/// Returns the row in either case so callers always get the local `id`
+/// to scope their writes against.
+pub async fn upsert_user_by_auth0_sub(
+    pool: &SqlitePool,
+    auth0_sub: &str,
+    email: Option<&str>,
+    name: Option<&str>,
+) -> Result<UserRow> {
+    // Try the read-side first — the steady state is "user already
+    // exists, refresh their fields." A single UPSERT could collapse
+    // these but `INSERT ... ON CONFLICT` with `RETURNING` requires a
+    // schema we'd rather not couple to.
+    let existing: Option<UserRow> = sqlx::query_as(
+        r#"SELECT id, auth0_sub, email, name, created_at, last_seen_at
+             FROM users WHERE auth0_sub = ?1"#,
+    )
+    .bind(auth0_sub)
+    .fetch_optional(pool)
+    .await
+    .with_context(|| format!("upsert_user.lookup({auth0_sub})"))?;
+
+    if let Some(row) = existing {
+        sqlx::query(
+            r#"UPDATE users
+                  SET email = COALESCE(?2, email),
+                      name = COALESCE(?3, name),
+                      last_seen_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+                WHERE id = ?1"#,
+        )
+        .bind(&row.id)
+        .bind(email)
+        .bind(name)
+        .execute(pool)
+        .await
+        .with_context(|| format!("upsert_user.refresh({auth0_sub})"))?;
+        // Re-read so the returned row reflects the freshly-bumped
+        // `last_seen_at` and any updated email/name.
+        let refreshed: UserRow = sqlx::query_as(
+            r#"SELECT id, auth0_sub, email, name, created_at, last_seen_at
+                 FROM users WHERE id = ?1"#,
+        )
+        .bind(&row.id)
+        .fetch_one(pool)
+        .await
+        .with_context(|| format!("upsert_user.reread({auth0_sub})"))?;
+        return Ok(refreshed);
+    }
+
+    let id = uuid::Uuid::new_v4().to_string();
+    sqlx::query(
+        r#"INSERT INTO users (id, auth0_sub, email, name)
+           VALUES (?1, ?2, ?3, ?4)"#,
+    )
+    .bind(&id)
+    .bind(auth0_sub)
+    .bind(email)
+    .bind(name)
+    .execute(pool)
+    .await
+    .with_context(|| format!("upsert_user.insert({auth0_sub})"))?;
+    sqlx::query_as(
+        r#"SELECT id, auth0_sub, email, name, created_at, last_seen_at
+             FROM users WHERE id = ?1"#,
+    )
+    .bind(&id)
+    .fetch_one(pool)
+    .await
+    .with_context(|| format!("upsert_user.reread_new({auth0_sub})"))
+}
+
 // MARK: - Meetings
 
-/// Insert a meeting row. `metadata_json` is the already-serialised
-/// JSON object (`HashMap<String, String>` → JSON object string).
+/// Insert a meeting row owned by `user_id`. `metadata_json` is the
+/// already-serialised JSON object (`HashMap<String, String>` → JSON
+/// object string).
 pub async fn insert_meeting(
     pool: &SqlitePool,
     id: &str,
+    user_id: &str,
     started_at: DateTime<Utc>,
     description: Option<&str>,
     metadata_json: &str,
 ) -> Result<()> {
     sqlx::query(
-        r#"INSERT INTO meetings (id, started_at, description, metadata)
-           VALUES (?1, ?2, ?3, ?4)"#,
+        r#"INSERT INTO meetings (id, user_id, started_at, description, metadata)
+           VALUES (?1, ?2, ?3, ?4, ?5)"#,
     )
     .bind(id)
+    .bind(user_id)
     .bind(started_at)
     .bind(description)
     .bind(metadata_json)
@@ -138,20 +234,25 @@ pub async fn end_meeting(
     Ok(())
 }
 
-/// Delete a meeting and all of its moments. The `moments` foreign
-/// key has `ON DELETE CASCADE`, so this single statement removes
-/// the moments rows too. Disk-side blob cleanup is the caller's
-/// responsibility (see `api::delete_meeting`).
+/// Delete a meeting only if it belongs to `user_id`. The `moments`
+/// foreign key has `ON DELETE CASCADE`, so this single statement
+/// removes the moments rows too. Disk-side blob cleanup is the
+/// caller's responsibility (see `api::delete_meeting`).
 ///
 /// Returns `Ok(true)` if a row was actually removed, `Ok(false)`
-/// when the id wasn't found — lets the API return 404 instead of
-/// 204 for unknown ids.
-pub async fn delete_meeting(pool: &SqlitePool, meeting_id: &str) -> Result<bool> {
-    let res = sqlx::query(r#"DELETE FROM meetings WHERE id = ?1"#)
+/// when the id wasn't found *or* was owned by someone else — the
+/// API surfaces both as 404 to avoid leaking existence.
+pub async fn delete_meeting_for_user(
+    pool: &SqlitePool,
+    meeting_id: &str,
+    user_id: &str,
+) -> Result<bool> {
+    let res = sqlx::query(r#"DELETE FROM meetings WHERE id = ?1 AND user_id = ?2"#)
         .bind(meeting_id)
+        .bind(user_id)
         .execute(pool)
         .await
-        .with_context(|| format!("delete_meeting({meeting_id})"))?;
+        .with_context(|| format!("delete_meeting_for_user({meeting_id})"))?;
     Ok(res.rows_affected() > 0)
 }
 
@@ -211,25 +312,42 @@ pub async fn update_moment_summary(
     Ok(())
 }
 
-/// Delete a single moment row. Returns `Ok(Some(asset_path))` on a
-/// successful delete (with the screenshot path the caller should
-/// remove from disk), `Ok(None)` if the row didn't exist or had no
-/// screenshot.
-pub async fn delete_moment(pool: &SqlitePool, moment_id: &str) -> Result<Option<Option<String>>> {
-    // Read asset_path before delete so we can clean up the file too.
-    // Using a transaction would be marginally cleaner; not worth the
-    // boilerplate for an op that's already idempotent enough.
-    let asset_path: Option<Option<String>> =
-        sqlx::query_scalar(r#"SELECT asset_path FROM moments WHERE id = ?1"#)
-            .bind(moment_id)
-            .fetch_optional(pool)
-            .await
-            .with_context(|| format!("delete_moment.read_asset({moment_id})"))?;
-    let res = sqlx::query(r#"DELETE FROM moments WHERE id = ?1"#)
-        .bind(moment_id)
-        .execute(pool)
-        .await
-        .with_context(|| format!("delete_moment({moment_id})"))?;
+/// Delete a single moment row only if its owning meeting belongs
+/// to `user_id`. Returns `Ok(Some(asset_path))` on success (with
+/// the screenshot path the caller should remove from disk),
+/// `Ok(None)` if the row didn't exist *or* the meeting belongs to
+/// another user (API surfaces both as 404).
+pub async fn delete_moment_for_user(
+    pool: &SqlitePool,
+    moment_id: &str,
+    user_id: &str,
+) -> Result<Option<Option<String>>> {
+    // Read asset_path + ownership in one shot so we can fail-fast
+    // without locking, and so the caller knows what file to remove.
+    let asset_path: Option<Option<String>> = sqlx::query_scalar(
+        r#"SELECT m.asset_path
+             FROM moments m
+             JOIN meetings me ON me.id = m.meeting_id
+            WHERE m.id = ?1 AND me.user_id = ?2"#,
+    )
+    .bind(moment_id)
+    .bind(user_id)
+    .fetch_optional(pool)
+    .await
+    .with_context(|| format!("delete_moment_for_user.read({moment_id})"))?;
+    if asset_path.is_none() {
+        return Ok(None);
+    }
+    let res = sqlx::query(
+        r#"DELETE FROM moments
+            WHERE id = ?1
+              AND meeting_id IN (SELECT id FROM meetings WHERE user_id = ?2)"#,
+    )
+    .bind(moment_id)
+    .bind(user_id)
+    .execute(pool)
+    .await
+    .with_context(|| format!("delete_moment_for_user({moment_id})"))?;
     if res.rows_affected() == 0 {
         return Ok(None);
     }
@@ -311,12 +429,23 @@ mod tests {
         pool
     }
 
+    /// Most DB tests need an owner user to satisfy the meetings FK.
+    /// Upsert a fixed test user here to keep each `#[tokio::test]`
+    /// terse.
+    async fn test_user(pool: &SqlitePool) -> String {
+        upsert_user_by_auth0_sub(pool, "test|owner", None, None)
+            .await
+            .unwrap()
+            .id
+    }
+
     #[tokio::test]
     async fn insert_then_end_meeting_round_trips() {
         let pool = pool().await;
+        let uid = test_user(&pool).await;
         let id = uuid::Uuid::new_v4().to_string();
         let now = Utc::now();
-        insert_meeting(&pool, &id, now, Some("daily standup"), "{}")
+        insert_meeting(&pool, &id, &uid, now, Some("daily standup"), "{}")
             .await
             .unwrap();
         end_meeting(&pool, &id, now).await.unwrap();
@@ -337,8 +466,9 @@ mod tests {
     #[tokio::test]
     async fn insert_moment_links_to_meeting() {
         let pool = pool().await;
+        let uid = test_user(&pool).await;
         let mid = uuid::Uuid::new_v4().to_string();
-        insert_meeting(&pool, &mid, Utc::now(), None, "{}")
+        insert_meeting(&pool, &mid, &uid, Utc::now(), None, "{}")
             .await
             .unwrap();
 
@@ -382,8 +512,9 @@ mod tests {
     #[tokio::test]
     async fn update_moment_summary_round_trips() {
         let pool = pool().await;
+        let uid = test_user(&pool).await;
         let mid = uuid::Uuid::new_v4().to_string();
-        insert_meeting(&pool, &mid, Utc::now(), None, "{}")
+        insert_meeting(&pool, &mid, &uid, Utc::now(), None, "{}")
             .await
             .unwrap();
         let moment_id = uuid::Uuid::new_v4().to_string();
@@ -408,8 +539,9 @@ mod tests {
     #[tokio::test]
     async fn list_moments_returns_oldest_first() {
         let pool = pool().await;
+        let uid = test_user(&pool).await;
         let mid = uuid::Uuid::new_v4().to_string();
-        insert_meeting(&pool, &mid, Utc::now(), None, "{}")
+        insert_meeting(&pool, &mid, &uid, Utc::now(), None, "{}")
             .await
             .unwrap();
         let later = uuid::Uuid::new_v4().to_string();
