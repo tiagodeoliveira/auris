@@ -1,5 +1,10 @@
 // MenuBarContent.swift
 // The dropdown shown when the menu bar icon is clicked.
+//
+// Layout follows the macOS convention: status header → primary
+// meeting actions → connection toggle → configuration → quit. Items
+// use `Label(text, systemImage:)` so the system renders them with
+// inline SF Symbols, matching native Apple menus.
 
 import SwiftUI
 
@@ -9,100 +14,116 @@ struct MenuBarContent: View {
     @Environment(\.dismissWindow) private var dismissWindow
 
     var body: some View {
-        // Header
-        Text("Meeting Companion")
-            .font(.headline)
-        Text(model.statusLine)
-            .foregroundStyle(.secondary)
-        if let device = model.ownDevice {
-            Text("Device id: \(device.id.prefix(8))…")
-                .foregroundStyle(.secondary)
-                .font(.caption)
-        } else if let preview = model.webSocket.lastMessagePreview, !preview.isEmpty {
-            Text("Last frame: \(preview)")
-                .foregroundStyle(.secondary)
-                .font(.caption)
-        }
+        statusHeader
 
         Divider()
 
-        // Connect / disconnect — drives the WebSocket
-        if model.canConnect {
-            Button("Connect") { model.connect() }
-        }
-        if model.canDisconnect {
-            Button("Disconnect") { model.disconnect() }
-        }
-        if !model.settings.isConfigured {
-            Button("Open Settings to sign in…") {
-                openSettings()
-            }
-        }
-
-        Divider()
-
-        // Meeting lifecycle. "Start meeting…" opens the overlay in
-        // compose mode; the same floating surface then morphs into
-        // the live transcript HUD after start succeeds.
+        // Meeting actions — the primary reason to open this menu.
         if !model.isMeetingActive {
-            Button("Start meeting…") {
+            Button {
                 openWindow(id: "meeting-overlay")
                 NSApp.activate(ignoringOtherApps: true)
+            } label: {
+                Label("Start meeting…", systemImage: "record.circle")
             }
             .disabled(!model.canStartMeeting)
         } else {
-            // While a meeting is active (this Mac is the audio source —
-            // either Mac- or PWA-initiated), let the user surface or
-            // hide the floating overlay. PWA-initiated meetings don't
-            // auto-open the overlay on this Mac, so this is the
-            // primary way to bring it up.
-            Button(model.isOverlayVisible ? "Hide overlay" : "Show overlay") {
+            Button {
                 if model.isOverlayVisible {
                     dismissWindow(id: "meeting-overlay")
                 } else {
                     openWindow(id: "meeting-overlay")
                     NSApp.activate(ignoringOtherApps: true)
                 }
+            } label: {
+                Label(
+                    model.isOverlayVisible ? "Hide overlay" : "Show overlay",
+                    systemImage: model.isOverlayVisible ? "eye.slash" : "eye"
+                )
             }
 
-            Button("Stop meeting") {
+            Button(role: .destructive) {
                 Task { await model.stopMeeting() }
+            } label: {
+                Label("Stop meeting", systemImage: "stop.circle.fill")
             }
         }
 
-        // Browse persisted meetings. Opens the Settings window
-        // pre-selected to the Meetings tab (REST: /meetings).
-        Button("Meetings…") {
+        Button {
             model.selectedSettingsTab = .meetings
             openWindow(id: "settings")
             NSApp.activate(ignoringOtherApps: true)
+        } label: {
+            Label("Meetings…", systemImage: "list.bullet.rectangle")
         }
         .disabled(!model.settings.isConfigured)
 
         Divider()
 
-        // Identity — wired in Phase 3 (replaces the token-based Settings)
-        Button("Sign in with Google…") {
-            // TODO Phase 3: OAuth via browser → custom URL scheme handoff
+        // Connection toggle. Only one of these is shown at a time, so
+        // the menu height stays stable across state transitions.
+        if model.canConnect {
+            Button {
+                model.connect()
+            } label: {
+                Label("Connect", systemImage: "bolt.horizontal")
+            }
         }
-        .disabled(true)
-
-        Button("Settings…") {
-            openSettings()
-        }
-
-        Button(permissionsMenuLabel) {
-            model.selectedSettingsTab = .permissions
-            openWindow(id: "settings")
-            NSApp.activate(ignoringOtherApps: true)
+        if model.canDisconnect {
+            Button {
+                model.disconnect()
+            } label: {
+                Label("Disconnect", systemImage: "bolt.horizontal.fill")
+            }
         }
 
         Divider()
 
-        Button("Quit Meeting Companion") {
+        Button {
+            openSettings()
+        } label: {
+            Label("Settings…", systemImage: "gearshape")
+        }
+
+        Button {
+            model.selectedSettingsTab = .permissions
+            openWindow(id: "settings")
+            NSApp.activate(ignoringOtherApps: true)
+        } label: {
+            Label(
+                "Permissions",
+                systemImage: model.permissionMonitor.allGranted
+                    ? "lock.shield"
+                    : "exclamationmark.shield"
+            )
+        }
+
+        Divider()
+
+        Button(role: .destructive) {
             NSApplication.shared.terminate(nil)
+        } label: {
+            Label("Quit Meeting Companion", systemImage: "power")
         }
         .keyboardShortcut("q")
+    }
+
+    /// Compact status header. The dot is concatenated into the same
+    /// `Text` as the title (rather than placed in an HStack alongside)
+    /// because macOS menu items render each child view as its own
+    /// row — an HStack(Image + Text) gets flattened into two stacked
+    /// rows. `Text + Text` concatenation stays inline.
+    @ViewBuilder
+    private var statusHeader: some View {
+        Text(Image(systemName: statusDotIcon))
+            .foregroundStyle(statusDotColor)
+            + Text("  \(headerTitle)")
+            .font(.headline)
+        if let subtitle = headerSubtitle {
+            Text(subtitle)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
     }
 
     private func openSettings() {
@@ -110,10 +131,51 @@ struct MenuBarContent: View {
         NSApp.activate(ignoringOtherApps: true)
     }
 
-    /// Label nudges the user when something's missing, without
-    /// shouting. "Permissions…" stays neutral when everything's
-    /// granted; gains a "•" prefix when not.
-    private var permissionsMenuLabel: String {
-        model.permissionMonitor.allGranted ? "Permissions…" : "• Permissions…"
+    // MARK: - Header derivations
+
+    private var statusDotIcon: String {
+        switch model.webSocket.state {
+        case .connected: "circle.fill"
+        case .connecting, .reconnecting: "circle.dotted"
+        case .error: "exclamationmark.circle.fill"
+        case .disconnected: "circle"
+        }
+    }
+
+    private var statusDotColor: Color {
+        switch model.webSocket.state {
+        case .connected: .green
+        case .connecting, .reconnecting: .yellow
+        case .error: .red
+        case .disconnected: .secondary
+        }
+    }
+
+    private var headerTitle: String {
+        switch model.webSocket.state {
+        case .connected:
+            model.isMeetingActive ? "In a meeting" : "Connected"
+        case .connecting: "Connecting…"
+        case .reconnecting: "Reconnecting…"
+        case .disconnected:
+            model.settings.isConfigured ? "Not connected" : "Not signed in"
+        case .error: "Connection error"
+        }
+    }
+
+    /// Second line is the hostname when connected (so the user can
+    /// confirm which Mac they're on), the error message when failing,
+    /// and a "Sign in via Settings" hint when unconfigured.
+    private var headerSubtitle: String? {
+        switch model.webSocket.state {
+        case .connected:
+            model.ownDevice?.hostname
+        case .error(let message):
+            message
+        case .disconnected where !model.settings.isConfigured:
+            "Open Settings to sign in"
+        default:
+            nil
+        }
     }
 }

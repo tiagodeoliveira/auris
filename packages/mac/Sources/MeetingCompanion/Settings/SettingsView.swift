@@ -132,11 +132,37 @@ private struct MeetingsTab: View {
                     .padding(.vertical, 12)
             } else {
                 ForEach(meetings) { m in
-                    MeetingRow(meeting: m).tag(m.id)
+                    MeetingRow(meeting: m)
+                        .tag(m.id)
+                        // Three deletion paths: trackpad two-finger
+                        // swipe (.swipeActions), right-click
+                        // (.contextMenu), and ⌫ on the selected row
+                        // (.onDeleteCommand). On macOS the swipe is
+                        // hard to discover so the other two carry
+                        // most of the weight.
+                        .swipeActions(edge: .trailing) {
+                            Button(role: .destructive) {
+                                Task { await deleteMeeting(id: m.id) }
+                            } label: {
+                                Label("Delete", systemImage: "trash")
+                            }
+                        }
+                        .contextMenu {
+                            Button(role: .destructive) {
+                                Task { await deleteMeeting(id: m.id) }
+                            } label: {
+                                Label("Delete meeting", systemImage: "trash")
+                            }
+                        }
                 }
             }
         }
         .listStyle(.inset)
+        .onDeleteCommand {
+            if let id = selectedId {
+                Task { await deleteMeeting(id: id) }
+            }
+        }
     }
 
     // Detail pane
@@ -191,6 +217,31 @@ private struct MeetingsTab: View {
         do {
             detail = try await api.detail(id: id)
         } catch {
+            loadError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+        }
+    }
+
+    /// Server delete + local list update. Optimistic on the local
+    /// remove (drop the row up front for snappy UI), with a reload
+    /// on failure to put it back if the server actually rejected.
+    private func deleteMeeting(id: String) async {
+        guard let api = makeAPI() else { return }
+        let removedIndex = meetings.firstIndex(where: { $0.id == id })
+        let removedItem = removedIndex.map { meetings[$0] }
+        if let i = removedIndex {
+            meetings.remove(at: i)
+        }
+        if selectedId == id {
+            selectedId = nil
+            detail = nil
+        }
+        do {
+            try await api.delete(id: id)
+        } catch {
+            // Revert on failure so the user sees the row come back.
+            if let i = removedIndex, let item = removedItem {
+                meetings.insert(item, at: i)
+            }
             loadError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
         }
     }

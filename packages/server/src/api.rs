@@ -67,7 +67,7 @@ pub fn make_router(state: ApiState) -> Router {
 
     Router::new()
         .route("/meetings", get(list_meetings))
-        .route("/meetings/:id", get(get_meeting))
+        .route("/meetings/:id", get(get_meeting).delete(delete_meeting))
         .route(
             "/meetings/:id/moments",
             get(list_moments).post(create_moment),
@@ -200,6 +200,38 @@ async fn get_meeting(
         transcript,
         moments,
     }))
+}
+
+/// `DELETE /meetings/:id` — remove a meeting plus its moments
+/// (FK cascade) and the on-disk blob directory holding the
+/// transcript JSONL and any screenshots. 204 on success, 404 if
+/// the id is unknown. Disk cleanup runs after the DB delete; if
+/// that step fails we still return 204 — the row is gone, the
+/// blobs are orphans that future cleanup can reap.
+async fn delete_meeting(
+    State(state): State<ApiState>,
+    Path(meeting_id): Path<String>,
+    headers: HeaderMap,
+) -> Result<StatusCode, ApiError> {
+    require_bearer(&headers, &state.token)?;
+    let removed = crate::db::delete_meeting(&state.db, &meeting_id)
+        .await
+        .map_err(|e| ApiError::Db(downcast_db(e)))?;
+    if !removed {
+        return Err(ApiError::NotFound);
+    }
+    if let Ok(dir) = crate::db::data_dir() {
+        let blob_dir = dir.join("blobs").join("meetings").join(&meeting_id);
+        if blob_dir.exists() {
+            if let Err(e) = tokio::fs::remove_dir_all(&blob_dir).await {
+                tracing::warn!(
+                    error = ?e, meeting_id = %meeting_id, path = %blob_dir.display(),
+                    "delete_meeting: blob cleanup failed (row already removed)"
+                );
+            }
+        }
+    }
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// `GET /meetings/:id/moments` — same data as `MeetingDetail.moments`

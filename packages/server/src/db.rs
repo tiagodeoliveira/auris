@@ -138,6 +138,23 @@ pub async fn end_meeting(
     Ok(())
 }
 
+/// Delete a meeting and all of its moments. The `moments` foreign
+/// key has `ON DELETE CASCADE`, so this single statement removes
+/// the moments rows too. Disk-side blob cleanup is the caller's
+/// responsibility (see `api::delete_meeting`).
+///
+/// Returns `Ok(true)` if a row was actually removed, `Ok(false)`
+/// when the id wasn't found — lets the API return 404 instead of
+/// 204 for unknown ids.
+pub async fn delete_meeting(pool: &SqlitePool, meeting_id: &str) -> Result<bool> {
+    let res = sqlx::query(r#"DELETE FROM meetings WHERE id = ?1"#)
+        .bind(meeting_id)
+        .execute(pool)
+        .await
+        .with_context(|| format!("delete_meeting({meeting_id})"))?;
+    Ok(res.rows_affected() > 0)
+}
+
 // MARK: - Moments
 
 /// Insert a moment for the given meeting. `t` is the millisecond
