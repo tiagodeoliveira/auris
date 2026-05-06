@@ -104,6 +104,14 @@ pub enum Intent {
         description: Option<String>,
         #[serde(skip_serializing_if = "Option::is_none", default)]
         metadata: Option<HashMap<String, String>>,
+        /// Which registered device should provide audio for this
+        /// meeting. The chosen device sees the resulting
+        /// `AudioSourceDeviceChanged` event and starts streaming
+        /// `/audio`. `None` means "no audio source bound" — the
+        /// meeting runs silent until something is bound (or for
+        /// PWA-only meetings without paired capture devices).
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        audio_source_device_id: Option<String>,
     },
     StopMeeting,
     Pause,
@@ -239,6 +247,19 @@ pub enum Event {
         #[serde(skip_serializing_if = "Option::is_none", default)]
         device_id: Option<String>,
     },
+    /// Sent after a WS-initiated `mark_moment` lands, asking the
+    /// device with `screen_capture` capability bound to the meeting's
+    /// audio source to capture a screenshot and upload it via
+    /// `POST /moments/<moment_id>/screenshot`. The server only emits
+    /// this when there's a viable target — otherwise the moment lands
+    /// without a screenshot. `target_device_id` lets every client
+    /// quickly filter; only the matching device acts.
+    CaptureMomentScreenshot {
+        target_device_id: String,
+        meeting_id: String,
+        moment_id: String,
+        t_ms: i64,
+    },
 }
 
 #[cfg(test)]
@@ -258,6 +279,7 @@ mod tests {
         let i = Intent::StartMeeting {
             description: Some("Q1 review".into()),
             metadata: Some(HashMap::from([("project".into(), "helix".into())])),
+            audio_source_device_id: Some("dev-mac-1".into()),
         };
         assert_eq!(round_trip(&i), i);
     }
@@ -267,6 +289,7 @@ mod tests {
         let i = Intent::StartMeeting {
             description: None,
             metadata: None,
+            audio_source_device_id: None,
         };
         let json = serde_json::to_string(&i).unwrap();
         assert!(!json.contains("description"));
@@ -468,6 +491,7 @@ mod tests {
         let i = Intent::StartMeeting {
             description: None,
             metadata: None,
+            audio_source_device_id: None,
         };
         let json = serde_json::to_string(&i).unwrap();
         assert!(json.contains("\"type\":\"start_meeting\""));

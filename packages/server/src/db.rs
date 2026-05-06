@@ -194,6 +194,23 @@ pub async fn update_moment_summary(
     Ok(())
 }
 
+/// Set or replace a moment's `asset_path`. Used by the late-binding
+/// screenshot upload endpoint that lands an image after a WS-initiated
+/// `mark_moment` already created the row.
+pub async fn update_moment_asset_path(
+    pool: &SqlitePool,
+    moment_id: &str,
+    asset_path: &str,
+) -> Result<()> {
+    sqlx::query(r#"UPDATE moments SET asset_path = ?1 WHERE id = ?2"#)
+        .bind(asset_path)
+        .bind(moment_id)
+        .execute(pool)
+        .await
+        .with_context(|| format!("update_moment_asset_path(id={moment_id})"))?;
+    Ok(())
+}
+
 /// Row shape for `list_moments_for_meeting`. `asset_path` is the
 /// relative path under `<DATA_DIR>/blobs/...` (or NULL); the REST
 /// endpoint maps it to a `/screenshot` URL clients can fetch.

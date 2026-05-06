@@ -11,7 +11,12 @@ export interface CtaActions {
   /// Sends an extract_metadata intent so the user can review/edit chips
   /// before starting the meeting.
   extractMetadata(description: string): void;
-  startMeeting(description: string): void;
+  /// `audioSourceDeviceId` binds the meeting's audio source on the
+  /// server. `null` means start a silent meeting (no audio source).
+  startMeeting(description: string, audioSourceDeviceId: string | null): void;
+  /// Stamp a moment at the current meeting offset. No-op outside an
+  /// active meeting (the server validates the same).
+  markMoment(): void;
   pauseMeeting(): void;
   resumeMeeting(): void;
   stopMeeting(): void;
@@ -45,6 +50,7 @@ export function mountCtaRegion(
 
     if (s.meetingState === "active") {
       wrap.append(
+        button("📍 Moment", "btn-ghost", actions.markMoment),
         button("Pause", "btn-ghost", actions.pauseMeeting),
         stopButton(actions.stopMeeting),
       );

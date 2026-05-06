@@ -68,7 +68,7 @@ pub fn make_router(state: ApiState) -> Router {
         )
         .route(
             "/meetings/:id/moments/:moment_id/screenshot",
-            get(get_moment_screenshot),
+            get(get_moment_screenshot).post(upload_moment_screenshot),
         )
         .layer(CorsLayer::permissive())
         .with_state(state)
@@ -378,6 +378,56 @@ async fn get_moment_screenshot(
         .header(header::CACHE_CONTROL, "private, max-age=86400")
         .body(Body::from(bytes))
         .unwrap())
+}
+
+/// `POST /meetings/:id/moments/:moment_id/screenshot` — late-binding
+/// screenshot upload for moments created via the WS `mark_moment`
+/// intent. The Mac with `screen_capture` capability that's bound as
+/// the audio source receives `Event::CaptureMomentScreenshot` and
+/// posts the resulting PNG here. Body is raw `image/png` (the same
+/// shape as a multipart `screenshot` field, but without the multipart
+/// envelope — keeps the upload small and the client-side encode trivial).
+async fn upload_moment_screenshot(
+    State(state): State<ApiState>,
+    Path((meeting_id, moment_id)): Path<(String, String)>,
+    headers: HeaderMap,
+    bytes: axum::body::Bytes,
+) -> Result<StatusCode, ApiError> {
+    require_bearer(&headers, &state.token)?;
+    if bytes.is_empty() {
+        return Err(ApiError::BadRequest("empty screenshot body".into()));
+    }
+    // Confirm the (meeting, moment) pair exists. Without this, a typo
+    // would silently write a PNG that no row ever points at.
+    let row: Option<(String,)> = sqlx::query_as(r#"SELECT meeting_id FROM moments WHERE id = ?1"#)
+        .bind(&moment_id)
+        .fetch_optional(&state.db)
+        .await
+        .map_err(ApiError::Db)?;
+    let Some((row_meeting,)) = row else {
+        return Err(ApiError::NotFound);
+    };
+    if row_meeting != meeting_id {
+        return Err(ApiError::NotFound);
+    }
+
+    let rel = format!("blobs/meetings/{meeting_id}/screenshots/{moment_id}.png");
+    let dir = crate::db::data_dir().map_err(|e| ApiError::Internal(e.to_string()))?;
+    let abs = dir.join(&rel);
+    if let Some(parent) = abs.parent() {
+        tokio::fs::create_dir_all(parent)
+            .await
+            .map_err(|e| ApiError::Internal(format!("mkdir: {e}")))?;
+    }
+    tokio::fs::write(&abs, &bytes)
+        .await
+        .map_err(|e| ApiError::Internal(format!("write screenshot: {e}")))?;
+
+    crate::db::update_moment_asset_path(&state.db, &moment_id, &rel)
+        .await
+        .map_err(|e| ApiError::Db(downcast_db(e)))?;
+
+    Ok(StatusCode::NO_CONTENT)
 }
 
 /// Cast an `anyhow::Error` back into a `sqlx::Error` for our

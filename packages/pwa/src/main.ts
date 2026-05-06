@@ -68,11 +68,17 @@ async function start() {
     },
     // Don't send `metadata` — the server preserves whatever it has in state
     // (extracted chips, manual edits) when the intent omits the field.
-    startMeeting: (description: string) =>
+    startMeeting: (description: string, audioSourceDeviceId: string | null) =>
       sock.send({
         type: "start_meeting",
         description: description || undefined,
+        audio_source_device_id: audioSourceDeviceId ?? undefined,
       }),
+    markMoment: () => {
+      const startedAt = store.get().meetingStartedAt;
+      const t = startedAt ? Math.max(0, Date.now() - startedAt) : 0;
+      sock.send({ type: "mark_moment", t });
+    },
     pauseMeeting: () => sock.send({ type: "pause" }),
     resumeMeeting: () => sock.send({ type: "resume" }),
     stopMeeting: () => sock.send({ type: "stop_meeting" }),

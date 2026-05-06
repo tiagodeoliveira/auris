@@ -739,21 +739,67 @@ async fn dispatch_intent(
     }
     if let Some(req) = outcome.mark_moment {
         let moment_id = uuid::Uuid::new_v4().to_string();
+        let kind = "manual";
         match crate::db::insert_moment(
             &handle.db,
             &moment_id,
             &req.meeting_id,
-            "manual",
+            kind,
             req.t as i64,
             req.note.as_deref(),
             None,
         )
         .await
         {
-            Ok(()) => tracing::info!(
-                meeting_id = %req.meeting_id, moment_id = %moment_id, t = req.t,
-                "moment persisted"
-            ),
+            Ok(()) => {
+                tracing::info!(
+                    meeting_id = %req.meeting_id, moment_id = %moment_id, t = req.t,
+                    "moment persisted"
+                );
+                // Wake the summary worker. Mirrors the REST path
+                // (`api::create_moment`) — without this, WS-initiated
+                // moments stay stuck on `summary_status='pending'`.
+                let _ = handle.moment_created_tx.send(crate::api::MomentCreated {
+                    meeting_id: req.meeting_id.clone(),
+                    moment_id: moment_id.clone(),
+                    kind: kind.to_string(),
+                    t_ms: req.t as i64,
+                });
+                // Delegate screenshot capture to the audio-source
+                // device if it has `screen_capture`. We don't try
+                // arbitrary other devices: the audio source is the
+                // user's "active" Mac, so it's also the right
+                // screenshot authority. If the source is e.g. a
+                // PWA-only meeting, we skip — moment lands without an
+                // image, which is the documented degraded path.
+                let target = {
+                    let s = handle.state.lock().await;
+                    s.audio_source_device_id.as_ref().and_then(|id| {
+                        s.devices_by_connection
+                            .values()
+                            .find(|d| {
+                                d.id == *id
+                                    && d.online
+                                    && d.capabilities
+                                        .contains(&crate::contract::Capability::ScreenCapture)
+                            })
+                            .map(|d| d.id.clone())
+                    })
+                };
+                if let Some(target_device_id) = target {
+                    let _ = handle.events_tx.send(Event::CaptureMomentScreenshot {
+                        target_device_id,
+                        meeting_id: req.meeting_id.clone(),
+                        moment_id: moment_id.clone(),
+                        t_ms: req.t as i64,
+                    });
+                } else {
+                    tracing::debug!(
+                        moment_id = %moment_id,
+                        "no screen_capture-capable audio source online; moment without screenshot"
+                    );
+                }
+            }
             Err(e) => tracing::warn!(error = ?e, "insert_moment failed"),
         }
     }

@@ -258,8 +258,14 @@ impl ServerState {
             Intent::StartMeeting {
                 description,
                 metadata,
+                audio_source_device_id,
             } => {
-                self.handle_start_meeting(description, metadata, &mut outcome);
+                self.handle_start_meeting(
+                    description,
+                    metadata,
+                    audio_source_device_id,
+                    &mut outcome,
+                );
             }
             Intent::StopMeeting => {
                 self.handle_stop_meeting(&mut outcome);
@@ -294,6 +300,7 @@ impl ServerState {
         &mut self,
         description: Option<String>,
         metadata: Option<HashMap<String, String>>,
+        audio_source_device_id: Option<String>,
         outcome: &mut IntentOutcome,
     ) {
         if !matches!(self.meeting_state, MeetingState::Idle) {
@@ -315,6 +322,12 @@ impl ServerState {
         }
         self.current_mode = DEFAULT_MODE_ID.to_string();
 
+        // Bind the audio source if the caller provided one. We don't
+        // validate the device exists or has audio_capture today —
+        // worst case the meeting runs silent. (Future: 400-equivalent
+        // error when the device id is unknown.)
+        self.audio_source_device_id = audio_source_device_id.clone();
+
         outcome.events.push(Event::MeetingStateChanged {
             meeting_state: MeetingState::Active,
             meeting_id: self.current_meeting_id.clone(),
@@ -327,6 +340,15 @@ impl ServerState {
             display_tag: None,
             items: self.items_per_mode[&self.current_mode].clone(),
         });
+        // Tell the chosen device (and any clients tracking the
+        // binding) to start streaming. Only emit if a source was
+        // actually bound — silent meetings with no source skip
+        // this event so clients don't see redundant `None` chatter.
+        if audio_source_device_id.is_some() {
+            outcome.events.push(Event::AudioSourceDeviceChanged {
+                device_id: audio_source_device_id,
+            });
+        }
         outcome.started_meeting = true;
         // Snapshot the description before it's potentially moved to
         // `start_extraction_for` below — we want both paths (DB insert
@@ -361,11 +383,20 @@ impl ServerState {
         // clearing it locally — the `ws` handler reads
         // `outcome.closed_meeting_id` to set `ended_at` in SQLite.
         let closing_id = self.current_meeting_id.take();
+        let had_audio_source = self.audio_source_device_id.take().is_some();
 
         outcome.events.push(Event::MeetingStateChanged {
             meeting_state: MeetingState::Idle,
             meeting_id: None,
         });
+        // Tell the chosen device to stop streaming. Only emit if
+        // there *was* a binding — otherwise we'd send a redundant
+        // None on every plain stop.
+        if had_audio_source {
+            outcome
+                .events
+                .push(Event::AudioSourceDeviceChanged { device_id: None });
+        }
         outcome.stopped_meeting = true;
         if let Some(id) = closing_id {
             outcome.closed_meeting = Some(ClosedMeetingRecord {
@@ -783,6 +814,7 @@ mod tests {
         let out = s.apply_intent(Intent::StartMeeting {
             description: None,
             metadata: Some(HashMap::from([("project".into(), "helix".into())])),
+            audio_source_device_id: None,
         });
         assert!(matches!(s.meeting_state, MeetingState::Active));
         assert_eq!(s.metadata.get("project"), Some(&"helix".into()));
@@ -806,6 +838,7 @@ mod tests {
         let out = s.apply_intent(Intent::StartMeeting {
             description: Some("Q1 budget review".into()),
             metadata: None,
+            audio_source_device_id: None,
         });
         assert_eq!(
             out.start_extraction_for.as_deref(),
@@ -819,10 +852,12 @@ mod tests {
         s.apply_intent(Intent::StartMeeting {
             description: None,
             metadata: None,
+            audio_source_device_id: None,
         });
         let out = s.apply_intent(Intent::StartMeeting {
             description: None,
             metadata: None,
+            audio_source_device_id: None,
         });
         assert!(out.events.is_empty());
         assert!(!out.started_meeting);
@@ -835,6 +870,7 @@ mod tests {
         s.apply_intent(Intent::StartMeeting {
             description: None,
             metadata: Some(HashMap::from([("k".into(), "v".into())])),
+            audio_source_device_id: None,
         });
         let out = s.apply_intent(Intent::StopMeeting);
         assert!(matches!(s.meeting_state, MeetingState::Idle));
@@ -859,6 +895,7 @@ mod tests {
         s.apply_intent(Intent::StartMeeting {
             description: None,
             metadata: None,
+            audio_source_device_id: None,
         });
         let out = s.apply_intent(Intent::Pause);
         assert!(matches!(s.meeting_state, MeetingState::Paused));
@@ -875,6 +912,7 @@ mod tests {
         s.apply_intent(Intent::StartMeeting {
             description: None,
             metadata: None,
+            audio_source_device_id: None,
         });
         s.apply_intent(Intent::Pause);
         let out2 = s.apply_intent(Intent::Pause);
@@ -887,6 +925,7 @@ mod tests {
         s.apply_intent(Intent::StartMeeting {
             description: None,
             metadata: None,
+            audio_source_device_id: None,
         });
         s.apply_intent(Intent::Pause);
         let out = s.apply_intent(Intent::Resume);
@@ -903,6 +942,7 @@ mod tests {
         s.apply_intent(Intent::StartMeeting {
             description: None,
             metadata: None,
+            audio_source_device_id: None,
         });
         let out2 = s.apply_intent(Intent::Resume);
         assert!(out2.events.is_empty());
@@ -1000,6 +1040,7 @@ mod tests {
         s.apply_intent(Intent::StartMeeting {
             description: None,
             metadata: None,
+            audio_source_device_id: None,
         });
         let out = s.apply_intent(Intent::MarkMoment {
             t: 1234,
@@ -1027,6 +1068,7 @@ mod tests {
         s.apply_intent(Intent::StartMeeting {
             description: None,
             metadata: None,
+            audio_source_device_id: None,
         });
         s.apply_intent(Intent::SetMode {
             mode: "transcript".into(),
@@ -1054,6 +1096,7 @@ mod tests {
         s.apply_intent(Intent::StartMeeting {
             description: None,
             metadata: None,
+            audio_source_device_id: None,
         });
         s.apply_intent(Intent::SetMode {
             mode: "highlights".into(),
@@ -1081,6 +1124,7 @@ mod tests {
         s.apply_intent(Intent::StartMeeting {
             description: None,
             metadata: None,
+            audio_source_device_id: None,
         });
         let out = s.apply_intent(Intent::ExpandItem {
             item_id: "nope".into(),
@@ -1103,6 +1147,7 @@ mod tests {
         s.apply_intent(Intent::StartMeeting {
             description: None,
             metadata: None,
+            audio_source_device_id: None,
         });
         let chunk = crate::stt::TranscriptChunk {
             id: "c1".into(),
@@ -1121,6 +1166,7 @@ mod tests {
         s.apply_intent(Intent::StartMeeting {
             description: None,
             metadata: None,
+            audio_source_device_id: None,
         });
         s.append_transcript_chunk(crate::stt::TranscriptChunk {
             id: "c1".into(),
@@ -1159,6 +1205,7 @@ mod tests {
         s.apply_intent(Intent::StartMeeting {
             description: None,
             metadata: None,
+            audio_source_device_id: None,
         });
         s.append_transcript_chunk(crate::stt::TranscriptChunk {
             id: "c1".into(),
@@ -1177,6 +1224,7 @@ mod tests {
         s.apply_intent(Intent::StartMeeting {
             description: None,
             metadata: None,
+            audio_source_device_id: None,
         });
         // current_mode = highlights = replace strategy
         for i in 0..15 {
@@ -1202,6 +1250,7 @@ mod tests {
         s.apply_intent(Intent::StartMeeting {
             description: None,
             metadata: None,
+            audio_source_device_id: None,
         });
         let item = Item {
             id: "t1".into(),
@@ -1235,6 +1284,7 @@ mod tests {
         s.apply_intent(Intent::StartMeeting {
             description: None,
             metadata: None,
+            audio_source_device_id: None,
         });
         let payload = s.push_item_for_mode(
             "nonexistent",
@@ -1255,6 +1305,7 @@ mod tests {
         s.apply_intent(Intent::StartMeeting {
             description: None,
             metadata: None,
+            audio_source_device_id: None,
         });
         let initial: Vec<Item> = (0..3)
             .map(|i| Item {

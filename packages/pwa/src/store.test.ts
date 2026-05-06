@@ -20,6 +20,7 @@ function defaultState(): AppState {
     priorContext: null,
     availableDevices: [],
     audioSourceDeviceId: null,
+    composeAudioSourceDeviceId: null,
     liveTranscriptInterim: "",
     status: { listening: false, paused: false },
     glassesView: "idle",
@@ -34,6 +35,7 @@ function defaultState(): AppState {
     batteryLevel: null,
     wearing: false,
     settingsModalOpen: false,
+    meetingsModalOpen: false,
     toasts: [],
     errorOverlay: null,
   };

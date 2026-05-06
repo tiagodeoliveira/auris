@@ -108,9 +108,22 @@ struct RegisterDeviceIntent: Encodable {
 struct StartMeetingIntent: Encodable {
     let type: String = "start_meeting"
     let description: String?
+    /// Device id the server should bind as the audio source. The
+    /// chosen device sees the resulting `audio_source_device_changed`
+    /// event and starts streaming `/audio`. Mac fills this with its
+    /// own `ownDevice.id` when initiating; PWA passes a user-picked
+    /// id (or `nil` for a silent meeting).
+    let audioSourceDeviceId: String?
 
-    init(description: String? = nil) {
+    init(description: String? = nil, audioSourceDeviceId: String? = nil) {
         self.description = description
+        self.audioSourceDeviceId = audioSourceDeviceId
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case type
+        case description
+        case audioSourceDeviceId = "audio_source_device_id"
     }
 }
 
@@ -149,6 +162,15 @@ enum TypedServerEvent: Sendable {
     case deviceRegistered(Device)
     case devicesChanged([Device])
     case audioSourceDeviceChanged(String?)
+    /// Server is asking the named device to capture a screenshot for
+    /// a moment that already exists in the DB. Only the device whose
+    /// id matches `targetDeviceId` should react; others ignore.
+    case captureMomentScreenshot(
+        targetDeviceId: String,
+        meetingId: String,
+        momentId: String,
+        tMs: Int64
+    )
     case metadataChanged([String: String])
     /// Live, in-flight transcript preview from the STT provider.
     /// Replaces the previous interim text wholesale on each event.
@@ -251,6 +273,20 @@ func decodeServerEvent(from text: String) throws -> TypedServerEvent? {
         struct Wrap: Decodable { let device_id: String? }
         let w = try decoder.decode(Wrap.self, from: data)
         return .audioSourceDeviceChanged(w.device_id)
+    case "capture_moment_screenshot":
+        struct Wrap: Decodable {
+            let target_device_id: String
+            let meeting_id: String
+            let moment_id: String
+            let t_ms: Int64
+        }
+        let w = try decoder.decode(Wrap.self, from: data)
+        return .captureMomentScreenshot(
+            targetDeviceId: w.target_device_id,
+            meetingId: w.meeting_id,
+            momentId: w.moment_id,
+            tMs: w.t_ms
+        )
     case "metadata_changed":
         struct Wrap: Decodable { let metadata: [String: String] }
         let w = try decoder.decode(Wrap.self, from: data)

@@ -51,6 +51,13 @@ export interface AppState {
   availableDevices: Device[];
   /// Device whose audio is feeding the active meeting; null otherwise.
   audioSourceDeviceId: string | null;
+  /// Device the user has picked to feed audio for the *next* meeting.
+  /// Distinct from `audioSourceDeviceId` (which reflects what the
+  /// server has bound to the *active* meeting). Auto-seeded to the
+  /// first online audio-capable device when devices change; user can
+  /// override via the compose-region picker. `null` means "no
+  /// source" — the server starts a silent meeting.
+  composeAudioSourceDeviceId: string | null;
   liveTranscriptInterim: string;
   status: ServerStatus;
   glassesView: GlassesView;
@@ -95,6 +102,7 @@ export function defaultAppState(): AppState {
     priorContext: null,
     availableDevices: [],
     audioSourceDeviceId: null,
+    composeAudioSourceDeviceId: null,
     liveTranscriptInterim: "",
     status: { listening: false, paused: false },
     glassesView: "idle",

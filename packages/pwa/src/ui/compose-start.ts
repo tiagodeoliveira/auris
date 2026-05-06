@@ -14,8 +14,9 @@ export function mountComposeStart(parent: HTMLElement, store: Store, actions: Ct
   btn.className = "btn-primary compose-start";
   btn.textContent = "Start Meeting";
   btn.addEventListener("click", () => {
-    const desc = store.get().composeDescription.trim();
-    actions.startMeeting(desc);
+    const s = store.get();
+    const desc = s.composeDescription.trim();
+    actions.startMeeting(desc, s.composeAudioSourceDeviceId);
   });
   wrap.appendChild(btn);
 

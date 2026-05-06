@@ -124,7 +124,8 @@ async fn handle_event(client: &MnemoClient, state: &mut PusherState, event: Even
         | Event::Error { .. }
         | Event::DeviceRegistered { .. }
         | Event::DevicesChanged { .. }
-        | Event::AudioSourceDeviceChanged { .. } => {}
+        | Event::AudioSourceDeviceChanged { .. }
+        | Event::CaptureMomentScreenshot { .. } => {}
     }
 }
 

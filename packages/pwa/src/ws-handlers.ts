@@ -163,5 +163,9 @@ export function handleServerEvent(event: ServerEvent, store: Store): void {
       pushToast(store, `${event.code}: ${event.message}`, "warn");
       if (store.get().extractingMetadata) store.update({ extractingMetadata: false });
       return;
+    case "capture_moment_screenshot":
+      // Targeted at a specific Mac with screen_capture. PWA never
+      // acts on this — it just floats by on the broadcast.
+      return;
   }
 }

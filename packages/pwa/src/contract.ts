@@ -40,7 +40,16 @@ export interface Device {
 }
 
 export type Intent =
-  | { type: "start_meeting"; description?: string; metadata?: Record<string, string> }
+  | {
+      type: "start_meeting";
+      description?: string;
+      metadata?: Record<string, string>;
+      /** Device id the server should bind as the audio source for
+       * the new meeting. The chosen device sees the resulting
+       * `audio_source_device_changed` event and starts streaming
+       * `/audio`. Omit for a silent meeting (no source bound). */
+      audio_source_device_id?: string;
+    }
   | { type: "stop_meeting" }
   | { type: "pause" }
   | { type: "resume" }
@@ -71,6 +80,13 @@ export type Event =
   | { type: "device_registered"; device: Device }
   | { type: "devices_changed"; devices: Device[] }
   | { type: "audio_source_device_changed"; device_id?: string }
+  | {
+      type: "capture_moment_screenshot";
+      target_device_id: string;
+      meeting_id: string;
+      moment_id: string;
+      t_ms: number;
+    }
   | { type: "available_modes_changed"; available_modes: ModeOption[] }
   | { type: "mode_changed"; mode: string; display_tag?: string; items: Item[] }
   | { type: "display_tag_changed"; tag?: string }

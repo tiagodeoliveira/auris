@@ -196,6 +196,40 @@ struct MeetingsAPI: Sendable {
         }
     }
 
+    /// Late-binding screenshot upload for moments created via the WS
+    /// `mark_moment` intent (e.g., from the PWA). The Mac that owns
+    /// the audio source receives `Event::CaptureMomentScreenshot` and
+    /// calls this. Body is raw `image/png` — no multipart wrapper —
+    /// matching the server's `POST /meetings/:id/moments/:moment_id/screenshot`.
+    func uploadMomentScreenshot(
+        meetingId: String,
+        momentId: String,
+        png: Data
+    ) async throws {
+        let url = baseURL.appendingPathComponent(
+            "meetings/\(meetingId)/moments/\(momentId)/screenshot"
+        )
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        req.setValue("image/png", forHTTPHeaderField: "Content-Type")
+        let resp: URLResponse
+        do {
+            (_, resp) = try await URLSession.shared.upload(for: req, from: png)
+        } catch {
+            throw MeetingsAPIError.transport(error)
+        }
+        guard let http = resp as? HTTPURLResponse else {
+            throw MeetingsAPIError.http(0)
+        }
+        switch http.statusCode {
+        case 200..<300: return
+        case 401: throw MeetingsAPIError.unauthorized
+        case 404: throw MeetingsAPIError.notFound
+        default: throw MeetingsAPIError.http(http.statusCode)
+        }
+    }
+
     /// Build `<base>/meetings/:meeting_id/moments/:moment_id/screenshot`
     /// for a given relative `screenshot_url`. Used by the meeting
     /// detail view to render thumbnails (with a Bearer header).

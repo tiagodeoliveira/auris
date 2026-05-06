@@ -63,6 +63,7 @@ mod tests {
             s.apply_intent(Intent::StartMeeting {
                 description: None,
                 metadata: None,
+                audio_source_device_id: None,
             });
             // Switch to transcript mode (default is highlights).
             s.apply_intent(Intent::SetMode {

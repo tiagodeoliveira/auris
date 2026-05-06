@@ -509,6 +509,32 @@ button.cta:disabled {
   color: var(--text-muted);
   opacity: 0.5;
 }
+.compose-audio-source {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 0 24px 16px;
+  max-width: 640px;
+  margin: 0 auto;
+  width: 100%;
+}
+.compose-audio-source-label {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 1px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+}
+.compose-audio-source-select {
+  background: var(--bg-card);
+  border: 1px solid var(--border-dark);
+  color: var(--text-light);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  padding: 8px 12px;
+  border-radius: var(--radius);
+  width: 100%;
+}
 .compose-start-wrap {
   display: flex;
   padding: 0 24px 32px;

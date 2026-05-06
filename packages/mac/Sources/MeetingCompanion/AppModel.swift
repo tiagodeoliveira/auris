@@ -266,8 +266,13 @@ final class AppModel {
         meetingStartedAt = Date()
 
         do {
-            try await webSocket.send(intent: StartMeetingIntent(description: description))
-            print("[AppModel] start_meeting sent (description=\(description ?? "nil"))")
+            try await webSocket.send(
+                intent: StartMeetingIntent(
+                    description: description,
+                    audioSourceDeviceId: ownDevice?.id
+                )
+            )
+            print("[AppModel] start_meeting sent (description=\(description ?? "nil"), source=\(ownDevice?.id ?? "nil"))")
         } catch {
             print("[AppModel] start_meeting send failed: \(error)")
             audioStreamer.stop()
@@ -359,6 +364,31 @@ final class AppModel {
         scheduleMomentStatusClear()
     }
 
+    /// Reactive variant of `markMoment` for moments born on the WS
+    /// path (PWA's mark_moment intent). The server has already
+    /// inserted the row and decided we're the right device to grab a
+    /// screenshot — we just capture and upload. Any failure logs and
+    /// drops the screenshot; the moment row + summary are unaffected.
+    private func captureAndUploadMomentScreenshot(meetingId: String, momentId: String) async {
+        guard let api = MeetingsAPI.fromWSURL(settings.serverURL, token: settings.token) else {
+            print("[AppModel] capture_moment_screenshot: invalid server URL")
+            return
+        }
+        let png: Data
+        do {
+            png = try await ScreenshotCapture.capturePrimaryDisplay()
+        } catch {
+            print("[AppModel] capture_moment_screenshot: capture failed: \(error.localizedDescription)")
+            return
+        }
+        do {
+            try await api.uploadMomentScreenshot(meetingId: meetingId, momentId: momentId, png: png)
+            print("[AppModel] capture_moment_screenshot: uploaded for moment=\(momentId)")
+        } catch {
+            print("[AppModel] capture_moment_screenshot: upload failed: \(error.localizedDescription)")
+        }
+    }
+
     /// Clear `momentStatus` after a short delay so the toast-like
     /// label fades cleanly. Always schedules; cancelling the timer
     /// on rapid successive captures isn't worth the bookkeeping.
@@ -366,6 +396,36 @@ final class AppModel {
         Task { [weak self] in
             try? await Task.sleep(for: .seconds(2))
             self?.momentStatus = nil
+        }
+    }
+
+    /// React to the server's audio-source binding. The server emits
+    /// `audio_source_device_changed` whenever a meeting starts/stops
+    /// or the binding shifts; clients react by starting or stopping
+    /// their own `/audio` stream depending on whether *they* are the
+    /// chosen source. PWA-initiated meetings targeting this Mac flow
+    /// through this path — the Mac doesn't initiate, the server tells
+    /// it to start.
+    private func reconcileAudioSource(boundDeviceId: String?) async {
+        let isUs = boundDeviceId != nil && boundDeviceId == ownDevice?.id
+        if isUs {
+            if audioCapture.state == .stopped {
+                print("[AppModel] audio_source bound to us — starting capture")
+                clearTranscript()
+                _ = await startAudioStream()
+                // Approximation: stamp local start now. PWA-initiated
+                // meetings don't carry the wall-clock start over this
+                // event, so moments captured early will have a `t`
+                // offset that's a couple seconds off. Acceptable.
+                meetingStartedAt = Date()
+            }
+        } else {
+            if audioCapture.state != .stopped {
+                print("[AppModel] audio_source no longer us — stopping capture")
+                audioStreamer.stop()
+                audioCapture.stop()
+                meetingStartedAt = nil
+            }
         }
     }
 
@@ -452,9 +512,20 @@ final class AppModel {
             if let ours = ownDevice, !devices.contains(where: { $0.id == ours.id }) {
                 ownDevice = nil
             }
-        case .audioSourceDeviceChanged:
-            // Phase 2g+ will react to the bound source; not needed yet.
-            break
+        case .audioSourceDeviceChanged(let boundDeviceId):
+            // The server is telling us which device should be feeding
+            // /audio. If it's us, ensure capture+streamer are running
+            // (handles PWA-initiated meetings that targeted this Mac).
+            // If it's someone else (or None), tear down our local
+            // capture so we're not double-streaming. Idempotent —
+            // audioCapture.start() is a no-op when already running.
+            Task { await reconcileAudioSource(boundDeviceId: boundDeviceId) }
+        case .captureMomentScreenshot(let target, let meetingId, let momentId, _):
+            // Targeted broadcast: only the addressed device acts. The
+            // server already filters by capability+online before
+            // emitting, so reaching here means we're it.
+            guard ownDevice?.id == target else { break }
+            Task { await captureAndUploadMomentScreenshot(meetingId: meetingId, momentId: momentId) }
         case .metadataChanged(let next):
             metadata = next
             extractingMetadata = false
