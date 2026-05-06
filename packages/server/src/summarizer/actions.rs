@@ -2,7 +2,7 @@
 //! Detects action items from the rolling transcript; appends new ones to
 //! the actions-mode buffer with server-side dedupe by exact text equality.
 
-use crate::contract::{Event, Item};
+use crate::contract::{Event, Item, UserEvent};
 use crate::llm::LlmClient;
 use crate::state::ServerState;
 use schemars::JsonSchema;
@@ -43,7 +43,8 @@ pub struct ActionItem {
 pub async fn run_actions_summarizer(
     state: Arc<Mutex<ServerState>>,
     llm: Arc<LlmClient>,
-    events_tx: broadcast::Sender<Event>,
+    events_tx: broadcast::Sender<UserEvent>,
+    user_id: String,
     cancel: CancellationToken,
     interval: Duration,
 ) {
@@ -59,16 +60,17 @@ pub async fn run_actions_summarizer(
                 }
                 let (transcript, existing_actions, prior_context) = {
                     let s = state.lock().await;
-                    let existing: Vec<String> = s
-                        .items_per_mode
-                        .get("actions")
+                    let user = s.user(&user_id);
+                    let existing: Vec<String> = user
+                        .and_then(|u| u.items_per_mode.get("actions"))
                         .map(|v| v.iter().map(|i| i.text.clone()).collect())
                         .unwrap_or_default();
-                    let prior = s
-                        .recalled_context_clone()
+                    let prior = user
+                        .and_then(|u| u.recalled_context_clone())
                         .map(|c| c.format_for_prompt())
                         .unwrap_or_default();
-                    (s.rolling_transcript_text(), existing, prior)
+                    let transcript = s.rolling_transcript_text_for(&user_id).unwrap_or_default();
+                    (transcript, existing, prior)
                 };
                 if transcript.is_empty() {
                     continue;
@@ -86,6 +88,7 @@ pub async fn run_actions_summarizer(
                     Ok(extracted) => {
                         let mut payload = Vec::new();
                         let mut s = state.lock().await;
+                        let u = s.user_mut(&user_id);
                         for action in extracted.actions {
                             // Server-side dedupe: skip if action text already in buffer
                             if existing_actions.contains(&action.action) {
@@ -101,14 +104,17 @@ pub async fn run_actions_summarizer(
                                     "due": action.due,
                                 })),
                             };
-                            payload.extend(s.push_item_for_mode("actions", item));
+                            payload.extend(u.push_item_for_mode("actions", item));
                         }
                         drop(s);
                         if !payload.is_empty() {
-                            let _ = events_tx.send(Event::ItemsUpdate {
-                                mode: "actions".into(),
-                                items: payload,
-                            });
+                            let _ = events_tx.send(UserEvent::new(
+                                user_id.clone(),
+                                Event::ItemsUpdate {
+                                    mode: "actions".into(),
+                                    items: payload,
+                                },
+                            ));
                         }
                     }
                     Err(e) => {

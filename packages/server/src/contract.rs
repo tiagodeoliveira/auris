@@ -147,6 +147,26 @@ pub enum Intent {
     },
 }
 
+/// Internal envelope: `Event` + the local `users.id` of the user
+/// the event belongs to. Server-side broadcast channels carry this;
+/// per-connection forwarders filter by their own user_id so each
+/// client only sees their user's events on the wire. Never seen by
+/// clients (the `event` field is what gets serialized over WS).
+#[derive(Debug, Clone)]
+pub struct UserEvent {
+    pub user_id: String,
+    pub event: Event,
+}
+
+impl UserEvent {
+    pub fn new(user_id: impl Into<String>, event: Event) -> Self {
+        Self {
+            user_id: user_id.into(),
+            event,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Event {

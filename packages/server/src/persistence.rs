@@ -27,28 +27,30 @@ use tokio::io::AsyncWriteExt;
 use tokio::sync::{broadcast, Mutex};
 use tracing::{info, warn};
 
-use crate::contract::{Event, Item};
+use crate::contract::{Event, Item, UserEvent};
 use crate::state::ServerState;
 
 /// Spawn the transcript-persistence task. Subscribes to `events_tx`
 /// and writes one JSONL line per committed transcript item to the
 /// active meeting's `transcription.jsonl`. The task lives for the
 /// server lifetime; lagged broadcasts log a warning and continue.
-pub fn spawn_task(state: Arc<Mutex<ServerState>>, events_tx: &broadcast::Sender<Event>) {
+pub fn spawn_task(state: Arc<Mutex<ServerState>>, events_tx: &broadcast::Sender<UserEvent>) {
     let mut rx = events_tx.subscribe();
     tokio::spawn(async move {
         info!("transcript persistence task started");
         loop {
             match rx.recv().await {
-                Ok(Event::ItemsUpdate { mode, items }) if mode == "transcript" => {
-                    if items.is_empty() {
-                        continue;
-                    }
-                    if let Err(e) = persist_transcript_items(&state, &items).await {
-                        warn!(error = ?e, "transcript persistence failed");
+                Ok(envelope) => {
+                    if let Event::ItemsUpdate { mode, items } = &envelope.event {
+                        if mode == "transcript" && !items.is_empty() {
+                            if let Err(e) =
+                                persist_transcript_items(&state, &envelope.user_id, items).await
+                            {
+                                warn!(error = ?e, "transcript persistence failed");
+                            }
+                        }
                     }
                 }
-                Ok(_) => {}
                 Err(broadcast::error::RecvError::Closed) => return,
                 Err(broadcast::error::RecvError::Lagged(n)) => {
                     warn!(lagged = n, "persistence task lagged");
@@ -58,14 +60,17 @@ pub fn spawn_task(state: Arc<Mutex<ServerState>>, events_tx: &broadcast::Sender<
     });
 }
 
-/// Look up the active meeting and append `items` to its
-/// transcription file. No-op if no meeting is active (defensive —
-/// the transcript summarizer shouldn't be emitting in that case,
-/// but the broadcast can race a meeting-end teardown).
-async fn persist_transcript_items(state: &Arc<Mutex<ServerState>>, items: &[Item]) -> Result<()> {
+/// Look up the active meeting for `user_id` and append `items` to
+/// its transcription file. No-op if that user has no active meeting
+/// — race with meeting-end teardown is the most common reason.
+async fn persist_transcript_items(
+    state: &Arc<Mutex<ServerState>>,
+    user_id: &str,
+    items: &[Item],
+) -> Result<()> {
     let meeting_id = {
         let s = state.lock().await;
-        s.current_meeting_id.clone()
+        s.user(user_id).and_then(|u| u.current_meeting_id.clone())
     };
     let Some(meeting_id) = meeting_id else {
         return Ok(());

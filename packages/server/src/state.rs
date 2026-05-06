@@ -1,4 +1,4 @@
-//! ServerState — owns all meeting state.
+//! UserState — owns all meeting state.
 
 use crate::contract::{
     Event, Intent, Item, MeetingState, ModeOption, Status, UpdateStrategy, PROTOCOL_VERSION,
@@ -98,7 +98,7 @@ pub struct MomentRequest {
 /// In-memory representation of an unfinished meeting recovered from
 /// disk on server boot. Built by `db::find_active_meeting` +
 /// `persistence::read_transcription` and consumed by
-/// `ServerState::rehydrate_from_recovered_meeting`.
+/// `UserState::rehydrate_from_recovered_meeting`.
 #[derive(Debug, Clone)]
 pub struct RecoveredMeeting {
     pub id: String,
@@ -114,7 +114,7 @@ pub struct RecoveredMeeting {
     pub transcript_items: Vec<Item>,
 }
 
-pub struct ServerState {
+pub struct UserState {
     pub(crate) meeting_state: MeetingState,
     pub(crate) available_modes: Vec<ModeOption>,
     pub(crate) current_mode: String,
@@ -142,7 +142,7 @@ pub struct ServerState {
     pub(crate) current_meeting_id: Option<String>,
 }
 
-impl ServerState {
+impl UserState {
     pub fn new() -> Self {
         let modes = default_modes();
         let items_per_mode: HashMap<String, Vec<Item>> =
@@ -690,6 +690,164 @@ impl ServerState {
     }
 }
 
+impl Default for UserState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// ============================================================================
+// ServerState — per-user UserState map.
+//
+// Phase B of the OAuth migration. Each authenticated user gets their
+// own `UserState` (meeting, items, devices, etc.), keyed by the local
+// `users.id`. Lazy-creates an entry on first touch.
+//
+// External callers (ws.rs, summarizers, mnemo) keep working against
+// `ServerState` but must now pass a `user_id` on every method that
+// previously operated on the global state.
+// ============================================================================
+
+pub struct ServerState {
+    /// User-keyed map; `users.id` (UUID) is the key.
+    users: HashMap<String, UserState>,
+}
+
+impl ServerState {
+    pub fn new() -> Self {
+        Self {
+            users: HashMap::new(),
+        }
+    }
+
+    /// Borrow a user's state if it exists. Returns `None` for users
+    /// who haven't connected yet.
+    pub fn user(&self, uid: &str) -> Option<&UserState> {
+        self.users.get(uid)
+    }
+
+    /// Get-or-create a user's state. Lazy creation means we only
+    /// hold state for users who've ever interacted; the map doesn't
+    /// grow with every Auth0 user that *could* log in.
+    pub fn user_mut(&mut self, uid: &str) -> &mut UserState {
+        self.users.entry(uid.to_string()).or_default()
+    }
+
+    /// Apply an intent on behalf of `uid`. Lazy-creates the user's
+    /// state on first call.
+    pub fn apply_intent(&mut self, uid: &str, intent: Intent) -> IntentOutcome {
+        self.user_mut(uid).apply_intent(intent)
+    }
+
+    /// Render a fresh-connection snapshot for the named user. Users
+    /// who've never interacted get the same shape as a brand-new
+    /// idle state — no leakage of other users' meetings.
+    pub fn snapshot(&mut self, uid: &str) -> Event {
+        self.user_mut(uid).snapshot()
+    }
+
+    pub fn register_device(
+        &mut self,
+        uid: &str,
+        connection_id: String,
+        hostname: String,
+        capabilities: Vec<crate::contract::Capability>,
+    ) -> crate::contract::Device {
+        self.user_mut(uid)
+            .register_device(connection_id, hostname, capabilities)
+    }
+
+    /// Removes a connection's device from whichever user owns it.
+    /// Returns `(user_id, device)` if found — callers fan out a
+    /// `DevicesChanged` to that user only.
+    pub fn unregister_connection(
+        &mut self,
+        connection_id: &str,
+    ) -> Option<(String, crate::contract::Device)> {
+        for (uid, u) in self.users.iter_mut() {
+            if let Some(d) = u.unregister_device(connection_id) {
+                return Some((uid.clone(), d));
+            }
+        }
+        None
+    }
+
+    /// Devices visible to the given user.
+    pub fn devices_clone_for(&self, uid: &str) -> Vec<crate::contract::Device> {
+        self.users
+            .get(uid)
+            .map(|u| u.devices_clone())
+            .unwrap_or_default()
+    }
+
+    /// Currently-bound audio source device for the user (if any).
+    pub fn audio_source_device_id_for(&self, uid: &str) -> Option<String> {
+        self.users
+            .get(uid)
+            .and_then(|u| u.audio_source_device_id.clone())
+    }
+
+    /// Rolling transcript text for the user (mnemo pusher uses it).
+    pub fn rolling_transcript_text_for(&self, uid: &str) -> Option<String> {
+        self.users.get(uid).map(|u| u.rolling_transcript_text())
+    }
+
+    /// Append a transcript chunk to the named user's rolling buffer
+    /// AND push the resulting Item into transcript-mode. Returns the
+    /// payload the summarizer should broadcast (full list for
+    /// Replace strategy, just the new item for Append).
+    pub fn append_transcript_chunk_for(
+        &mut self,
+        uid: &str,
+        chunk: TranscriptChunk,
+        item: Item,
+    ) -> Vec<Item> {
+        let u = self.user_mut(uid);
+        u.append_transcript_chunk(chunk);
+        u.push_item_for_mode("transcript", item)
+    }
+
+    /// True if *any* user has an active meeting. Used by the heartbeat
+    /// task that emits global Status broadcasts. Per-user Status
+    /// events are emitted separately in the intent path.
+    pub fn any_meeting_active(&self) -> bool {
+        self.users
+            .values()
+            .any(|u| matches!(u.meeting_state, MeetingState::Active))
+    }
+
+    pub fn any_meeting_paused(&self) -> bool {
+        self.users
+            .values()
+            .any(|u| matches!(u.meeting_state, MeetingState::Paused))
+    }
+
+    /// Iterate (uid, state) for boot recovery and bookkeeping.
+    pub fn user_ids(&self) -> Vec<String> {
+        self.users.keys().cloned().collect()
+    }
+
+    /// Rehydrate a user's state from a recovered meeting at boot.
+    pub fn rehydrate_user_from_recovered(&mut self, uid: &str, recovered: &RecoveredMeeting) {
+        self.user_mut(uid)
+            .rehydrate_from_recovered_meeting(recovered);
+    }
+
+    /// Look up which user owns a given device id (for routing
+    /// targeted events like CaptureMomentScreenshot). Returns None
+    /// if the device isn't registered to any user.
+    pub fn find_user_and_connection_for_device(&self, device_id: &str) -> Option<(String, String)> {
+        for (uid, u) in self.users.iter() {
+            for (conn_id, dev) in u.devices_by_connection.iter() {
+                if dev.id == device_id {
+                    return Some((uid.clone(), conn_id.clone()));
+                }
+            }
+        }
+        None
+    }
+}
+
 impl Default for ServerState {
     fn default() -> Self {
         Self::new()
@@ -700,7 +858,7 @@ impl Default for ServerState {
 mod tests {
     use super::*;
 
-    fn push_item(s: &mut ServerState, mode: &str, id: &str, text: &str) {
+    fn push_item(s: &mut UserState, mode: &str, id: &str, text: &str) {
         s.items_per_mode.get_mut(mode).unwrap().push(Item {
             id: id.into(),
             text: text.into(),
@@ -712,13 +870,13 @@ mod tests {
 
     #[test]
     fn new_has_idle_state() {
-        let s = ServerState::new();
+        let s = UserState::new();
         assert!(matches!(s.meeting_state, MeetingState::Idle));
     }
 
     #[test]
     fn rehydrate_from_recovered_meeting_installs_state() {
-        let mut s = ServerState::new();
+        let mut s = UserState::new();
         let recovered = RecoveredMeeting {
             id: "rec-1".to_string(),
             description: Some("recovered standup".to_string()),
@@ -746,7 +904,7 @@ mod tests {
 
     #[test]
     fn new_has_four_default_modes() {
-        let s = ServerState::new();
+        let s = UserState::new();
         assert_eq!(s.available_modes.len(), 4);
         assert_eq!(s.available_modes[0].id, "highlights");
         assert_eq!(s.available_modes[1].id, "transcript");
@@ -756,7 +914,7 @@ mod tests {
 
     #[test]
     fn new_has_empty_items_per_mode() {
-        let s = ServerState::new();
+        let s = UserState::new();
         for mode in &s.available_modes {
             assert_eq!(s.items_per_mode[&mode.id].len(), 0);
         }
@@ -764,13 +922,13 @@ mod tests {
 
     #[test]
     fn new_default_current_mode_is_transcript() {
-        let s = ServerState::new();
+        let s = UserState::new();
         assert_eq!(s.current_mode, "transcript");
     }
 
     #[test]
     fn snapshot_initial_state() {
-        let s = ServerState::new();
+        let s = UserState::new();
         match s.snapshot() {
             Event::Snapshot {
                 protocol_version,
@@ -810,7 +968,7 @@ mod tests {
 
     #[test]
     fn start_meeting_from_idle() {
-        let mut s = ServerState::new();
+        let mut s = UserState::new();
         let out = s.apply_intent(Intent::StartMeeting {
             description: None,
             metadata: Some(HashMap::from([("project".into(), "helix".into())])),
@@ -834,7 +992,7 @@ mod tests {
 
     #[test]
     fn start_meeting_with_description_signals_extraction() {
-        let mut s = ServerState::new();
+        let mut s = UserState::new();
         let out = s.apply_intent(Intent::StartMeeting {
             description: Some("Q1 budget review".into()),
             metadata: None,
@@ -848,7 +1006,7 @@ mod tests {
 
     #[test]
     fn start_meeting_when_active_is_noop() {
-        let mut s = ServerState::new();
+        let mut s = UserState::new();
         s.apply_intent(Intent::StartMeeting {
             description: None,
             metadata: None,
@@ -866,7 +1024,7 @@ mod tests {
 
     #[test]
     fn stop_meeting_from_active() {
-        let mut s = ServerState::new();
+        let mut s = UserState::new();
         s.apply_intent(Intent::StartMeeting {
             description: None,
             metadata: Some(HashMap::from([("k".into(), "v".into())])),
@@ -883,7 +1041,7 @@ mod tests {
 
     #[test]
     fn stop_meeting_when_idle_is_noop() {
-        let mut s = ServerState::new();
+        let mut s = UserState::new();
         let out = s.apply_intent(Intent::StopMeeting);
         assert!(out.events.is_empty());
         assert!(!out.stopped_meeting);
@@ -891,7 +1049,7 @@ mod tests {
 
     #[test]
     fn pause_from_active() {
-        let mut s = ServerState::new();
+        let mut s = UserState::new();
         s.apply_intent(Intent::StartMeeting {
             description: None,
             metadata: None,
@@ -905,7 +1063,7 @@ mod tests {
 
     #[test]
     fn pause_when_idle_or_paused_is_noop() {
-        let mut s = ServerState::new();
+        let mut s = UserState::new();
         let out = s.apply_intent(Intent::Pause);
         assert!(out.events.is_empty());
 
@@ -921,7 +1079,7 @@ mod tests {
 
     #[test]
     fn resume_from_paused() {
-        let mut s = ServerState::new();
+        let mut s = UserState::new();
         s.apply_intent(Intent::StartMeeting {
             description: None,
             metadata: None,
@@ -935,7 +1093,7 @@ mod tests {
 
     #[test]
     fn resume_when_idle_or_active_is_noop() {
-        let mut s = ServerState::new();
+        let mut s = UserState::new();
         let out = s.apply_intent(Intent::Resume);
         assert!(out.events.is_empty());
 
@@ -950,7 +1108,7 @@ mod tests {
 
     #[test]
     fn set_mode_valid() {
-        let mut s = ServerState::new();
+        let mut s = UserState::new();
         let out = s.apply_intent(Intent::SetMode {
             mode: "transcript".into(),
         });
@@ -972,7 +1130,7 @@ mod tests {
 
     #[test]
     fn set_mode_unknown_emits_error() {
-        let mut s = ServerState::new();
+        let mut s = UserState::new();
         let out = s.apply_intent(Intent::SetMode {
             mode: "bogus".into(),
         });
@@ -991,7 +1149,7 @@ mod tests {
 
     #[test]
     fn set_mode_in_idle_is_allowed() {
-        let mut s = ServerState::new();
+        let mut s = UserState::new();
         let out = s.apply_intent(Intent::SetMode {
             mode: "actions".into(),
         });
@@ -1001,7 +1159,7 @@ mod tests {
 
     #[test]
     fn set_metadata_insert() {
-        let mut s = ServerState::new();
+        let mut s = UserState::new();
         let out = s.apply_intent(Intent::SetMetadata {
             key: "project".into(),
             value: Some("helix".into()),
@@ -1018,7 +1176,7 @@ mod tests {
 
     #[test]
     fn set_metadata_delete() {
-        let mut s = ServerState::new();
+        let mut s = UserState::new();
         s.apply_intent(Intent::SetMetadata {
             key: "k".into(),
             value: Some("v".into()),
@@ -1036,7 +1194,7 @@ mod tests {
 
     #[test]
     fn mark_moment_active_emits_status() {
-        let mut s = ServerState::new();
+        let mut s = UserState::new();
         s.apply_intent(Intent::StartMeeting {
             description: None,
             metadata: None,
@@ -1057,14 +1215,14 @@ mod tests {
 
     #[test]
     fn mark_moment_idle_is_noop() {
-        let mut s = ServerState::new();
+        let mut s = UserState::new();
         let out = s.apply_intent(Intent::MarkMoment { t: 0, note: None });
         assert!(out.events.is_empty());
     }
 
     #[test]
     fn expand_item_append_strategy_returns_single_item() {
-        let mut s = ServerState::new();
+        let mut s = UserState::new();
         s.apply_intent(Intent::StartMeeting {
             description: None,
             metadata: None,
@@ -1092,7 +1250,7 @@ mod tests {
 
     #[test]
     fn expand_item_replace_strategy_returns_full_list() {
-        let mut s = ServerState::new();
+        let mut s = UserState::new();
         s.apply_intent(Intent::StartMeeting {
             description: None,
             metadata: None,
@@ -1120,7 +1278,7 @@ mod tests {
 
     #[test]
     fn expand_item_unknown_emits_error() {
-        let mut s = ServerState::new();
+        let mut s = UserState::new();
         s.apply_intent(Intent::StartMeeting {
             description: None,
             metadata: None,
@@ -1143,7 +1301,7 @@ mod tests {
 
     #[test]
     fn rolling_transcript_appends_chunks() {
-        let mut s = ServerState::new();
+        let mut s = UserState::new();
         s.apply_intent(Intent::StartMeeting {
             description: None,
             metadata: None,
@@ -1155,6 +1313,7 @@ mod tests {
             t_start_ms: 100,
             t_end_ms: 1100,
             speaker: None,
+            user_id: "test-user".into(),
         };
         s.append_transcript_chunk(chunk);
         assert_eq!(s.rolling_transcript_text(), "hello world");
@@ -1162,7 +1321,7 @@ mod tests {
 
     #[test]
     fn rolling_transcript_joins_with_newlines() {
-        let mut s = ServerState::new();
+        let mut s = UserState::new();
         s.apply_intent(Intent::StartMeeting {
             description: None,
             metadata: None,
@@ -1174,6 +1333,7 @@ mod tests {
             t_start_ms: 0,
             t_end_ms: 1000,
             speaker: None,
+            user_id: "test-user".into(),
         });
         s.append_transcript_chunk(crate::stt::TranscriptChunk {
             id: "c2".into(),
@@ -1181,13 +1341,14 @@ mod tests {
             t_start_ms: 1100,
             t_end_ms: 2000,
             speaker: None,
+            user_id: "test-user".into(),
         });
         assert_eq!(s.rolling_transcript_text(), "first line\nsecond line");
     }
 
     #[test]
     fn append_transcript_chunk_noop_when_not_active() {
-        let mut s = ServerState::new();
+        let mut s = UserState::new();
         // Meeting is Idle, not Active
         s.append_transcript_chunk(crate::stt::TranscriptChunk {
             id: "c1".into(),
@@ -1195,13 +1356,14 @@ mod tests {
             t_start_ms: 0,
             t_end_ms: 100,
             speaker: None,
+            user_id: "test-user".into(),
         });
         assert_eq!(s.rolling_transcript_text(), "");
     }
 
     #[test]
     fn stop_meeting_clears_rolling_transcript() {
-        let mut s = ServerState::new();
+        let mut s = UserState::new();
         s.apply_intent(Intent::StartMeeting {
             description: None,
             metadata: None,
@@ -1213,6 +1375,7 @@ mod tests {
             t_start_ms: 0,
             t_end_ms: 100,
             speaker: None,
+            user_id: "test-user".into(),
         });
         s.apply_intent(Intent::StopMeeting);
         assert_eq!(s.rolling_transcript_text(), "");
@@ -1220,7 +1383,7 @@ mod tests {
 
     #[test]
     fn push_item_for_mode_replace_caps_at_10() {
-        let mut s = ServerState::new();
+        let mut s = UserState::new();
         s.apply_intent(Intent::StartMeeting {
             description: None,
             metadata: None,
@@ -1246,7 +1409,7 @@ mod tests {
 
     #[test]
     fn push_item_for_mode_append_returns_single_item() {
-        let mut s = ServerState::new();
+        let mut s = UserState::new();
         s.apply_intent(Intent::StartMeeting {
             description: None,
             metadata: None,
@@ -1280,7 +1443,7 @@ mod tests {
 
     #[test]
     fn push_item_for_unknown_mode_is_noop() {
-        let mut s = ServerState::new();
+        let mut s = UserState::new();
         s.apply_intent(Intent::StartMeeting {
             description: None,
             metadata: None,
@@ -1301,7 +1464,7 @@ mod tests {
 
     #[test]
     fn replace_items_for_mode_overwrites() {
-        let mut s = ServerState::new();
+        let mut s = UserState::new();
         s.apply_intent(Intent::StartMeeting {
             description: None,
             metadata: None,
@@ -1336,7 +1499,7 @@ mod tests {
 
     #[test]
     fn register_device_assigns_unique_id_and_marks_online() {
-        let mut s = ServerState::new();
+        let mut s = UserState::new();
         let device = s.register_device(
             "conn-1".into(),
             "tiago-laptop".into(),
@@ -1357,7 +1520,7 @@ mod tests {
 
     #[test]
     fn unregister_device_removes_entry() {
-        let mut s = ServerState::new();
+        let mut s = UserState::new();
         let device = s.register_device(
             "conn-1".into(),
             "tiago-laptop".into(),
@@ -1373,7 +1536,7 @@ mod tests {
 
     #[test]
     fn unregister_device_clears_audio_binding_if_match() {
-        let mut s = ServerState::new();
+        let mut s = UserState::new();
         let device = s.register_device(
             "conn-1".into(),
             "tiago-laptop".into(),
@@ -1390,7 +1553,7 @@ mod tests {
 
     #[test]
     fn unregister_device_keeps_audio_binding_if_different() {
-        let mut s = ServerState::new();
+        let mut s = UserState::new();
         let other = s.register_device(
             "conn-other".into(),
             "other-mac".into(),
@@ -1413,7 +1576,7 @@ mod tests {
 
     #[test]
     fn snapshot_includes_devices_and_audio_binding() {
-        let mut s = ServerState::new();
+        let mut s = UserState::new();
         let d = s.register_device(
             "conn-1".into(),
             "host".into(),

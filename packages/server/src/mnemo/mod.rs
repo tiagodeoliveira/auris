@@ -30,7 +30,7 @@ use std::sync::Arc;
 
 use tokio::sync::{broadcast, Mutex};
 
-use crate::contract::Event;
+use crate::contract::{Event, UserEvent};
 use crate::state::ServerState;
 
 /// Spin up both the ingestion pusher and the start-of-meeting recaller.
@@ -38,7 +38,7 @@ use crate::state::ServerState;
 pub fn spawn_tasks(
     client: MnemoClient,
     state: Arc<Mutex<ServerState>>,
-    events_tx: &broadcast::Sender<Event>,
+    events_tx: &broadcast::Sender<UserEvent>,
 ) {
     if !client.is_enabled() {
         tracing::info!("mnemo tasks not spawning — client disabled");

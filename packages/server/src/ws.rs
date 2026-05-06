@@ -24,7 +24,7 @@ use tower_http::cors::CorsLayer;
 use tracing::{info, warn};
 
 use crate::auth::AuthValidator;
-use crate::contract::{Event, Intent};
+use crate::contract::{Event, Intent, UserEvent};
 use crate::llm::LlmClient;
 use crate::state::ServerState;
 
@@ -64,7 +64,7 @@ pub type DirectRegistry = Arc<StdMutex<HashMap<String, DirectMailbox>>>;
 #[derive(Clone)]
 pub struct ServerHandle {
     pub state: Arc<Mutex<ServerState>>,
-    pub events_tx: broadcast::Sender<Event>,
+    pub events_tx: broadcast::Sender<UserEvent>,
     /// Per-connection senders for targeted events
     /// (currently `Event::CaptureMomentScreenshot`). The `events_tx`
     /// broadcast still handles everything-to-everyone traffic.
@@ -72,19 +72,23 @@ pub struct ServerHandle {
     /// Auth mode chosen at boot. `Arc` so it's cheap to clone into
     /// `ApiState` without paying for the `Disabled` enum variant.
     pub auth: Arc<AuthMode>,
-    pub meeting_cancel: Arc<StdMutex<Option<CancellationToken>>>,
-    /// Cancels in-flight metadata extraction. Independent of meeting_cancel
-    /// so idle-time extractions (Intent::ExtractMetadata) survive
-    /// start_meeting and so we can cancel a stale extraction when the
-    /// meeting is stopped.
-    pub extraction_cancel: Arc<StdMutex<Option<CancellationToken>>>,
+    /// Per-user pipeline cancellation tokens. Each user's
+    /// start_meeting installs a fresh token here; their stop_meeting
+    /// cancels and removes it. Two users can have concurrent meetings
+    /// without cross-cancelling each other.
+    pub meeting_cancel: Arc<StdMutex<HashMap<String, CancellationToken>>>,
+    /// Cancels in-flight metadata extraction, keyed per-user.
+    /// Independent of `meeting_cancel` so idle-time extractions
+    /// (Intent::ExtractMetadata) survive start_meeting; the entry for
+    /// a given user is replaced when they kick a new extraction.
+    pub extraction_cancel: Arc<StdMutex<HashMap<String, CancellationToken>>>,
     pub shutdown: CancellationToken,
     pub llm: Arc<LlmClient>,
-    /// Single `RemoteAudioSource` instance for the server lifetime.
-    /// Meetings call `start()` against it to allocate a new
-    /// downstream channel; `/audio` WS connections forward incoming
-    /// PCM into the same channel via `current_sender()`.
-    pub audio_source: Arc<crate::audio::RemoteAudioSource>,
+    /// Per-user `RemoteAudioSource` instances. Each user's
+    /// `start_meeting` lazily inserts (or reuses) their entry so
+    /// concurrent meetings from different users don't cross-feed.
+    /// `/audio` WS handlers route by their connection's `user_id`.
+    pub audio_sources: Arc<StdMutex<HashMap<String, Arc<crate::audio::RemoteAudioSource>>>>,
     /// SQLite pool for meeting / moment persistence. See `db` module.
     /// Single connection pool is fine — the access pattern is
     /// "occasional small writes from intent handlers"; we're
@@ -95,6 +99,57 @@ pub struct ServerHandle {
     /// subscribes; nothing else does today. Held so api.rs can
     /// receive a clone via `ApiState`.
     pub moment_created_tx: broadcast::Sender<crate::api::MomentCreated>,
+}
+
+impl ServerHandle {
+    /// Replace the cancellation token for `user_id`'s active meeting
+    /// pipeline, cancelling any previous one. Returns the new token.
+    pub fn meeting_cancel_for(&self, user_id: &str) -> CancellationToken {
+        let mut map = self.meeting_cancel.lock().unwrap();
+        if let Some(prev) = map.remove(user_id) {
+            prev.cancel();
+        }
+        let t = CancellationToken::new();
+        map.insert(user_id.to_string(), t.clone());
+        t
+    }
+
+    /// Cancel + remove the active-meeting token for `user_id`.
+    pub fn cancel_meeting_for(&self, user_id: &str) {
+        if let Some(t) = self.meeting_cancel.lock().unwrap().remove(user_id) {
+            t.cancel();
+        }
+    }
+
+    /// Cancel + remove the extraction token for `user_id`.
+    pub fn cancel_extraction_for(&self, user_id: &str) {
+        if let Some(t) = self.extraction_cancel.lock().unwrap().remove(user_id) {
+            t.cancel();
+        }
+    }
+
+    /// Replace this user's extraction token with a fresh one,
+    /// cancelling the previous (if any) so an in-flight extraction
+    /// is dropped before the new one fires.
+    pub fn extraction_cancel_for(&self, user_id: &str) -> CancellationToken {
+        let mut map = self.extraction_cancel.lock().unwrap();
+        if let Some(prev) = map.remove(user_id) {
+            prev.cancel();
+        }
+        let t = CancellationToken::new();
+        map.insert(user_id.to_string(), t.clone());
+        t
+    }
+
+    /// Get or create the audio source for a user. Each user has
+    /// their own `RemoteAudioSource` so concurrent meetings from
+    /// different users have isolated PCM pipelines.
+    pub fn audio_source_for(&self, user_id: &str) -> Arc<crate::audio::RemoteAudioSource> {
+        let mut map = self.audio_sources.lock().unwrap();
+        map.entry(user_id.to_string())
+            .or_insert_with(|| Arc::new(crate::audio::RemoteAudioSource::new()))
+            .clone()
+    }
 }
 
 pub async fn run_server(
@@ -114,7 +169,7 @@ pub async fn run_server_with_listener(
     llm: Arc<LlmClient>,
     mut shutdown_rx: oneshot::Receiver<()>,
 ) -> Result<()> {
-    let (events_tx, _) = broadcast::channel::<Event>(64);
+    let (events_tx, _) = broadcast::channel::<UserEvent>(64);
     let shutdown = CancellationToken::new();
     let state = Arc::new(Mutex::new(ServerState::new()));
 
@@ -126,7 +181,7 @@ pub async fn run_server_with_listener(
     // active (ended_at IS NULL in the meetings table), pick it up,
     // replay the persisted transcript items, and resume as if the
     // meeting had never been interrupted.
-    let recovered = recover_active_meeting(&db, &state).await;
+    let recovered = recover_active_meetings(&db, &state).await;
 
     // Memory layer: spin up the ingestion pusher and the start-of-meeting
     // recaller. Each gets its own broadcast subscription. No-op if mnemo
@@ -147,11 +202,11 @@ pub async fn run_server_with_listener(
         events_tx,
         direct_tx: Arc::new(StdMutex::new(HashMap::new())),
         auth: Arc::new(auth),
-        meeting_cancel: Arc::new(StdMutex::new(None)),
-        extraction_cancel: Arc::new(StdMutex::new(None)),
+        meeting_cancel: Arc::new(StdMutex::new(HashMap::new())),
+        extraction_cancel: Arc::new(StdMutex::new(HashMap::new())),
         shutdown: shutdown.clone(),
         llm,
-        audio_source: Arc::new(crate::audio::RemoteAudioSource::new()),
+        audio_sources: Arc::new(StdMutex::new(HashMap::new())),
         db,
         moment_created_tx,
     };
@@ -162,30 +217,30 @@ pub async fn run_server_with_listener(
     // SQLite. See `summarizer/moment.rs`.
     crate::summarizer::moment::spawn_worker(handle.clone());
 
-    // If we recovered an active meeting, fire a synthetic
-    // `MeetingStateChanged Active` so the subscribers we just spawned
-    // (mnemo, etc.) treat it as a started session. Then spin up the
-    // live pipeline so STT + summarizers + audio are all running again.
-    // The Mac's auto-reconnect will reconnect /audio into the new
-    // RemoteAudioSource sender via late binding.
-    if let Some(recovered_id) = recovered {
-        let _ = handle.events_tx.send(Event::MeetingStateChanged {
-            meeting_state: crate::contract::MeetingState::Active,
-            meeting_id: Some(recovered_id.clone()),
-        });
-
-        let token = {
-            let mut slot = handle.meeting_cancel.lock().unwrap();
-            let t = CancellationToken::new();
-            *slot = Some(t.clone());
-            t
-        };
-        spawn_live_pipeline(handle.clone(), token.child_token()).await;
-        info!(meeting_id = %recovered_id, "live pipeline restarted for recovered meeting");
+    // For each recovered user-meeting pair: emit a synthetic
+    // `MeetingStateChanged Active` (tagged to that user so only their
+    // connections receive it) and spin up that user's live pipeline.
+    for r in recovered {
+        let _ = handle.events_tx.send(UserEvent::new(
+            r.user_id.clone(),
+            Event::MeetingStateChanged {
+                meeting_state: crate::contract::MeetingState::Active,
+                meeting_id: Some(r.meeting_id.clone()),
+            },
+        ));
+        let token = handle.meeting_cancel_for(&r.user_id);
+        spawn_live_pipeline(handle.clone(), r.user_id.clone(), token.child_token()).await;
+        info!(
+            user_id = %r.user_id,
+            meeting_id = %r.meeting_id,
+            "live pipeline restarted for recovered meeting"
+        );
     }
 
-    // Periodic Status broadcast — keeps the wsStatus dot in PWA /
-    // Mac UIs accurate even when there's no other event traffic.
+    // Periodic Status broadcast — one event per connected user so
+    // each only sees their own listening/paused state. Users without
+    // an active meeting still receive an idle Status so the wsStatus
+    // dot updates promptly.
     let hb_handle = handle.clone();
     let hb_shutdown = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let hb_shutdown_clone = hb_shutdown.clone();
@@ -197,21 +252,39 @@ pub async fn run_server_with_listener(
             if hb_shutdown_clone.load(std::sync::atomic::Ordering::Relaxed) {
                 break;
             }
-            let status = {
+            let snapshots = {
                 let s = hb_handle.state.lock().await;
-                crate::contract::Status {
-                    listening: matches!(
-                        s.snapshot_meeting_state(),
-                        crate::contract::MeetingState::Active
-                    ),
-                    paused: matches!(
-                        s.snapshot_meeting_state(),
-                        crate::contract::MeetingState::Paused
-                    ),
-                    error: None,
-                }
+                s.user_ids()
+                    .into_iter()
+                    .map(|uid| {
+                        let listening = s
+                            .user(&uid)
+                            .map(|u| {
+                                matches!(u.meeting_state, crate::contract::MeetingState::Active)
+                            })
+                            .unwrap_or(false);
+                        let paused = s
+                            .user(&uid)
+                            .map(|u| {
+                                matches!(u.meeting_state, crate::contract::MeetingState::Paused)
+                            })
+                            .unwrap_or(false);
+                        (uid, listening, paused)
+                    })
+                    .collect::<Vec<_>>()
             };
-            let _ = hb_handle.events_tx.send(Event::Status { status });
+            for (uid, listening, paused) in snapshots {
+                let _ = hb_handle.events_tx.send(UserEvent::new(
+                    uid,
+                    Event::Status {
+                        status: crate::contract::Status {
+                            listening,
+                            paused,
+                            error: None,
+                        },
+                    },
+                ));
+            }
         }
     });
 
@@ -340,8 +413,8 @@ async fn run_control_socket(
         .insert(connection_id.clone(), direct_mailbox_tx);
 
     let snapshot = {
-        let s = handle.state.lock().await;
-        s.snapshot()
+        let mut s = handle.state.lock().await;
+        s.snapshot(&user_id)
     };
 
     let (mut sink, mut stream) = socket.split();
@@ -367,8 +440,15 @@ async fn run_control_socket(
             }
             evt = events_rx.recv() => {
                 match evt {
-                    Ok(event) => {
-                        let json = match serde_json::to_string(&event) {
+                    Ok(envelope) => {
+                        // Per-user fan-out: drop events not addressed to
+                        // this connection's user. The wire shape stays
+                        // the same (just `Event`); only the broadcast
+                        // bus carries the routing tag.
+                        if envelope.user_id != user_id {
+                            continue;
+                        }
+                        let json = match serde_json::to_string(&envelope.event) {
                             Ok(j) => j,
                             Err(e) => {
                                 warn!(?peer, error = %e, "event serialize failed");
@@ -430,18 +510,20 @@ async fn run_control_socket(
     // connection just fall on the floor instead of routing nowhere.
     handle.direct_tx.lock().unwrap().remove(&connection_id);
 
-    // Drop any device registered against this connection; broadcast.
+    // Drop any device registered against this connection; broadcast
+    // the resulting devices list to the *owning user's* connections
+    // only. `unregister_connection` returns the user_id so we don't
+    // leak this connection's removal to other users.
     let removed = {
         let mut s = handle.state.lock().await;
-        s.unregister_device(&connection_id)
+        s.unregister_connection(&connection_id)
     };
-    if let Some(d) = removed {
-        info!(?peer, device_id = %d.id, hostname = %d.hostname, "device unregistered on disconnect");
-        let devices = {
-            let s = handle.state.lock().await;
-            s.devices_clone()
-        };
-        let _ = handle.events_tx.send(Event::DevicesChanged { devices });
+    if let Some((owner_uid, d)) = removed {
+        info!(?peer, device_id = %d.id, hostname = %d.hostname, user_id = %owner_uid, "device unregistered on disconnect");
+        let devices = handle.state.lock().await.devices_clone_for(&owner_uid);
+        let _ = handle
+            .events_tx
+            .send(UserEvent::new(owner_uid, Event::DevicesChanged { devices }));
     }
 
     info!(?peer, "control connection closed");
@@ -464,10 +546,10 @@ async fn run_audio_socket(
     handle: ServerHandle,
     user_id: String,
 ) {
-    let _ = &user_id; // Phase B will scope `audio_source` per user; for
-                      // now Phase A is single-tenant in memory and the
-                      // user_id is just a known fact from the JWT.
-    let remote = &handle.audio_source;
+    // Per-user audio source — frames from this connection are
+    // routed only into this user's STT pipeline. Cross-user PCM
+    // bleed is structurally prevented.
+    let remote = handle.audio_source_for(&user_id);
     info!(?peer, user_id = %user_id, "/audio connection accepted");
 
     let (mut sink, mut stream) = socket.split();
@@ -583,51 +665,69 @@ async fn run_audio_socket(
 /// Failures are logged but never propagate — boot recovery is
 /// best-effort, the server should still come up even if the disk
 /// is corrupted.
-async fn recover_active_meeting(
+/// Each entry is `(user_id, meeting_id)` for one user that had an
+/// unfinished meeting at server stop. Boot recovery hands these off
+/// to the per-user pipeline-spawn path.
+struct RecoveredUserMeeting {
+    user_id: String,
+    meeting_id: String,
+}
+
+async fn recover_active_meetings(
     db: &sqlx::SqlitePool,
     state: &Arc<Mutex<ServerState>>,
-) -> Option<String> {
+) -> Vec<RecoveredUserMeeting> {
     // Test escape hatch: integration tests share a process and would
     // resurrect each other's leftover meetings without this gate.
-    // Production never sets it.
     if std::env::var("MEETING_COMPANION_SKIP_BOOT_RECOVERY").is_ok() {
-        return None;
+        return Vec::new();
     }
-    let row = match crate::db::find_active_meeting(db).await {
-        Ok(Some(r)) => r,
-        Ok(None) => return None,
+    let rows = match crate::db::find_active_meetings_per_user(db).await {
+        Ok(r) => r,
         Err(e) => {
-            warn!(error = ?e, "find_active_meeting failed; skipping boot recovery");
-            return None;
+            warn!(error = ?e, "find_active_meetings_per_user failed; skipping boot recovery");
+            return Vec::new();
         }
     };
-    let (id, description, metadata_json, started_at) = row;
 
-    let metadata: HashMap<String, String> =
-        serde_json::from_str(&metadata_json).unwrap_or_default();
-    let transcript_items = crate::persistence::read_transcription(&id)
-        .await
-        .unwrap_or_default();
-
-    info!(
-        meeting_id = %id,
-        items = transcript_items.len(),
-        ?started_at,
-        "recovering active meeting"
-    );
-
-    let recovered = crate::state::RecoveredMeeting {
-        id: id.clone(),
-        description,
-        metadata,
-        started_at,
-        transcript_items,
-    };
-    state
-        .lock()
-        .await
-        .rehydrate_from_recovered_meeting(&recovered);
-    Some(id)
+    let mut recovered = Vec::new();
+    let mut seen_users = std::collections::HashSet::new();
+    for (user_id, meeting_id, description, metadata_json, started_at) in rows {
+        // One active meeting per user is the design invariant. If
+        // the DB has stragglers (e.g., crash mid-stop), pick the
+        // newest per user (rows are ordered DESC) and ignore older.
+        if !seen_users.insert(user_id.clone()) {
+            continue;
+        }
+        let metadata: HashMap<String, String> =
+            serde_json::from_str(&metadata_json).unwrap_or_default();
+        let transcript_items = crate::persistence::read_transcription(&meeting_id)
+            .await
+            .unwrap_or_default();
+        info!(
+            user_id = %user_id,
+            meeting_id = %meeting_id,
+            items = transcript_items.len(),
+            ?started_at,
+            "recovering active meeting"
+        );
+        let r = crate::state::RecoveredMeeting {
+            id: meeting_id.clone(),
+            description,
+            metadata,
+            started_at,
+            transcript_items,
+        };
+        state
+            .lock()
+            .await
+            .rehydrate_user_from_recovered(&user_id, &r);
+        recovered.push(RecoveredUserMeeting {
+            user_id,
+            meeting_id,
+        });
+    }
+    recovered
 }
 
 /// Sink alias used by the control-plane intent path. axum's
@@ -702,8 +802,9 @@ async fn dispatch_intent(
     {
         let (device, all_devices) = {
             let mut s = handle.state.lock().await;
-            let device = s.register_device(connection_id.to_string(), hostname, capabilities);
-            let all = s.devices_clone();
+            let device =
+                s.register_device(user_id, connection_id.to_string(), hostname, capabilities);
+            let all = s.devices_clone_for(user_id);
             (device, all)
         };
         // Direct response to the registering client (so it learns its
@@ -714,16 +815,19 @@ async fn dispatch_intent(
         sink.send(Message::Text(serde_json::to_string(&registered)?))
             .await
             .ok();
-        // Broadcast to everyone else.
-        let _ = handle.events_tx.send(Event::DevicesChanged {
-            devices: all_devices,
-        });
+        // Fan out the new devices list to *this user's* connections only.
+        let _ = handle.events_tx.send(UserEvent::new(
+            user_id.to_string(),
+            Event::DevicesChanged {
+                devices: all_devices,
+            },
+        ));
         return Ok(());
     }
 
     let outcome = {
         let mut s = handle.state.lock().await;
-        s.apply_intent(intent)
+        s.apply_intent(user_id, intent)
     };
 
     if let Some(err_event) = outcome.error {
@@ -731,52 +835,33 @@ async fn dispatch_intent(
         sink.send(Message::Text(json)).await.ok();
     }
     for event in outcome.events {
-        let _ = handle.events_tx.send(event);
-    }
-    if outcome.started_meeting || outcome.resumed_meeting {
-        let mut slot = handle.meeting_cancel.lock().unwrap();
-        if let Some(prev) = slot.take() {
-            prev.cancel();
-        }
-        *slot = Some(CancellationToken::new());
+        let _ = handle
+            .events_tx
+            .send(UserEvent::new(user_id.to_string(), event));
     }
     if outcome.started_meeting {
-        let token = handle
-            .meeting_cancel
-            .lock()
-            .unwrap()
-            .as_ref()
-            .map(|t| t.child_token());
-        if let Some(t) = token {
-            spawn_live_pipeline(handle.clone(), t).await;
-        }
+        // Install a fresh per-user pipeline cancel token + spawn the
+        // pipeline. `meeting_cancel_for` cancels any previous token
+        // for this user (e.g., a stale resume that didn't tear down).
+        let token = handle.meeting_cancel_for(user_id);
+        spawn_live_pipeline(handle.clone(), user_id.to_string(), token.child_token()).await;
+    } else if outcome.resumed_meeting {
+        // Resume reuses the existing token; the meeting state machine
+        // doesn't tear down the pipeline on pause/resume cycles.
     }
     if let Some(description) = outcome.start_extraction_for {
-        // Cancel any previous extraction; install a fresh token so this
-        // request can be canceled by stop_meeting or by the next extract.
-        let token = {
-            let mut slot = handle.extraction_cancel.lock().unwrap();
-            if let Some(prev) = slot.take() {
-                prev.cancel();
-            }
-            let t = CancellationToken::new();
-            *slot = Some(t.clone());
-            t
-        };
-        spawn_extraction(handle.clone(), description, token);
+        // Cancel any previous extraction for *this* user; install
+        // a fresh token. Cross-user extractions don't interfere.
+        let token = handle.extraction_cancel_for(user_id);
+        spawn_extraction(handle.clone(), user_id.to_string(), description, token);
     }
     if outcome.stopped_meeting || outcome.paused_meeting {
-        let prev = handle.meeting_cancel.lock().unwrap().take();
-        if let Some(t) = prev {
-            t.cancel();
-        }
+        handle.cancel_meeting_for(user_id);
     }
     if outcome.stopped_meeting {
         // Drop any in-flight extraction; otherwise its result would land
         // in the now-empty idle metadata as if from a fresh request.
-        if let Some(t) = handle.extraction_cancel.lock().unwrap().take() {
-            t.cancel();
-        }
+        handle.cancel_extraction_for(user_id);
     }
 
     // Persistence side-effects. None of these block the broadcast
@@ -848,17 +933,22 @@ async fn dispatch_intent(
                 // broadcasting and asking every client to filter.
                 let target_connection: Option<String> = {
                     let s = handle.state.lock().await;
-                    s.audio_source_device_id.as_ref().and_then(|id| {
-                        s.devices_by_connection
-                            .iter()
-                            .find(|(_, d)| {
-                                d.id == *id
-                                    && d.online
-                                    && d.capabilities
-                                        .contains(&crate::contract::Capability::ScreenCapture)
+                    s.user(user_id)
+                        .and_then(|u| u.audio_source_device_id.as_ref().cloned())
+                        .and_then(|device_id| {
+                            s.user(user_id).and_then(|u| {
+                                u.devices_by_connection
+                                    .iter()
+                                    .find(|(_, d)| {
+                                        d.id == device_id
+                                            && d.online
+                                            && d.capabilities.contains(
+                                                &crate::contract::Capability::ScreenCapture,
+                                            )
+                                    })
+                                    .map(|(conn, _)| conn.clone())
                             })
-                            .map(|(conn, _)| conn.clone())
-                    })
+                        })
                 };
                 if let Some(conn_id) = target_connection {
                     let event = Event::CaptureMomentScreenshot {
@@ -912,7 +1002,12 @@ fn heartbeat_interval() -> Duration {
     }
     Duration::from_secs(10)
 }
-fn spawn_extraction(handle: ServerHandle, description: String, cancel: CancellationToken) {
+fn spawn_extraction(
+    handle: ServerHandle,
+    user_id: String,
+    description: String,
+    cancel: CancellationToken,
+) {
     tokio::spawn(async move {
         // Dev escape hatch.
         if std::env::var("MEETING_COMPANION_LLM_DISABLED").is_ok() {
@@ -923,6 +1018,7 @@ fn spawn_extraction(handle: ServerHandle, description: String, cancel: Cancellat
         tracing::info!(
             provider = ?handle.llm.provider(),
             description_len = description.len(),
+            user_id = %user_id,
             "metadata extraction starting"
         );
         let extracted = tokio::select! {
@@ -934,13 +1030,22 @@ fn spawn_extraction(handle: ServerHandle, description: String, cancel: Cancellat
                 Err(e) => {
                     tracing::warn!(error = %e, "metadata extraction failed");
                     let s = handle.state.lock().await;
+                    let user = s.user(&user_id);
+                    let listening = user
+                        .map(|u| matches!(u.meeting_state, crate::contract::MeetingState::Active))
+                        .unwrap_or(false);
+                    let paused = user
+                        .map(|u| matches!(u.meeting_state, crate::contract::MeetingState::Paused))
+                        .unwrap_or(false);
                     let status = crate::contract::Status {
-                        listening: matches!(s.snapshot_meeting_state(), crate::contract::MeetingState::Active),
-                        paused: matches!(s.snapshot_meeting_state(), crate::contract::MeetingState::Paused),
+                        listening,
+                        paused,
                         error: Some(short_error(&e)),
                     };
                     drop(s);
-                    let _ = handle.events_tx.send(Event::Status { status });
+                    let _ = handle
+                        .events_tx
+                        .send(UserEvent::new(user_id.clone(), Event::Status { status }));
                     return;
                 }
             },
@@ -954,12 +1059,13 @@ fn spawn_extraction(handle: ServerHandle, description: String, cancel: Cancellat
         // may have been requested before the meeting was started.
         let event = {
             let mut s = handle.state.lock().await;
-            let manual = s.metadata_clone();
+            let user = s.user_mut(&user_id);
+            let manual = user.metadata_clone();
             let merged = crate::extraction::merge_manual_wins(extracted, &manual);
-            s.set_metadata_full(merged.clone());
+            user.set_metadata_full(merged.clone());
             Event::MetadataChanged { metadata: merged }
         };
-        let _ = handle.events_tx.send(event);
+        let _ = handle.events_tx.send(UserEvent::new(user_id, event));
     });
 }
 
@@ -971,14 +1077,15 @@ fn short_error(e: &crate::llm::ExtractionError) -> String {
     }
 }
 
-async fn spawn_live_pipeline(handle: ServerHandle, cancel: CancellationToken) {
+async fn spawn_live_pipeline(handle: ServerHandle, user_id: String, cancel: CancellationToken) {
     let (chunk_tx, _) = tokio::sync::broadcast::channel::<crate::stt::TranscriptChunk>(64);
 
     // -------------------------------------------------------------------
-    // Audio source. Allocates a downstream channel; the rx feeds STT,
-    // the tx is parked on the `RemoteAudioSource` for `/audio` WS
-    // handlers to forward into. `MEETING_COMPANION_AUDIO_DISABLED` is
-    // a test/CI knob that runs the pipeline silent (no STT input).
+    // Audio source — per-user. Allocates a downstream channel scoped
+    // to this user; the rx feeds *their* STT, the tx is parked on
+    // `RemoteAudioSource` so `/audio` WS handlers carrying the same
+    // user_id can forward incoming PCM into it. Nothing here ever
+    // crosses user boundaries.
     // -------------------------------------------------------------------
     let audio_disabled = std::env::var("MEETING_COMPANION_AUDIO_DISABLED").is_ok();
     let audio_rx = if audio_disabled {
@@ -986,8 +1093,9 @@ async fn spawn_live_pipeline(handle: ServerHandle, cancel: CancellationToken) {
         None
     } else {
         let audio_cancel = cancel.child_token();
-        let rx = handle.audio_source.start(audio_cancel).await;
-        tracing::info!("audio source started");
+        let user_audio = handle.audio_source_for(&user_id);
+        let rx = user_audio.start(audio_cancel).await;
+        tracing::info!(user_id = %user_id, "audio source started");
         Some(rx)
     };
 
@@ -1009,8 +1117,9 @@ async fn spawn_live_pipeline(handle: ServerHandle, cancel: CancellationToken) {
             let stt_cancel = cancel.child_token();
             let stt_tx = chunk_tx.clone();
             let stt_events_tx = handle.events_tx.clone();
-            tracing::info!(provider = provider.name(), "live pipeline STT spawning");
-            tokio::spawn(provider.run(audio_rx, stt_tx, stt_events_tx, stt_cancel));
+            let stt_uid = user_id.clone();
+            tracing::info!(provider = provider.name(), user_id = %user_id, "live pipeline STT spawning");
+            tokio::spawn(provider.run(audio_rx, stt_tx, stt_events_tx, stt_uid, stt_cancel));
         }
         Err(e) => {
             tracing::error!(error = %e, provider = %provider_name, "STT provider init failed; meeting will run without transcription");
@@ -1023,11 +1132,13 @@ async fn spawn_live_pipeline(handle: ServerHandle, cancel: CancellationToken) {
         let task_events = handle.events_tx.clone();
         let task_rx = chunk_tx.subscribe();
         let task_cancel = cancel.child_token();
+        let task_uid = user_id.clone();
         tokio::spawn(async move {
             crate::summarizer::transcript::run_transcript_summarizer(
                 task_state,
                 task_rx,
                 task_events,
+                task_uid,
                 task_cancel,
             )
             .await;
@@ -1040,6 +1151,7 @@ async fn spawn_live_pipeline(handle: ServerHandle, cancel: CancellationToken) {
         let task_llm = Arc::clone(&handle.llm);
         let task_events = handle.events_tx.clone();
         let task_cancel = cancel.child_token();
+        let task_uid = user_id.clone();
         let interval_ms: u64 = std::env::var("MEETING_COMPANION_HIGHLIGHTS_INTERVAL_MS")
             .ok()
             .and_then(|s| s.parse().ok())
@@ -1049,6 +1161,7 @@ async fn spawn_live_pipeline(handle: ServerHandle, cancel: CancellationToken) {
                 task_state,
                 task_llm,
                 task_events,
+                task_uid,
                 task_cancel,
                 Duration::from_millis(interval_ms),
             )
@@ -1062,6 +1175,7 @@ async fn spawn_live_pipeline(handle: ServerHandle, cancel: CancellationToken) {
         let task_llm = Arc::clone(&handle.llm);
         let task_events = handle.events_tx.clone();
         let task_cancel = cancel.child_token();
+        let task_uid = user_id.clone();
         let interval_ms: u64 = std::env::var("MEETING_COMPANION_ACTIONS_INTERVAL_MS")
             .ok()
             .and_then(|s| s.parse().ok())
@@ -1071,6 +1185,7 @@ async fn spawn_live_pipeline(handle: ServerHandle, cancel: CancellationToken) {
                 task_state,
                 task_llm,
                 task_events,
+                task_uid,
                 task_cancel,
                 Duration::from_millis(interval_ms),
             )
@@ -1084,6 +1199,7 @@ async fn spawn_live_pipeline(handle: ServerHandle, cancel: CancellationToken) {
         let task_llm = Arc::clone(&handle.llm);
         let task_events = handle.events_tx.clone();
         let task_cancel = cancel.child_token();
+        let task_uid = user_id.clone();
         let interval_ms: u64 = std::env::var("MEETING_COMPANION_OPEN_QUESTIONS_INTERVAL_MS")
             .ok()
             .and_then(|s| s.parse().ok())
@@ -1093,6 +1209,7 @@ async fn spawn_live_pipeline(handle: ServerHandle, cancel: CancellationToken) {
                 task_state,
                 task_llm,
                 task_events,
+                task_uid,
                 task_cancel,
                 Duration::from_millis(interval_ms),
             )

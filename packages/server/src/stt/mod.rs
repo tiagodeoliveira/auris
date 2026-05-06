@@ -23,6 +23,10 @@ pub struct TranscriptChunk {
     pub t_end_ms: u64,
     /// Optional speaker label from STT token metadata (often unavailable).
     pub speaker: Option<String>,
+    /// Local `users.id` of the meeting that produced this chunk.
+    /// Stamped by the spawn site of the STT provider so downstream
+    /// summarizers/mnemo know which user's UserState to mutate.
+    pub user_id: String,
 }
 
 /// Errors during STT provider initialization (env-var lookups, etc.).
@@ -54,11 +58,16 @@ pub trait SttProvider: Send {
     /// `events_tx` lets providers emit any server [`crate::contract::Event`] (e.g.
     /// `Event::Status` for reconnect telemetry, `Event::TranscriptInterim` for
     /// in-flight transcript display) without needing extra side-channels.
+    /// `user_id` is the local `users.id` of the meeting owner. The
+    /// provider stamps it on every `TranscriptChunk` and on any
+    /// status/error events it emits, so downstream summarizers and
+    /// WS subscribers can route to the right user.
     fn run(
         self: Box<Self>,
         audio_rx: Option<mpsc::Receiver<Vec<u8>>>,
         transcript_tx: broadcast::Sender<TranscriptChunk>,
-        events_tx: broadcast::Sender<crate::contract::Event>,
+        events_tx: broadcast::Sender<crate::contract::UserEvent>,
+        user_id: String,
         cancel: CancellationToken,
     ) -> Pin<Box<dyn Future<Output = ()> + Send>>;
 

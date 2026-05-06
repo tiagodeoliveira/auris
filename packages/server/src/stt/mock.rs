@@ -42,11 +42,12 @@ impl crate::stt::SttProvider for MockStt {
         self: Box<Self>,
         _audio_rx: Option<tokio::sync::mpsc::Receiver<Vec<u8>>>,
         transcript_tx: broadcast::Sender<TranscriptChunk>,
-        _events_tx: broadcast::Sender<crate::contract::Event>,
+        _events_tx: broadcast::Sender<crate::contract::UserEvent>,
+        user_id: String,
         cancel: CancellationToken,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> {
         Box::pin(async move {
-            run_mock_stt_inner(transcript_tx, cancel, self.interval).await;
+            run_mock_stt_inner(transcript_tx, user_id, cancel, self.interval).await;
         })
     }
 }
@@ -56,6 +57,7 @@ impl crate::stt::SttProvider for MockStt {
 /// `cancel` fires.
 async fn run_mock_stt_inner(
     tx: broadcast::Sender<TranscriptChunk>,
+    user_id: String,
     cancel: CancellationToken,
     interval: Duration,
 ) {
@@ -75,6 +77,7 @@ async fn run_mock_stt_inner(
                     t_start_ms: elapsed_ms.saturating_sub(2000),
                     t_end_ms: elapsed_ms,
                     speaker: None,
+                    user_id: user_id.clone(),
                 };
                 let _ = tx.send(chunk);
                 idx += 1;
@@ -94,7 +97,13 @@ mod tests {
         let task_cancel = cancel.clone();
         let task_tx = tx.clone();
         let handle = tokio::spawn(async move {
-            run_mock_stt_inner(task_tx, task_cancel, Duration::from_millis(100)).await;
+            run_mock_stt_inner(
+                task_tx,
+                "test-user".into(),
+                task_cancel,
+                Duration::from_millis(100),
+            )
+            .await;
         });
 
         // Advance virtual time by ~350 ms — should yield 3 chunks (at +100, +200, +300).

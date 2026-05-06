@@ -103,7 +103,8 @@ impl SttProvider for SonioxStt {
         self: Box<Self>,
         audio_rx: Option<mpsc::Receiver<Vec<u8>>>,
         transcript_tx: broadcast::Sender<TranscriptChunk>,
-        events_tx: broadcast::Sender<crate::contract::Event>,
+        events_tx: broadcast::Sender<crate::contract::UserEvent>,
+        user_id: String,
         cancel: CancellationToken,
     ) -> Pin<Box<dyn Future<Output = ()> + Send>> {
         Box::pin(run_soniox(
@@ -111,6 +112,7 @@ impl SttProvider for SonioxStt {
             audio_rx,
             transcript_tx,
             events_tx,
+            user_id,
             cancel,
         ))
     }
@@ -122,7 +124,8 @@ async fn run_soniox(
     cfg: SonioxStt,
     mut audio_rx: Option<mpsc::Receiver<Vec<u8>>>,
     transcript_tx: broadcast::Sender<TranscriptChunk>,
-    events_tx: broadcast::Sender<crate::contract::Event>,
+    events_tx: broadcast::Sender<crate::contract::UserEvent>,
+    user_id: String,
     cancel: CancellationToken,
 ) {
     if audio_rx.is_none() {
@@ -143,6 +146,7 @@ async fn run_soniox(
             audio_rx.as_mut(),
             &transcript_tx,
             &events_tx,
+            &user_id,
             &cancel,
             session_started,
         )
@@ -151,7 +155,7 @@ async fn run_soniox(
             Ok(()) => {
                 // Clean shutdown — don't reconnect
                 info!("Soniox session ended cleanly");
-                emit_status_clear(&events_tx);
+                emit_status_clear(&events_tx, &user_id);
                 return;
             }
             Err(e) => {
@@ -162,7 +166,7 @@ async fn run_soniox(
                 } else {
                     "stt_reconnecting"
                 };
-                emit_status_error(&events_tx, code);
+                emit_status_error(&events_tx, &user_id, code);
                 tokio::select! {
                     _ = cancel.cancelled() => return,
                     _ = tokio::time::sleep(backoff) => {}
@@ -174,14 +178,21 @@ async fn run_soniox(
 }
 
 /// Emit a `Status` event carrying an error code (e.g. "stt_reconnecting").
-fn emit_status_error(events_tx: &broadcast::Sender<crate::contract::Event>, code: &str) {
-    let _ = events_tx.send(crate::contract::Event::Status {
-        status: crate::contract::Status {
-            listening: true,
-            paused: false,
-            error: Some(code.to_string()),
+fn emit_status_error(
+    events_tx: &broadcast::Sender<crate::contract::UserEvent>,
+    user_id: &str,
+    code: &str,
+) {
+    let _ = events_tx.send(crate::contract::UserEvent::new(
+        user_id,
+        crate::contract::Event::Status {
+            status: crate::contract::Status {
+                listening: true,
+                paused: false,
+                error: Some(code.to_string()),
+            },
         },
-    });
+    ));
 }
 
 /// Emit a `TranscriptInterim` event carrying the live "in-flight" preview
@@ -189,22 +200,33 @@ fn emit_status_error(events_tx: &broadcast::Sender<crate::contract::Event>, code
 /// per-response interim. PWA renders this as a dim italic row at the bottom
 /// of transcript mode. Pass empty buffer + empty interim to clear the row
 /// (e.g., after flush, on cancel, on session close).
-fn emit_live(events_tx: &broadcast::Sender<crate::contract::Event>, buffer: &str, interim: &str) {
+fn emit_live(
+    events_tx: &broadcast::Sender<crate::contract::UserEvent>,
+    user_id: &str,
+    buffer: &str,
+    interim: &str,
+) {
     let mut text = String::with_capacity(buffer.len() + interim.len());
     text.push_str(buffer);
     text.push_str(interim);
-    let _ = events_tx.send(crate::contract::Event::TranscriptInterim { text });
+    let _ = events_tx.send(crate::contract::UserEvent::new(
+        user_id,
+        crate::contract::Event::TranscriptInterim { text },
+    ));
 }
 
 /// Emit a `Status` event clearing any prior error (successful session open/close).
-fn emit_status_clear(events_tx: &broadcast::Sender<crate::contract::Event>) {
-    let _ = events_tx.send(crate::contract::Event::Status {
-        status: crate::contract::Status {
-            listening: true,
-            paused: false,
-            error: None,
+fn emit_status_clear(events_tx: &broadcast::Sender<crate::contract::UserEvent>, user_id: &str) {
+    let _ = events_tx.send(crate::contract::UserEvent::new(
+        user_id,
+        crate::contract::Event::Status {
+            status: crate::contract::Status {
+                listening: true,
+                paused: false,
+                error: None,
+            },
         },
-    });
+    ));
 }
 
 /// True if `s` (after trimming trailing whitespace) ends with a sentence
@@ -240,6 +262,7 @@ fn flush_buffer(
     buffer_first_start_ms: &mut Option<u64>,
     buffer_last_end_ms: &mut Option<u64>,
     transcript_tx: &broadcast::Sender<TranscriptChunk>,
+    user_id: &str,
     session_started: std::time::Instant,
 ) {
     let trimmed = buffer.trim();
@@ -257,6 +280,7 @@ fn flush_buffer(
     // PCM/response counters that were too noisy to be useful.
     info!(
         ms = t_end.saturating_sub(t_start),
+        user_id = %user_id,
         text = %trimmed,
         "transcript"
     );
@@ -266,6 +290,7 @@ fn flush_buffer(
         t_start_ms: t_start,
         t_end_ms: t_end,
         speaker: None,
+        user_id: user_id.to_string(),
     };
     let _ = transcript_tx.send(chunk);
     buffer.clear();
@@ -279,7 +304,8 @@ async fn try_one_session(
     cfg: &SonioxStt,
     mut audio_rx: Option<&mut mpsc::Receiver<Vec<u8>>>,
     transcript_tx: &broadcast::Sender<TranscriptChunk>,
-    events_tx: &broadcast::Sender<crate::contract::Event>,
+    events_tx: &broadcast::Sender<crate::contract::UserEvent>,
+    user_id: &str,
     cancel: &CancellationToken,
     session_started: std::time::Instant,
 ) -> Result<(), String> {
@@ -307,7 +333,7 @@ async fn try_one_session(
 
     info!(model = %cfg.model, "Soniox session opened");
     // Clear any prior reconnecting/unavailable status now that we're connected.
-    emit_status_clear(events_tx);
+    emit_status_clear(events_tx, user_id);
 
     // Buffer finalized tokens into utterance-shaped chunks. Soniox's
     // stt-rt-preview emits sub-word tokens (e.g. "Hell", "o,", "how",
@@ -336,8 +362,8 @@ async fn try_one_session(
     loop {
         tokio::select! {
             _ = cancel.cancelled() => {
-                flush_buffer(&mut buffer, &mut buffer_first_start_ms, &mut buffer_last_end_ms, transcript_tx, session_started);
-                emit_live(events_tx, "", "");
+                flush_buffer(&mut buffer, &mut buffer_first_start_ms, &mut buffer_last_end_ms, transcript_tx, user_id, session_started);
+                emit_live(events_tx, user_id, "", "");
                 let _ = writer.close().await;
                 return Ok(());
             }
@@ -356,8 +382,8 @@ async fn try_one_session(
                     }
                     None => {
                         // Audio source ended — close the session
-                        flush_buffer(&mut buffer, &mut buffer_first_start_ms, &mut buffer_last_end_ms, transcript_tx, session_started);
-                        emit_live(events_tx, "", "");
+                        flush_buffer(&mut buffer, &mut buffer_first_start_ms, &mut buffer_last_end_ms, transcript_tx, user_id, session_started);
+                        emit_live(events_tx, user_id, "", "");
                         let _ = writer.close().await;
                         return Ok(());
                     }
@@ -372,9 +398,9 @@ async fn try_one_session(
                     if let Some(t) = last_token_at {
                         let stale = t.elapsed().as_millis() as u64 >= IDLE_FLUSH_MS;
                         if stale && ends_at_soft_boundary(&buffer) {
-                            flush_buffer(&mut buffer, &mut buffer_first_start_ms, &mut buffer_last_end_ms, transcript_tx, session_started);
+                            flush_buffer(&mut buffer, &mut buffer_first_start_ms, &mut buffer_last_end_ms, transcript_tx, user_id, session_started);
                             last_token_at = None;
-                            emit_live(events_tx, "", "");
+                            emit_live(events_tx, user_id, "", "");
                         }
                     }
                 }
@@ -422,14 +448,14 @@ async fn try_one_session(
                                 if ends_with_terminator(&buffer)
                                     || buffer.len() >= MAX_BUFFER_LEN
                                 {
-                                    flush_buffer(&mut buffer, &mut buffer_first_start_ms, &mut buffer_last_end_ms, transcript_tx, session_started);
+                                    flush_buffer(&mut buffer, &mut buffer_first_start_ms, &mut buffer_last_end_ms, transcript_tx, user_id, session_started);
                                     last_token_at = None;
                                 }
                                 // Emit a live preview AFTER any flush so the buffer
                                 // value reflects post-flush state. The live text is
                                 // what the user sees as the "in flight" row in the
                                 // PWA's transcript pane.
-                                emit_live(events_tx, &buffer, &interim_text);
+                                emit_live(events_tx, user_id, &buffer, &interim_text);
                             }
                             Err(e) => {
                                 warn!(error = %e, raw = %t, "Soniox response parse error");
@@ -437,8 +463,8 @@ async fn try_one_session(
                         }
                     }
                     Some(Ok(Message::Close(_))) | None => {
-                        flush_buffer(&mut buffer, &mut buffer_first_start_ms, &mut buffer_last_end_ms, transcript_tx, session_started);
-                        emit_live(events_tx, "", "");
+                        flush_buffer(&mut buffer, &mut buffer_first_start_ms, &mut buffer_last_end_ms, transcript_tx, user_id, session_started);
+                        emit_live(events_tx, user_id, "", "");
                         return Err("Soniox closed connection".into());
                     }
                     Some(Ok(_)) => {} // ignore Pong/Ping/Binary
@@ -500,13 +526,19 @@ mod tests {
         .await;
 
         let (transcript_tx, mut transcript_rx) = broadcast::channel::<TranscriptChunk>(16);
-        let (events_tx, _events_rx) = broadcast::channel::<crate::contract::Event>(16);
+        let (events_tx, _events_rx) = broadcast::channel::<crate::contract::UserEvent>(16);
         let cancel = CancellationToken::new();
         let provider = Box::new(SonioxStt::new_with_url("test_key".into(), url));
         let task_cancel = cancel.clone();
         let task = tokio::spawn(async move {
             provider
-                .run(None, transcript_tx, events_tx, task_cancel)
+                .run(
+                    None,
+                    transcript_tx,
+                    events_tx,
+                    "test-user".into(),
+                    task_cancel,
+                )
                 .await;
         });
 
@@ -548,13 +580,19 @@ mod tests {
         .await;
 
         let (transcript_tx, mut transcript_rx) = broadcast::channel::<TranscriptChunk>(16);
-        let (events_tx, _events_rx) = broadcast::channel::<crate::contract::Event>(16);
+        let (events_tx, _events_rx) = broadcast::channel::<crate::contract::UserEvent>(16);
         let cancel = CancellationToken::new();
         let provider = Box::new(SonioxStt::new_with_url("test_key".into(), url));
         let task_cancel = cancel.clone();
         let task = tokio::spawn(async move {
             provider
-                .run(None, transcript_tx, events_tx, task_cancel)
+                .run(
+                    None,
+                    transcript_tx,
+                    events_tx,
+                    "test-user".into(),
+                    task_cancel,
+                )
                 .await;
         });
 
@@ -599,13 +637,19 @@ mod tests {
         .await;
 
         let (transcript_tx, mut transcript_rx) = broadcast::channel::<TranscriptChunk>(16);
-        let (events_tx, _events_rx) = broadcast::channel::<crate::contract::Event>(16);
+        let (events_tx, _events_rx) = broadcast::channel::<crate::contract::UserEvent>(16);
         let cancel = CancellationToken::new();
         let provider = Box::new(SonioxStt::new_with_url("test_key".into(), url));
         let task_cancel = cancel.clone();
         let task = tokio::spawn(async move {
             provider
-                .run(None, transcript_tx, events_tx, task_cancel)
+                .run(
+                    None,
+                    transcript_tx,
+                    events_tx,
+                    "test-user".into(),
+                    task_cancel,
+                )
                 .await;
         });
 
@@ -675,13 +719,19 @@ mod tests {
         .await;
 
         let (transcript_tx, _) = broadcast::channel::<TranscriptChunk>(16);
-        let (events_tx, mut events_rx) = broadcast::channel::<crate::contract::Event>(16);
+        let (events_tx, mut events_rx) = broadcast::channel::<crate::contract::UserEvent>(16);
         let cancel = CancellationToken::new();
         let provider = Box::new(SonioxStt::new_with_url("test_key".into(), url));
         let task_cancel = cancel.clone();
         let task = tokio::spawn(async move {
             provider
-                .run(None, transcript_tx, events_tx, task_cancel)
+                .run(
+                    None,
+                    transcript_tx,
+                    events_tx,
+                    "test-user".into(),
+                    task_cancel,
+                )
                 .await;
         });
 
@@ -692,7 +742,7 @@ mod tests {
             if let Ok(Ok(evt)) =
                 tokio::time::timeout(std::time::Duration::from_millis(200), events_rx.recv()).await
             {
-                if let crate::contract::Event::TranscriptInterim { text } = evt {
+                if let crate::contract::Event::TranscriptInterim { text } = evt.event {
                     assert!(
                         text.contains("how are you"),
                         "unexpected interim text: {text}"
@@ -722,13 +772,19 @@ mod tests {
         });
 
         let (transcript_tx, _) = broadcast::channel::<TranscriptChunk>(16);
-        let (events_tx, mut events_rx) = broadcast::channel::<crate::contract::Event>(16);
+        let (events_tx, mut events_rx) = broadcast::channel::<crate::contract::UserEvent>(16);
         let cancel = CancellationToken::new();
         let provider = Box::new(SonioxStt::new_with_url("test_key".into(), url));
         let task_cancel = cancel.clone();
         let task = tokio::spawn(async move {
             provider
-                .run(None, transcript_tx, events_tx, task_cancel)
+                .run(
+                    None,
+                    transcript_tx,
+                    events_tx,
+                    "test-user".into(),
+                    task_cancel,
+                )
                 .await;
         });
 
@@ -739,7 +795,7 @@ mod tests {
             if let Ok(Ok(evt)) =
                 tokio::time::timeout(std::time::Duration::from_millis(500), events_rx.recv()).await
             {
-                if let crate::contract::Event::Status { status } = evt {
+                if let crate::contract::Event::Status { status } = evt.event {
                     if status.error.is_some() {
                         saw_error = true;
                     }

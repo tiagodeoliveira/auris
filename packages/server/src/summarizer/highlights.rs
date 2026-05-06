@@ -2,7 +2,7 @@
 //! Produces 3-5 key points from the rolling transcript; replaces the
 //! highlights-mode buffer each cycle.
 
-use crate::contract::{Event, Item};
+use crate::contract::{Event, Item, UserEvent};
 use crate::llm::{ExtractionError, LlmClient};
 use crate::state::ServerState;
 use schemars::JsonSchema;
@@ -38,7 +38,8 @@ pub struct Highlight {
 pub async fn run_highlights_summarizer(
     state: Arc<Mutex<ServerState>>,
     llm: Arc<LlmClient>,
-    events_tx: broadcast::Sender<Event>,
+    events_tx: broadcast::Sender<UserEvent>,
+    user_id: String,
     cancel: CancellationToken,
     interval: Duration,
 ) {
@@ -54,12 +55,11 @@ pub async fn run_highlights_summarizer(
                     continue;
                 }
                 // Highlights intentionally do not consume mnemo prior
-                // context: each meeting's highlights are local to its own
-                // discussion, and pulling in cross-meeting noise dilutes
-                // the "most decisive points so far" signal.
+                // context. Per-user: read this user's rolling transcript
+                // only — never anyone else's.
                 let transcript = {
                     let s = state.lock().await;
-                    s.rolling_transcript_text()
+                    s.rolling_transcript_text_for(&user_id).unwrap_or_default()
                 };
                 if transcript.is_empty() || transcript.len() == last_seen_len {
                     continue;
@@ -70,7 +70,7 @@ pub async fn run_highlights_summarizer(
                     .await
                 {
                     Ok(extracted) => {
-                        let items = extracted
+                        let items: Vec<Item> = extracted
                             .items
                             .into_iter()
                             .enumerate()
@@ -84,12 +84,15 @@ pub async fn run_highlights_summarizer(
                             .collect();
                         let payload = {
                             let mut s = state.lock().await;
-                            s.replace_items_for_mode("highlights", items)
+                            s.user_mut(&user_id).replace_items_for_mode("highlights", items)
                         };
-                        let _ = events_tx.send(Event::ItemsUpdate {
-                            mode: "highlights".into(),
-                            items: payload,
-                        });
+                        let _ = events_tx.send(UserEvent::new(
+                            user_id.clone(),
+                            Event::ItemsUpdate {
+                                mode: "highlights".into(),
+                                items: payload,
+                            },
+                        ));
                     }
                     Err(e) => {
                         warn!(error = %e, "highlights extraction failed; skipping cycle");

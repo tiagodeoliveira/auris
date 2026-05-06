@@ -28,7 +28,7 @@ use tokio::sync::broadcast;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
-use crate::contract::{Event, Item, MeetingState};
+use crate::contract::{Event, Item, MeetingState, UserEvent};
 
 use super::client::MnemoClient;
 use super::payload::{build_sentence_event, build_summary_event};
@@ -48,7 +48,7 @@ struct PusherState {
     metadata: HashMap<String, String>,
 }
 
-pub fn spawn(client: MnemoClient, events_rx: broadcast::Receiver<Event>) {
+pub fn spawn(client: MnemoClient, events_rx: broadcast::Receiver<UserEvent>) {
     if !client.is_enabled() {
         info!("mnemo pusher not spawning — client disabled");
         return;
@@ -56,12 +56,18 @@ pub fn spawn(client: MnemoClient, events_rx: broadcast::Receiver<Event>) {
     tokio::spawn(async move { pusher_loop(client, events_rx).await });
 }
 
-async fn pusher_loop(client: MnemoClient, mut rx: broadcast::Receiver<Event>) {
-    let mut state = PusherState::default();
+async fn pusher_loop(client: MnemoClient, mut rx: broadcast::Receiver<UserEvent>) {
+    // Per-user pusher state: each user's session_id, transcript
+    // counter, item cache, and metadata snapshot are tracked
+    // independently so concurrent meetings don't co-mingle.
+    let mut per_user: HashMap<String, PusherState> = HashMap::new();
     info!("mnemo pusher started");
     loop {
         match rx.recv().await {
-            Ok(event) => handle_event(&client, &mut state, event).await,
+            Ok(envelope) => {
+                let entry = per_user.entry(envelope.user_id.clone()).or_default();
+                handle_event(&client, entry, envelope.event).await
+            }
             Err(broadcast::error::RecvError::Lagged(n)) => {
                 warn!(lagged = n, "mnemo pusher fell behind broadcast channel");
             }

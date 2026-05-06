@@ -214,6 +214,27 @@ pub async fn find_active_meeting(
     Ok(row)
 }
 
+/// Find every unfinished meeting + its owner, one row per. Boot
+/// recovery iterates this and re-spawns each user's pipeline.
+/// Pre-OAuth rows have `user_id IS NULL` — the column was nullable
+/// in migration 0003 to keep the schema buildable through the
+/// transition. We skip those (no user → no UserState to attach to).
+pub async fn find_active_meetings_per_user(
+    pool: &SqlitePool,
+) -> Result<Vec<(String, String, Option<String>, String, DateTime<Utc>)>> {
+    // (user_id, meeting_id, description, metadata_json, started_at)
+    let rows = sqlx::query_as(
+        r#"SELECT user_id, id, description, metadata, started_at
+             FROM meetings
+            WHERE ended_at IS NULL AND user_id IS NOT NULL
+            ORDER BY user_id, started_at DESC"#,
+    )
+    .fetch_all(pool)
+    .await
+    .context("find_active_meetings_per_user")?;
+    Ok(rows)
+}
+
 /// Mark a meeting as ended at the given timestamp. No-op (silently)
 /// if `meeting_id` doesn't exist or has already been ended.
 pub async fn end_meeting(
