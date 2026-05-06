@@ -37,11 +37,38 @@ export class ReconnectingSocket {
     this.closed = true;
     this.clearReconnect();
     this.clearHeartbeat();
-    this.ws?.close();
+    this.detachWs();
+  }
+
+  /** Detach handlers and close the underlying WS, if any. Prevents
+   * late-fire events (browsers can still emit `onerror` between
+   * `close()` and the actual close) from clobbering shared state —
+   * specifically, the old socket's `onerror` was overwriting
+   * `wsStatus` after a fresh socket had already fired "open" via
+   * `reconnect()` in main.ts.
+   */
+  private detachWs(): void {
+    const ws = this.ws;
+    if (ws) {
+      ws.onopen = null;
+      ws.onmessage = null;
+      ws.onerror = null;
+      ws.onclose = null;
+      try {
+        ws.close();
+      } catch {
+        // close() throws if already closed; harmless.
+      }
+      this.ws = null;
+    }
   }
 
   private connect(): void {
     if (this.closed) return;
+    // Detach any stale WS — covers both internal reconnect (after
+    // a transient failure) and any caller that triggers connect()
+    // while a previous socket is still in flight.
+    this.detachWs();
     const fullUrl = `${this.opts.url}/?token=${encodeURIComponent(this.opts.token)}`;
     this.opts.onStatus("connecting");
     const ws = new WebSocket(fullUrl);
