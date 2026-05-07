@@ -184,6 +184,7 @@ async fn process_one(
                 "moment summary: vision call (screenshot attached)"
             );
             llm.extract_with_prompt_and_image::<MomentSummaryExtraction>(
+                &req.user_id,
                 SYSTEM_PROMPT,
                 &prompt,
                 bytes,
@@ -198,7 +199,7 @@ async fn process_one(
                 moment_id = %req.moment_id,
                 "moment summary: text-only call (no screenshot available)"
             );
-            llm.extract_with_prompt::<MomentSummaryExtraction>(SYSTEM_PROMPT, &prompt)
+            llm.extract_with_prompt::<MomentSummaryExtraction>(&req.user_id, SYSTEM_PROMPT, &prompt)
                 .await
                 .map_err(|e| anyhow::anyhow!("LLM extract failed: {e}"))?
         }

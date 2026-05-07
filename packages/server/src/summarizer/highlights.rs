@@ -66,7 +66,7 @@ pub async fn run_highlights_summarizer(
                 }
                 last_seen_len = transcript.len();
                 match llm
-                    .extract_with_prompt::<HighlightsExtraction>(SYSTEM_PROMPT, &transcript)
+                    .extract_with_prompt::<HighlightsExtraction>(&user_id, SYSTEM_PROMPT, &transcript)
                     .await
                 {
                     Ok(extracted) => {

@@ -43,6 +43,9 @@ pub struct MomentCreated {
     pub moment_id: String,
     pub kind: String,
     pub t_ms: i64,
+    /// Owning user — needed by the summary worker so the LLM-usage
+    /// counter increments under the right per-meeting key.
+    pub user_id: String,
 }
 
 #[derive(Clone)]

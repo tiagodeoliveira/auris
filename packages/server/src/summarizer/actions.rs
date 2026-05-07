@@ -82,7 +82,7 @@ pub async fn run_actions_summarizer(
                     transcript,
                 );
                 match llm
-                    .extract_with_prompt::<ActionsExtraction>(SYSTEM_PROMPT, &user_input)
+                    .extract_with_prompt::<ActionsExtraction>(&user_id, SYSTEM_PROMPT, &user_input)
                     .await
                 {
                     Ok(extracted) => {

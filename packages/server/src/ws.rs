@@ -868,6 +868,18 @@ async fn dispatch_intent(
         // Drop any in-flight extraction; otherwise its result would land
         // in the now-empty idle metadata as if from a fresh request.
         handle.cancel_extraction_for(user_id);
+        // Per-meeting LLM usage summary. Drains the per-user counter so
+        // the next meeting starts fresh. Char counts (not tokens) — see
+        // `LlmUsage` for the rationale. Tracked across summarizers, the
+        // moment worker, and (eventually) the agent loop.
+        let usage = handle.llm.take_usage(user_id);
+        tracing::info!(
+            user_id,
+            calls = usage.calls,
+            prompt_chars = usage.prompt_chars,
+            response_chars = usage.response_chars,
+            "llm_usage_at_stop"
+        );
     }
 
     // Persistence side-effects. None of these block the broadcast
@@ -926,6 +938,7 @@ async fn dispatch_intent(
                     moment_id: moment_id.clone(),
                     kind: kind.to_string(),
                     t_ms: req.t as i64,
+                    user_id: user_id.to_string(),
                 });
                 // Delegate screenshot capture to the audio-source
                 // device if it has `screen_capture`. We don't try

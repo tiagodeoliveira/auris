@@ -100,7 +100,7 @@ pub async fn run_open_questions_summarizer(
                     transcript,
                 );
                 match llm
-                    .extract_with_prompt::<OpenQuestionsExtraction>(SYSTEM_PROMPT, &user_input)
+                    .extract_with_prompt::<OpenQuestionsExtraction>(&user_id, SYSTEM_PROMPT, &user_input)
                     .await
                 {
                     Ok(extracted) => {

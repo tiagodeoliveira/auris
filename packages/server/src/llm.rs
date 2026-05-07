@@ -109,6 +109,45 @@ impl Clone for LlmBackend {
     }
 }
 
+// ─── Usage tracker ───────────────────────────────────────────────────────────
+
+/// Per-meeting LLM usage snapshot. `calls` counts each successful
+/// `extract_with_prompt[_and_image]` invocation; `prompt_chars` and
+/// `response_chars` sum the input and (typed-result-as-JSON) output
+/// sizes. Chars, not tokens — translation to tokens depends on the
+/// provider's tokenizer; for personal-use trend spotting, a ~4:1
+/// chars-to-tokens estimate is good enough.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct LlmUsage {
+    pub calls: u64,
+    pub prompt_chars: u64,
+    pub response_chars: u64,
+}
+
+/// Per-user accumulator for `LlmUsage`. Lives on `LlmClient` so any
+/// caller of the typed extractors can opt in by passing `user_id`.
+/// `take(user_id)` drains the entry — the typical flow is "record on
+/// each call, take once at meeting stop and log the summary."
+#[derive(Debug, Default)]
+pub struct LlmUsageTracker {
+    inner: std::sync::Mutex<HashMap<String, LlmUsage>>,
+}
+
+impl LlmUsageTracker {
+    pub fn record(&self, user_id: &str, prompt_chars: u64, response_chars: u64) {
+        let mut map = self.inner.lock().expect("usage tracker mutex poisoned");
+        let entry = map.entry(user_id.to_string()).or_default();
+        entry.calls += 1;
+        entry.prompt_chars += prompt_chars;
+        entry.response_chars += response_chars;
+    }
+
+    pub fn take(&self, user_id: &str) -> LlmUsage {
+        let mut map = self.inner.lock().expect("usage tracker mutex poisoned");
+        map.remove(user_id).unwrap_or_default()
+    }
+}
+
 // ─── Error types ─────────────────────────────────────────────────────────────
 
 /// Structured extraction target for meeting metadata.
@@ -170,12 +209,22 @@ pub struct LlmClient {
     extractor: LlmExtractor,
     backend: LlmBackend,
     provider: Provider,
+    /// Per-user counter shared across clones. Increments on each successful
+    /// typed extract; drained at meeting stop for the operational summary.
+    usage: Arc<LlmUsageTracker>,
 }
 
 impl LlmClient {
     /// Returns the active provider.
     pub fn provider(&self) -> Provider {
         self.provider
+    }
+
+    /// Drain and return the per-user usage counter. Called by `ws.rs` at
+    /// meeting stop to log the per-meeting summary; subsequent records for
+    /// the same user start fresh.
+    pub fn take_usage(&self, user_id: &str) -> LlmUsage {
+        self.usage.take(user_id)
     }
 
     /// Construct a `LlmClient` from environment variables.
@@ -272,6 +321,7 @@ impl LlmClient {
             extractor,
             backend,
             provider,
+            usage: Arc::new(LlmUsageTracker::default()),
         })
     }
 
@@ -313,9 +363,12 @@ impl LlmClient {
     /// schema, building the extractor per call using the stored backend client.
     ///
     /// Used by summarizers (highlights, actions) that each need a different
-    /// prompt and a different `JsonSchema` target type.
+    /// prompt and a different `JsonSchema` target type. `user_id` is used
+    /// only for the per-meeting usage tracker — pass any stable id, including
+    /// a synthetic one for non-meeting callers.
     pub async fn extract_with_prompt<T>(
         &self,
+        user_id: &str,
         system_prompt: &str,
         user_input: &str,
     ) -> Result<T, ExtractionError>
@@ -327,6 +380,7 @@ impl LlmClient {
             + Sync
             + 'static,
     {
+        let started = std::time::Instant::now();
         let extractor_call = async {
             match &self.backend {
                 LlmBackend::Bedrock { client, model_id } => client
@@ -352,9 +406,24 @@ impl LlmClient {
                     .map_err(|e| ExtractionError::Extract(e.to_string())),
             }
         };
-        tokio::time::timeout(EXTRACTION_TIMEOUT, extractor_call)
+        let typed = tokio::time::timeout(EXTRACTION_TIMEOUT, extractor_call)
             .await
-            .map_err(|_| ExtractionError::Timeout(EXTRACTION_TIMEOUT))?
+            .map_err(|_| ExtractionError::Timeout(EXTRACTION_TIMEOUT))??;
+        let prompt_chars = (system_prompt.len() + user_input.len()) as u64;
+        let response_chars = serde_json::to_string(&typed)
+            .map(|s| s.len() as u64)
+            .unwrap_or(0);
+        self.usage.record(user_id, prompt_chars, response_chars);
+        info!(
+            user_id,
+            provider = ?self.provider,
+            call = "extract_with_prompt",
+            prompt_chars,
+            response_chars,
+            latency_ms = started.elapsed().as_millis() as u64,
+            "llm_call"
+        );
+        Ok(typed)
     }
 
     /// Same shape as `extract_with_prompt`, but also attaches an image
@@ -368,6 +437,7 @@ impl LlmClient {
     /// not just the surrounding transcript.
     pub async fn extract_with_prompt_and_image<T>(
         &self,
+        user_id: &str,
         system_prompt: &str,
         user_input: &str,
         image_bytes: Vec<u8>,
@@ -388,6 +458,7 @@ impl LlmClient {
         use base64::engine::general_purpose::STANDARD as B64;
         use base64::Engine as _;
         let encoded = B64.encode(&image_bytes);
+        let image_chars = encoded.len() as u64;
 
         let message = Message::User {
             content: OneOrMany::many(vec![
@@ -397,6 +468,7 @@ impl LlmClient {
             .map_err(|e| ExtractionError::Extract(format!("build message: {e}")))?,
         };
 
+        let started = std::time::Instant::now();
         let extractor_call = async {
             match &self.backend {
                 LlmBackend::Bedrock { client, model_id } => client
@@ -428,9 +500,26 @@ impl LlmClient {
         // gives headroom for slow paths without freezing the worker
         // permanently if the API hangs.
         const VISION_TIMEOUT: Duration = Duration::from_secs(30);
-        tokio::time::timeout(VISION_TIMEOUT, extractor_call)
+        let typed = tokio::time::timeout(VISION_TIMEOUT, extractor_call)
             .await
-            .map_err(|_| ExtractionError::Timeout(VISION_TIMEOUT))?
+            .map_err(|_| ExtractionError::Timeout(VISION_TIMEOUT))??;
+        // Image bytes counted as `prompt_chars` since they ride along the
+        // request — base64-encoded length, same surface the provider sees.
+        let prompt_chars = (system_prompt.len() + user_input.len()) as u64 + image_chars;
+        let response_chars = serde_json::to_string(&typed)
+            .map(|s| s.len() as u64)
+            .unwrap_or(0);
+        self.usage.record(user_id, prompt_chars, response_chars);
+        info!(
+            user_id,
+            provider = ?self.provider,
+            call = "extract_with_prompt_and_image",
+            prompt_chars,
+            response_chars,
+            latency_ms = started.elapsed().as_millis() as u64,
+            "llm_call"
+        );
+        Ok(typed)
     }
 }
 
@@ -534,5 +623,58 @@ mod tests {
     fn default_anthropic_model_id_is_set() {
         assert!(!DEFAULT_ANTHROPIC_MODEL_ID.is_empty());
         assert!(DEFAULT_ANTHROPIC_MODEL_ID.starts_with("claude-"));
+    }
+
+    #[test]
+    fn usage_tracker_take_on_empty_returns_default() {
+        let t = LlmUsageTracker::default();
+        let u = t.take("user-1");
+        assert_eq!(u.calls, 0);
+        assert_eq!(u.prompt_chars, 0);
+        assert_eq!(u.response_chars, 0);
+    }
+
+    #[test]
+    fn usage_tracker_record_creates_entry() {
+        let t = LlmUsageTracker::default();
+        t.record("user-1", 100, 20);
+        let u = t.take("user-1");
+        assert_eq!(u.calls, 1);
+        assert_eq!(u.prompt_chars, 100);
+        assert_eq!(u.response_chars, 20);
+    }
+
+    #[test]
+    fn usage_tracker_accumulates_across_calls() {
+        let t = LlmUsageTracker::default();
+        t.record("user-1", 100, 20);
+        t.record("user-1", 50, 10);
+        let u = t.take("user-1");
+        assert_eq!(u.calls, 2);
+        assert_eq!(u.prompt_chars, 150);
+        assert_eq!(u.response_chars, 30);
+    }
+
+    #[test]
+    fn usage_tracker_take_clears_user_state() {
+        let t = LlmUsageTracker::default();
+        t.record("user-1", 100, 20);
+        let _ = t.take("user-1");
+        let u2 = t.take("user-1");
+        assert_eq!(u2.calls, 0);
+        assert_eq!(u2.prompt_chars, 0);
+    }
+
+    #[test]
+    fn usage_tracker_isolates_users() {
+        let t = LlmUsageTracker::default();
+        t.record("user-1", 100, 20);
+        t.record("user-2", 50, 10);
+        let u1 = t.take("user-1");
+        assert_eq!(u1.calls, 1);
+        assert_eq!(u1.prompt_chars, 100);
+        let u2 = t.take("user-2");
+        assert_eq!(u2.calls, 1);
+        assert_eq!(u2.prompt_chars, 50);
     }
 }
