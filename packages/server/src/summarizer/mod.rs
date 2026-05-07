@@ -1,15 +1,12 @@
-//! Per-mode summarizer tasks.
+//! Summarizer tasks spawned per active meeting.
 //!
-//! Four summarizers run in parallel during an active meeting:
-//! - transcript: pass-through, no LLM (this task — task 4)
-//! - highlights: rig Extractor on a 20s heartbeat (task 5)
-//! - actions: rig Extractor on a 15s heartbeat (task 6)
-//! - open_questions: rig Extractor on a 15s heartbeat (task 7)
+//! - `transcript`: pass-through, no LLM (raw STT chunks → items).
+//! - `agent`: single tool-calling LLM agent that emits highlights /
+//!   actions / open_questions across the meeting's lifetime.
+//! - `moment` / `artifact`: one-shot LLM summaries, run on user
+//!   action rather than on a heartbeat.
 
-pub mod actions;
 pub mod agent;
 pub mod artifact;
-pub mod highlights;
 pub mod moment;
-pub mod open_questions;
 pub mod transcript;
