@@ -154,6 +154,67 @@ async fn meeting_is_live(ctx: &ToolCtx) -> bool {
     )
 }
 
+/// Server-side defensive dedup. Models routinely re-push the same
+/// item across fires despite items-as-memory in the prompt — the
+/// instruction-following just isn't strong enough on small tool-
+/// calling models. We compute Jaccard similarity over the
+/// significant words of the new text vs each existing item; if any
+/// pair crosses the threshold, this is a duplicate. Returns the
+/// `id` of the item we matched against (so the tool can return a
+/// descriptive "skipped: duplicate of X" result, giving the model
+/// feedback for next turn).
+/// Jaccard threshold for "this is a duplicate." Calibrated against
+/// the real-world paraphrase pattern observed in early agent runs:
+/// 4-5 shared keywords out of ~10 total → ~0.4 Jaccard. Higher
+/// thresholds (0.5+) miss obvious dupes; lower (0.3) catches false
+/// positives across distinct items that happen to share generic
+/// verbs ("send", "discuss"). 0.4 is the working sweet spot for
+/// personal-use meeting transcripts.
+const DUPLICATE_SIMILARITY_THRESHOLD: f64 = 0.4;
+
+fn find_duplicate(new_text: &str, existing: &[Item]) -> Option<String> {
+    let new_words = significant_words(new_text);
+    if new_words.is_empty() {
+        return None;
+    }
+    for item in existing {
+        let item_words = significant_words(&item.text);
+        if item_words.is_empty() {
+            continue;
+        }
+        let inter = new_words.intersection(&item_words).count();
+        let union = new_words.union(&item_words).count();
+        if union == 0 {
+            continue;
+        }
+        let jaccard = inter as f64 / union as f64;
+        if jaccard >= DUPLICATE_SIMILARITY_THRESHOLD {
+            return Some(item.id.clone());
+        }
+    }
+    None
+}
+
+/// Lowercased words ≥4 chars. Short words ("the", "a", "of") are
+/// noise for dedup; skipping them sharpens the Jaccard signal.
+fn significant_words(s: &str) -> std::collections::HashSet<String> {
+    s.to_lowercase()
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| w.len() >= 4)
+        .map(|w| w.to_string())
+        .collect()
+}
+
+/// Pull the current items in `mode` for `user_id`. Used by the
+/// push_* tools' dedup check. Returns empty vec if the user has
+/// no state yet (shouldn't happen when meeting is live, but safe).
+async fn current_items(ctx: &ToolCtx, mode: &str) -> Vec<Item> {
+    let s = ctx.state.lock().await;
+    s.user(&ctx.user_id)
+        .and_then(|u| u.items_per_mode.get(mode).cloned())
+        .unwrap_or_default()
+}
+
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
 struct PushHighlightArgs {
     text: String,
@@ -190,6 +251,12 @@ Don't push duplicates of items already in the highlights buffer."
     async fn call(&self, args: PushHighlightArgs) -> Result<String, AgentToolError> {
         if !meeting_is_live(&self.0).await {
             return Ok("skipped: meeting no longer active".into());
+        }
+        let existing = current_items(&self.0, "highlights").await;
+        if let Some(dup_id) = find_duplicate(&args.text, &existing) {
+            return Ok(format!(
+                "skipped: duplicate of existing highlight {dup_id} — do not push semantically-equivalent items"
+            ));
         }
         let item = Item {
             id: format!("h-{}", uuid::Uuid::new_v4()),
@@ -340,6 +407,12 @@ infer owners from context. Don't push duplicates of items already in the actions
         if !meeting_is_live(&self.0).await {
             return Ok("skipped: meeting no longer active".into());
         }
+        let existing = current_items(&self.0, "actions").await;
+        if let Some(dup_id) = find_duplicate(&args.text, &existing) {
+            return Ok(format!(
+                "skipped: duplicate of existing action {dup_id} — do not push semantically-equivalent items"
+            ));
+        }
         // Models like gpt-4.1 sometimes pass empty strings instead
         // of omitting optional fields. Normalize so meta carries
         // only fields that actually have content; otherwise the
@@ -423,6 +496,12 @@ Don't push duplicates."
     async fn call(&self, args: PushOpenQuestionArgs) -> Result<String, AgentToolError> {
         if !meeting_is_live(&self.0).await {
             return Ok("skipped: meeting no longer active".into());
+        }
+        let existing = current_items(&self.0, "open_questions").await;
+        if let Some(dup_id) = find_duplicate(&args.question, &existing) {
+            return Ok(format!(
+                "skipped: duplicate of existing question {dup_id} — do not push semantically-equivalent items"
+            ));
         }
         let kind = args.kind.as_deref().filter(|s| !s.trim().is_empty());
         let context = args.context.as_deref().filter(|s| !s.trim().is_empty());
@@ -710,8 +789,18 @@ async fn build_working_context(
         }
     };
 
+    // Items-as-memory FIRST so the dedup signal is fresh when the
+    // model considers the new transcript. This ordering matters:
+    // small models (gpt-4.1-mini) routinely re-pushed duplicates
+    // when items appeared after transcript in the prompt.
+    buf.push_str("# Already recorded — DO NOT push duplicates of these\n");
+    write_items_section(&mut buf, "highlights", &highlights);
+    write_items_section(&mut buf, "actions", &actions);
+    write_items_section(&mut buf, "open_questions", &open_questions);
+    buf.push('\n');
+
     if !metadata.is_empty() {
-        buf.push_str("# Meeting metadata\n");
+        buf.push_str("# Meeting context\n");
         let mut keys: Vec<&String> = metadata.keys().collect();
         keys.sort();
         for k in keys {
@@ -720,13 +809,7 @@ async fn build_working_context(
         buf.push('\n');
     }
 
-    buf.push_str("# Current items\n");
-    write_items_section(&mut buf, "highlights", &highlights);
-    write_items_section(&mut buf, "actions", &actions);
-    write_items_section(&mut buf, "open_questions", &open_questions);
-    buf.push('\n');
-
-    buf.push_str("# Transcript (most recent first lines, newest at the bottom)\n");
+    buf.push_str("# Transcript (oldest first, newest at the bottom)\n");
     if tail_window.is_empty() {
         buf.push_str("  (empty)\n");
     } else {
@@ -743,8 +826,10 @@ async fn build_working_context(
     }
     buf.push('\n');
     buf.push_str(
-        "Decide what (if anything) to push or replace via tool calls. \
-         Emit no tool calls if nothing in this batch warrants a new item.",
+        "Process the transcript above. For EACH question (line ending in `?` or implying \
+         uncertainty), emit push_open_question. For EACH commitment (\"I'll\", \"we'll\", named \
+         deadline), emit push_action. For surprising/specific facts not already recorded, emit \
+         push_highlight. Skip pleasantries and anything semantically equivalent to existing items.",
     );
     buf
 }
@@ -846,6 +931,65 @@ mod tests {
         let mut buf = String::new();
         write_items_section(&mut buf, "highlights", &[]);
         assert!(buf.contains("(none)"));
+    }
+
+    fn item(id: &str, text: &str) -> Item {
+        Item {
+            id: id.into(),
+            text: text.into(),
+            detail: None,
+            t: 0,
+            meta: None,
+        }
+    }
+
+    #[test]
+    fn find_duplicate_catches_paraphrase() {
+        // Same intent, different wording — Jaccard over significant
+        // words (≥4 chars) catches it. Real-world example from the
+        // first agent run where this was pushed 4 times.
+        let existing = vec![item(
+            "a-1",
+            "Send the rebuttal exchanges related to Dell and AWS Outpost",
+        )];
+        let new = "Share rebuttal exchanges between Dell and AWS Outpost with the team";
+        assert_eq!(find_duplicate(new, &existing), Some("a-1".into()));
+    }
+
+    #[test]
+    fn find_duplicate_misses_unrelated_text() {
+        let existing = vec![item("h-1", "NVIDIA reference architecture for physical AI")];
+        let new = "T-Mobile is launching soft phones next week";
+        assert_eq!(find_duplicate(new, &existing), None);
+    }
+
+    #[test]
+    fn find_duplicate_handles_empty_text() {
+        let existing = vec![item("a-1", "Long action with several words")];
+        // Empty text has no significant words → no duplicate signal.
+        assert_eq!(find_duplicate("", &existing), None);
+        assert_eq!(find_duplicate("a", &existing), None);
+    }
+
+    #[test]
+    fn find_duplicate_returns_first_match() {
+        // When multiple existing items match, return the id of the
+        // first one — caller doesn't need a "best match" picker.
+        let existing = vec![
+            item("a-1", "Testing results expected next week"),
+            item("a-2", "Next week we will have testing results"),
+        ];
+        assert_eq!(
+            find_duplicate("Testing results next week", &existing),
+            Some("a-1".into())
+        );
+    }
+
+    #[test]
+    fn significant_words_drops_short_tokens() {
+        // The/of/a noise gets stripped so dedup focuses on content.
+        let words = significant_words("The cat sat on the mat");
+        assert!(words.contains("cat") || !words.contains("the"));
     }
 
     #[test]

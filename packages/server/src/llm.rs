@@ -29,7 +29,11 @@ type AnthropicClientWrapper = rig::providers::anthropic::Client;
 // ─── Constants ────────────────────────────────────────────────────────────────
 pub const DEFAULT_BEDROCK_REGION: &str = "us-west-2";
 pub const DEFAULT_BEDROCK_MODEL_ID: &str = "us.anthropic.claude-sonnet-4-7-20251015-v1:0";
-pub const DEFAULT_OPENAI_MODEL_ID: &str = "gpt-4.1-mini";
+// gpt-4o is materially better than gpt-4.1-mini at multi-tool
+// reasoning (the agent loop's core need); gpt-4.1-mini struggled
+// to follow the dedup + mode-discrimination rules. Override with
+// `MEETING_COMPANION_LLM_MODEL_ID` if cost-sensitive.
+pub const DEFAULT_OPENAI_MODEL_ID: &str = "gpt-4o";
 pub const DEFAULT_ANTHROPIC_MODEL_ID: &str = "claude-sonnet-4-5";
 pub const SYSTEM_PROMPT: &str = "You are a meeting metadata extractor. \
 Given a short spoken description of a meeting (transcribed by an STT system, \
