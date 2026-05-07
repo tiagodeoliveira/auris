@@ -120,7 +120,19 @@ Examples:\n\
 Expect 5-10 actions, 3-7 open_questions, 2-5 highlights for a 30-minute call. \
 DO NOT default to push_highlight when the chunk is really an action or question.\n\
 \n\
-5. Speak in the same language as the transcript. Don't translate.";
+5. ATTACHED ARTIFACTS — use them. The user message may contain a \"# Attached artifacts\" \
+section listing documents the user uploaded for this meeting. Each row has id + name + mime \
++ short_summary. When the transcript references an attached artifact (e.g., \"per the agenda…\", \
+\"as the design doc says…\"), use the retrieval tools to ground your reasoning:\n\
+\n\
+- fetch_artifact_summary {id}: get the LONG summary (~500 tokens). Cheap, use freely.\n\
+- fetch_artifact {id}: get the FULL text content. Use sparingly — large docs are expensive. \
+Falls back to long summary for binary formats (PDFs, images).\n\
+\n\
+The pre-load short summary is enough for ~70-80% of references. Only fetch when you need \
+specific facts, decisions, or named entities the short summary doesn't capture.\n\
+\n\
+6. Speak in the same language as the transcript. Don't translate.";
 
 // ─── Tool surface ───────────────────────────────────────────────────────
 
@@ -130,13 +142,16 @@ pub enum AgentToolError {
     Internal(String),
 }
 
-/// Shared dependencies every tool needs: the user state, the WS
-/// broadcast channel, and the user_id to scope mutations and
-/// emissions to. Cloning is cheap (Arc + Sender + String).
+/// Shared dependencies every tool needs. `events_tx` is only used
+/// by the push/replace tools; `db` is only used by the fetch tools;
+/// keeping them on one struct keeps the per-tool wiring uniform
+/// at the (small) cost of unused fields per tool. Cloning is cheap
+/// (Arc + Sender + String + PgPool clone).
 #[derive(Clone)]
 struct ToolCtx {
     state: Arc<Mutex<ServerState>>,
     events_tx: broadcast::Sender<UserEvent>,
+    db: sqlx::PgPool,
     user_id: String,
 }
 
@@ -543,6 +558,141 @@ Don't push duplicates."
     }
 }
 
+// ─── Retrieval tools (PLAN.md §3.8) ─────────────────────────────────────
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+struct FetchArtifactArgs {
+    /// The id of an attached artifact (from the "# Attached
+    /// artifacts" section in the working context).
+    id: String,
+}
+
+/// Returns the artifact's `long_summary` as the tool result. Cheap
+/// — DB read only. Use this when the pre-load short summary isn't
+/// detailed enough to ground reasoning but the full document
+/// would burn too many tokens.
+struct FetchArtifactSummary(ToolCtx);
+
+impl Tool for FetchArtifactSummary {
+    const NAME: &'static str = "fetch_artifact_summary";
+    type Args = FetchArtifactArgs;
+    type Output = String;
+    type Error = AgentToolError;
+
+    async fn definition(&self, _: String) -> ToolDefinition {
+        ToolDefinition {
+            name: Self::NAME.to_string(),
+            description: "Fetch the LONG summary (~500 tokens) of an attached artifact. \
+The pre-load only includes the SHORT summary (~50 tokens) for each artifact; this tool \
+gives you a more detailed view when the short summary isn't enough to ground your \
+reasoning. Cheap — use it freely when an artifact is relevant to the current chunk."
+                .to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "id": { "type": "string", "description": "Artifact id from the # Attached artifacts list." }
+                },
+                "required": ["id"]
+            }),
+        }
+    }
+
+    async fn call(&self, args: FetchArtifactArgs) -> Result<String, AgentToolError> {
+        let row = crate::db::get_artifact_for_user(&self.0.db, &args.id, &self.0.user_id)
+            .await
+            .map_err(|e| AgentToolError::Internal(e.to_string()))?;
+        match row {
+            Some(a) => match a.long_summary {
+                Some(s) if !s.is_empty() => Ok(format!("Long summary of '{}':\n\n{}", a.name, s)),
+                _ => Ok(format!(
+                    "Artifact '{}' has no long summary yet (status: {})",
+                    a.name, a.summary_status
+                )),
+            },
+            None => Ok(format!(
+                "error: no such artifact {} (or not yours)",
+                args.id
+            )),
+        }
+    }
+}
+
+/// Returns the full text content of an attached artifact when
+/// possible. Text formats (markdown, plain, html, csv, json) are
+/// inlined as-is. PDFs and images fall back to the long summary
+/// — full binary attachment into the agent's chat history would
+/// need a custom prompt loop (PLAN.md v1.6 work).
+struct FetchArtifact(ToolCtx);
+
+impl Tool for FetchArtifact {
+    const NAME: &'static str = "fetch_artifact";
+    type Args = FetchArtifactArgs;
+    type Output = String;
+    type Error = AgentToolError;
+
+    async fn definition(&self, _: String) -> ToolDefinition {
+        ToolDefinition {
+            name: Self::NAME.to_string(),
+            description: "Fetch the FULL content of an attached artifact for inline inspection. \
+For text formats (markdown, plain text, html, csv, json), returns the document body. \
+For PDFs and images, returns the long summary as a fallback (full binary content can't \
+be inlined yet). Use sparingly — the full body can be large. Prefer fetch_artifact_summary \
+when the long summary suffices."
+                .to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "id": { "type": "string", "description": "Artifact id from the # Attached artifacts list." }
+                },
+                "required": ["id"]
+            }),
+        }
+    }
+
+    async fn call(&self, args: FetchArtifactArgs) -> Result<String, AgentToolError> {
+        let row = crate::db::get_artifact_for_user(&self.0.db, &args.id, &self.0.user_id)
+            .await
+            .map_err(|e| AgentToolError::Internal(e.to_string()))?;
+        let Some(a) = row else {
+            return Ok(format!(
+                "error: no such artifact {} (or not yours)",
+                args.id
+            ));
+        };
+        // Text formats: inline the bytes as UTF-8.
+        let is_text = matches!(
+            a.mime_type.as_str(),
+            "text/plain" | "text/markdown" | "text/html" | "text/csv" | "application/json"
+        );
+        if is_text {
+            let dir = crate::db::data_dir().map_err(|e| AgentToolError::Internal(e.to_string()))?;
+            let abs = dir.join(&a.asset_path);
+            let bytes = tokio::fs::read(&abs)
+                .await
+                .map_err(|e| AgentToolError::Internal(format!("read {}: {e}", abs.display())))?;
+            return match String::from_utf8(bytes) {
+                Ok(content) => Ok(format!(
+                    "Full content of '{}' ({}):\n\n{}",
+                    a.name, a.mime_type, content
+                )),
+                Err(e) => Ok(format!("error: artifact {} not valid UTF-8: {e}", args.id)),
+            };
+        }
+        // Binary: fall back to long summary so the model gets the
+        // most-informative grounding signal we can offer today.
+        match a.long_summary {
+            Some(s) if !s.is_empty() => Ok(format!(
+                "Artifact '{}' is {} (binary; full content can't be inlined). Long summary instead:\n\n{}",
+                a.name, a.mime_type, s
+            )),
+            _ => Ok(format!(
+                "Artifact '{}' is {} (binary; full content can't be inlined) and has no long summary yet.",
+                a.name, a.mime_type
+            )),
+        }
+    }
+}
+
 // ─── Trigger loop ───────────────────────────────────────────────────────
 
 /// Spawn the agent task. Runs for the meeting's lifetime; cancels
@@ -663,6 +813,7 @@ async fn fire(
     let ctx = ToolCtx {
         state: state.clone(),
         events_tx: events_tx.clone(),
+        db: db.clone(),
         user_id: user_id.to_string(),
     };
 
@@ -676,7 +827,9 @@ async fn fire(
                 .tool(PushHighlight(ctx.clone()))
                 .tool(ReplaceHighlights(ctx.clone()))
                 .tool(PushAction(ctx.clone()))
-                .tool(PushOpenQuestion(ctx))
+                .tool(PushOpenQuestion(ctx.clone()))
+                .tool(FetchArtifactSummary(ctx.clone()))
+                .tool(FetchArtifact(ctx))
                 .build();
             agent.prompt(user_message.clone()).max_turns(3).await
         }
@@ -687,7 +840,9 @@ async fn fire(
                 .tool(PushHighlight(ctx.clone()))
                 .tool(ReplaceHighlights(ctx.clone()))
                 .tool(PushAction(ctx.clone()))
-                .tool(PushOpenQuestion(ctx))
+                .tool(PushOpenQuestion(ctx.clone()))
+                .tool(FetchArtifactSummary(ctx.clone()))
+                .tool(FetchArtifact(ctx))
                 .build();
             agent.prompt(user_message.clone()).max_turns(3).await
         }
@@ -698,7 +853,9 @@ async fn fire(
                 .tool(PushHighlight(ctx.clone()))
                 .tool(ReplaceHighlights(ctx.clone()))
                 .tool(PushAction(ctx.clone()))
-                .tool(PushOpenQuestion(ctx))
+                .tool(PushOpenQuestion(ctx.clone()))
+                .tool(FetchArtifactSummary(ctx.clone()))
+                .tool(FetchArtifact(ctx))
                 .build();
             agent.prompt(user_message.clone()).max_turns(3).await
         }
