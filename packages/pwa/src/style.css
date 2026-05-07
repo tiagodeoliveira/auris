@@ -1725,3 +1725,161 @@ textarea {
   user-select: text;
   white-space: pre-wrap;
 }
+
+/* === COMPOSE-REGION ARTIFACT CHIP STRIP === */
+.compose-artifacts-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 4px 0 0;
+}
+.compose-artifact-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 4px 3px 8px;
+  border: 1px solid var(--border-light);
+  background: rgba(255, 255, 255, 0.7);
+  border-radius: 999px;
+  font-size: 11px;
+  line-height: 1.2;
+}
+.compose-artifact-chip-name {
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.compose-artifact-chip-x {
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0 4px;
+  font-size: 13px;
+  line-height: 1;
+  color: var(--steel-gray);
+}
+.compose-artifact-chip-x:hover {
+  color: var(--ink);
+}
+.compose-artifact-add {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  border: 1px dashed rgba(38, 99, 235, 0.4);
+  background: transparent;
+  color: var(--accent-blue, #2563eb);
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+}
+.compose-artifact-add:hover {
+  background: rgba(38, 99, 235, 0.06);
+}
+
+/* === ARTIFACT PICKER MODAL === */
+.artifact-picker-modal {
+  max-width: 560px;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100vh - 48px);
+  padding: 0;
+  overflow: hidden;
+}
+.artifact-picker-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  padding: 16px 20px 12px;
+  border-bottom: 1px solid var(--border-light);
+}
+.artifact-picker-counter {
+  font-size: 11px;
+  color: var(--steel-gray);
+}
+.artifact-picker-body {
+  overflow-y: auto;
+  padding: 12px;
+  min-height: 200px;
+  max-height: 60vh;
+}
+.artifact-picker-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.artifact-picker-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 8px 10px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  text-align: left;
+  width: 100%;
+  cursor: pointer;
+  font: inherit;
+}
+.artifact-picker-row:hover:not(.disabled) {
+  background: rgba(120, 144, 168, 0.06);
+}
+.artifact-picker-row.checked {
+  background: rgba(38, 99, 235, 0.06);
+  border-color: rgba(38, 99, 235, 0.2);
+}
+.artifact-picker-row.disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.artifact-picker-checkbox {
+  font-size: 16px;
+  color: var(--accent-blue, #2563eb);
+  flex-shrink: 0;
+}
+.artifact-picker-row:not(.checked) .artifact-picker-checkbox {
+  color: var(--steel-gray);
+}
+.artifact-picker-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+.artifact-picker-info .artifact-name {
+  font-weight: 500;
+  font-size: 14px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.artifact-picker-info .artifact-short {
+  font-size: 12px;
+  color: var(--steel-gray);
+  padding: 0;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.artifact-picker-info .artifact-note {
+  font-size: 11px;
+  color: var(--steel-gray);
+  padding: 0;
+  font-style: italic;
+}
+.artifact-picker-info .artifact-note-failed {
+  color: rgb(180, 36, 40);
+  font-style: normal;
+}
+.artifact-picker-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 12px 20px;
+  border-top: 1px solid var(--border-light);
+}

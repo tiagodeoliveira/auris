@@ -33,7 +33,7 @@ export function mountUI(root: HTMLElement, ctx: UiContext): void {
   mountTopBar(root, ctx.store, () => ctx.store.update({ settingsModalOpen: true }));
 
   // Idle-state composition surface (self-hides when meeting is active).
-  mountComposeRegion(root, ctx.store, ctx.actions);
+  mountComposeRegion(root, ctx.store, ctx.actions, ctx.auth);
 
   // Active-meeting surface — components self-hide outside active/paused.
   mountHeaderStrip(root, ctx.store);

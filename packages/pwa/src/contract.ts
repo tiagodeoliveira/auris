@@ -65,6 +65,10 @@ export type Event =
       type: "snapshot";
       protocol_version: number;
       meeting_state: MeetingState;
+      /** Server-assigned id of the active meeting. `Some` while
+       * active/paused; `None` when idle. Used to attach artifacts
+       * to the running meeting via `POST /meetings/:id/artifacts`. */
+      meeting_id?: string;
       available_modes: ModeOption[];
       mode: string;
       display_tag?: string;
@@ -75,7 +79,7 @@ export type Event =
       devices: Device[];
       audio_source_device_id?: string;
     }
-  | { type: "meeting_state_changed"; meeting_state: MeetingState }
+  | { type: "meeting_state_changed"; meeting_state: MeetingState; meeting_id?: string }
   | { type: "prior_context_changed"; summary: PriorContextSummary }
   | { type: "device_registered"; device: Device }
   | { type: "devices_changed"; devices: Device[] }

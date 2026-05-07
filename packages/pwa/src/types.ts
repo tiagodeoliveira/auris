@@ -94,6 +94,10 @@ export interface AppState {
   /// Cleared on idle. The mid-meeting picker reads this to
   /// pre-check rows already in the meeting's set.
   attachedArtifactIds: string[];
+  /// Server-assigned id of the active meeting (mirrors Mac's
+  /// `currentMeetingId`). `null` when idle. Carried on snapshot
+  /// + meeting_state_changed events; used to target attach POSTs.
+  currentMeetingId: string | null;
   toasts: Toast[];
   errorOverlay: ErrorOverlay | null;
   /// Auth0-resolved identity of the active user. `null` while still
@@ -147,6 +151,7 @@ export function defaultAppState(): AppState {
     artifactsModalOpen: false,
     pendingArtifactAttachments: [],
     attachedArtifactIds: [],
+    currentMeetingId: null,
     toasts: [],
     errorOverlay: null,
     auth: null,

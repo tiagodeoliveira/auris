@@ -9,8 +9,16 @@
 
 import type { Store } from "../store";
 import type { CtaActions } from "./cta-region";
+import type { AuthBundle } from "../auth";
+import type { Artifact } from "../artifacts-api";
+import { pickArtifacts } from "./artifact-picker";
 
-export function mountComposeRegion(parent: HTMLElement, store: Store, actions: CtaActions): void {
+export function mountComposeRegion(
+  parent: HTMLElement,
+  store: Store,
+  actions: CtaActions,
+  auth: AuthBundle,
+): void {
   const wrap = document.createElement("section");
   wrap.className = "compose";
   parent.appendChild(wrap);
@@ -121,6 +129,79 @@ export function mountComposeRegion(parent: HTMLElement, store: Store, actions: C
       const s = store.get();
       if (s.composeDescription !== textarea.value) {
         textarea.value = s.composeDescription;
+      }
+    },
+  );
+
+  // Artifact chip strip — staged attachments for the next meeting.
+  // Sits below the extract row so the visual flow is description →
+  // tags → artifacts → start. Local closure state because nothing
+  // else cares about the staged list until Start fires; we hand
+  // the ids to the store at submit time.
+  const artifactRow = document.createElement("div");
+  artifactRow.className = "compose-artifacts-row";
+  wrap.appendChild(artifactRow);
+  let stagedArtifacts: Artifact[] = [];
+
+  function renderArtifactStrip(): void {
+    artifactRow.innerHTML = "";
+    for (const a of stagedArtifacts) {
+      const chip = document.createElement("span");
+      chip.className = "compose-artifact-chip";
+      const name = document.createElement("span");
+      name.className = "compose-artifact-chip-name";
+      name.textContent = a.name;
+      chip.appendChild(name);
+      const x = document.createElement("button");
+      x.className = "compose-artifact-chip-x";
+      x.setAttribute("aria-label", "Remove");
+      x.title = "Remove";
+      x.textContent = "×";
+      x.addEventListener("click", () => {
+        stagedArtifacts = stagedArtifacts.filter((y) => y.id !== a.id);
+        store.update({ pendingArtifactAttachments: stagedArtifacts.map((y) => y.id) });
+        renderArtifactStrip();
+      });
+      chip.append(x);
+      artifactRow.appendChild(chip);
+    }
+    const addBtn = document.createElement("button");
+    addBtn.className = "compose-artifact-add";
+    addBtn.type = "button";
+    addBtn.textContent = stagedArtifacts.length === 0 ? "+ Attach artifact" : "+ Add";
+    addBtn.addEventListener("click", () => {
+      void (async () => {
+        const picked = await pickArtifacts({
+          alreadySelectedIds: stagedArtifacts.map((a) => a.id),
+          auth,
+        });
+        if (picked === null) return;
+        stagedArtifacts = picked;
+        store.update({ pendingArtifactAttachments: picked.map((p) => p.id) });
+        renderArtifactStrip();
+      })();
+    });
+    artifactRow.appendChild(addBtn);
+  }
+  renderArtifactStrip();
+
+  // Reset on meeting transitions to idle (e.g., after Stop) — the
+  // ws-handler clears `pendingArtifactAttachments`, but the local
+  // `stagedArtifacts` (which carries names for the chips) needs
+  // its own reset hook.
+  store.subscribe(
+    (s) => s.meetingState,
+    () => {
+      const s = store.get();
+      if (s.meetingState !== "idle" && stagedArtifacts.length > 0) {
+        // Meeting started — keep the chips visible during the
+        // brief moment before the compose-region self-hides; the
+        // next idle resets the staged list.
+      } else if (s.meetingState === "idle" && s.pendingArtifactAttachments.length === 0) {
+        if (stagedArtifacts.length > 0) {
+          stagedArtifacts = [];
+          renderArtifactStrip();
+        }
       }
     },
   );

@@ -51,6 +51,7 @@ export function handleServerEvent(event: ServerEvent, store: Store): void {
         protocolVersionMatched: true,
         meetingState: event.meeting_state,
         meetingStartedAt: snapshotMeetingStartedAt,
+        currentMeetingId: event.meeting_id ?? null,
         availableModes: event.available_modes,
         currentMode: event.mode,
         displayTag: event.display_tag ?? null,
@@ -80,6 +81,7 @@ export function handleServerEvent(event: ServerEvent, store: Store): void {
       const update: Partial<Parameters<typeof store.update>[0]> = {
         meetingState: event.meeting_state,
         glassesView: next,
+        currentMeetingId: event.meeting_id ?? null,
       };
       if (event.meeting_state === "active" && !meetingStartedAt) {
         meetingStartedAt = Date.now();
@@ -95,9 +97,17 @@ export function handleServerEvent(event: ServerEvent, store: Store): void {
         update.listeningInterim = "";
         update.extractingMetadata = false;
         update.priorContext = null;
+        // Drop any unsent compose-time staging + clear the active
+        // meeting's attached set. The next compose starts fresh.
+        update.pendingArtifactAttachments = [];
+        update.attachedArtifactIds = [];
       }
       update.meetingStartedAt = meetingStartedAt;
       store.update(update);
+      // Compose-time staged attachments are drained by a subscriber
+      // in `main.ts` (which has the AuthBundle handle). The handler
+      // here only updates state; the side-effect plumbing lives at
+      // the seam where we can reach Auth0.
       return;
     }
     case "mode_changed":

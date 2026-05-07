@@ -8,6 +8,8 @@ import { handleLifecycleEvent } from "./input/lifecycle";
 import { ReconnectingSocket } from "./ws";
 import { handleServerEvent } from "./ws-handlers";
 import { mountUI } from "./ui";
+import { ArtifactsApi } from "./artifacts-api";
+import { SERVER_URL } from "./server-url";
 import type { CtaActions } from "./ui/cta-region";
 import { ListeningSession } from "./listening";
 import { initAuth, readAuth0Config, type AuthBundle } from "./auth";
@@ -148,6 +150,42 @@ function bootAuthenticated(
     reconnect,
     auth,
   });
+
+  // Drain compose-time staged artifact attachments once the server
+  // confirms the meeting is active (we have a meeting id to attach
+  // against). Best-effort POSTs; failures log but don't surface.
+  // Server-side attach is idempotent so a re-fire is harmless.
+  store.subscribe(
+    (s) => `${s.meetingState}|${s.currentMeetingId}|${s.pendingArtifactAttachments.length}`,
+    () => {
+      const s = store.get();
+      if (s.meetingState !== "active" || !s.currentMeetingId) return;
+      if (s.pendingArtifactAttachments.length === 0) return;
+      const ids = s.pendingArtifactAttachments;
+      const meetingId = s.currentMeetingId;
+      // Atomically clear so re-firing this subscriber doesn't
+      // double-attach during transient state churn.
+      store.update({ pendingArtifactAttachments: [] });
+      void (async () => {
+        const api = ArtifactsApi.from(SERVER_URL, () => auth.getAccessToken());
+        if (!api) return;
+        for (const aid of ids) {
+          try {
+            await api.attach(meetingId, aid);
+            store.update({
+              attachedArtifactIds: [
+                ...store.get().attachedArtifactIds.filter((x) => x !== aid),
+                aid,
+              ],
+            });
+            console.log(`[artifacts] attached ${aid} to meeting ${meetingId}`);
+          } catch (e) {
+            console.warn(`[artifacts] attach ${aid} failed:`, e);
+          }
+        }
+      })();
+    },
+  );
 }
 
 start().catch((err) => {
