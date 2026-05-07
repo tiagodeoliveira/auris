@@ -230,6 +230,17 @@ impl LlmClient {
         self.usage.take(user_id)
     }
 
+    /// Increment the per-user usage counter directly. The typed
+    /// extract methods do this internally per-call; the agent path
+    /// (rig's `agent.prompt(...)`) bypasses those methods, so the
+    /// agent module calls this directly to keep the
+    /// `llm_usage_at_stop` summary accurate. `response_chars` is an
+    /// estimate when the underlying API doesn't surface usage
+    /// metadata uniformly.
+    pub fn record_usage(&self, user_id: &str, prompt_chars: u64, response_chars: u64) {
+        self.usage.record(user_id, prompt_chars, response_chars);
+    }
+
     /// Construct a `LlmClient` from environment variables.
     ///
     /// Reads `MEETING_COMPANION_LLM_PROVIDER` (default: `bedrock`) and

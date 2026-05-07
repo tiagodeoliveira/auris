@@ -75,21 +75,25 @@ You receive transcript chunks as they're committed by the STT (typically one sen
 at a time). Your job is to emit structured items in three modes via tool calls.\n\
 \n\
 The three modes:\n\
-- highlights: short standalone insights or noteworthy points worth remembering. Concise, non-redundant.\n\
-- actions: action items with optional owner and due date. Examples: \"Bob to send slides\" / \"Alice to review by Friday\".\n\
-- open_questions: questions raised but not answered, or topics that need follow-up.\n\
+- highlights: short standalone insights or noteworthy points worth remembering. Concise, non-redundant. Reserve for substance: decisions, surprising facts, conclusions, named entities, key numbers. Skip pleasantries, small talk, introductions.\n\
+- actions: action items with optional owner and due date. Examples: \"Bob to send slides\" / \"Alice to review by Friday\". Only push when someone actually committed to do something — never invent owners or invent actions from descriptive statements.\n\
+- open_questions: questions raised but not answered, or topics that need follow-up. Real unresolved questions, not rhetorical ones.\n\
 \n\
 Tools available:\n\
 - push_highlight {text, importance?}: add a highlight.\n\
-- replace_highlights {items: [{text, importance?}]}: replace ALL highlights — use sparingly, when reorganization is genuinely needed.\n\
-- push_action {text, owner?, due?}: add an action item.\n\
+- replace_highlights {items: [{text, importance?}]}: replace ALL highlights — use sparingly.\n\
+- push_action {text, owner?, due?}: add an action item. OMIT the owner field entirely if no one was named (do not pass empty strings). OMIT due if no deadline was stated.\n\
 - push_open_question {question, kind?, context?}: add a question.\n\
 \n\
-The user message will include the current items in each mode (\"items-as-memory\"). DO NOT push duplicates — if a new transcript chunk \
-restates something already in the buffer, skip it. Push only new material.\n\
+DEDUPLICATION IS CRITICAL. The user message includes \"items-as-memory\" — the current items in each mode. Before pushing anything, check the existing items. If a new transcript chunk restates, paraphrases, or expands on something already in the buffer, DO NOT push a duplicate. Skip it.\n\
 \n\
-When in doubt, say nothing. Emitting no tool calls is the right move when no new noteworthy material landed in this batch. \
-The user prefers fewer, higher-quality items over many noisy ones.\n\
+QUALITY OVER QUANTITY. Most chunks should produce zero tool calls. The user wants 3-5 high-signal highlights for a 30-minute meeting, not 30 mediocre ones. When in doubt, say nothing — emit no tool calls and let the next batch settle.\n\
+\n\
+Skip:\n\
+- Pleasantries (\"Thank you for being here\", \"Have you ever seen this program?\")\n\
+- Introductions and small talk\n\
+- Restatements of facts already in items-as-memory\n\
+- Process commentary (\"OK\", \"I see\", \"yeah\")\n\
 \n\
 Speak in the same language as the transcript. Don't translate.";
 
@@ -288,15 +292,30 @@ infer owners from context. Don't push duplicates of items already in the actions
     }
 
     async fn call(&self, args: PushActionArgs) -> Result<String, AgentToolError> {
+        // Models like gpt-4.1 sometimes pass empty strings instead
+        // of omitting optional fields. Normalize so meta carries
+        // only fields that actually have content; otherwise the
+        // PWA's metadata renderer shows ugly "OWNER · " labels.
+        let owner = args.owner.as_deref().filter(|s| !s.trim().is_empty());
+        let due = args.due.as_deref().filter(|s| !s.trim().is_empty());
+        let mut meta_map = serde_json::Map::new();
+        if let Some(o) = owner {
+            meta_map.insert("owner".into(), serde_json::Value::String(o.to_string()));
+        }
+        if let Some(d) = due {
+            meta_map.insert("due".into(), serde_json::Value::String(d.to_string()));
+        }
+        let meta = if meta_map.is_empty() {
+            None
+        } else {
+            Some(serde_json::Value::Object(meta_map))
+        };
         let item = Item {
             id: format!("a-{}", uuid::Uuid::new_v4()),
             text: args.text.clone(),
             detail: None,
             t: 0,
-            meta: Some(serde_json::json!({
-                "owner": args.owner,
-                "due": args.due,
-            })),
+            meta,
         };
         let id = item.id.clone();
         let payload = {
@@ -354,15 +373,26 @@ Don't push duplicates."
     }
 
     async fn call(&self, args: PushOpenQuestionArgs) -> Result<String, AgentToolError> {
+        let kind = args.kind.as_deref().filter(|s| !s.trim().is_empty());
+        let context = args.context.as_deref().filter(|s| !s.trim().is_empty());
+        let mut meta_map = serde_json::Map::new();
+        if let Some(k) = kind {
+            meta_map.insert("kind".into(), serde_json::Value::String(k.to_string()));
+        }
+        if let Some(c) = context {
+            meta_map.insert("context".into(), serde_json::Value::String(c.to_string()));
+        }
+        let meta = if meta_map.is_empty() {
+            None
+        } else {
+            Some(serde_json::Value::Object(meta_map))
+        };
         let item = Item {
             id: format!("q-{}", uuid::Uuid::new_v4()),
             text: args.question.clone(),
             detail: None,
             t: 0,
-            meta: Some(serde_json::json!({
-                "kind": args.kind,
-                "context": args.context,
-            })),
+            meta,
         };
         let id = item.id.clone();
         let payload = {
@@ -543,21 +573,45 @@ async fn fire(
     };
 
     let latency_ms = started.elapsed().as_millis() as u64;
+    let prompt_chars = (SYSTEM_PROMPT.len() + user_message.len()) as u64;
     match result {
-        Ok(_) => {
+        Ok(response) => {
+            // Per-fire `llm_call` log mirrors the per-extract logs
+            // from `extract_with_prompt`. Increments the per-user
+            // counter so `llm_usage_at_stop` reflects agent spend.
+            // response_chars is the model's final-turn text, which
+            // for tool-calling responses is usually empty (the
+            // useful work happens in tool calls, not the text). The
+            // tool calls themselves don't surface here — we'd need
+            // a PromptHook to capture them; deferred to v1.1.
+            let response_chars = response.len() as u64;
+            llm.record_usage(user_id, prompt_chars, response_chars);
             info!(
-                user_id = %user_id,
+                user_id,
+                provider = ?llm.provider(),
+                call = "agent_fire",
+                prompt_chars,
+                response_chars,
+                latency_ms,
+                "llm_call",
+            );
+            info!(
+                user_id,
                 provider = ?llm.provider(),
                 new_chunks = new_chunks_count,
                 tail_chunks = tail_window.len(),
-                prompt_chars = user_message.len(),
+                prompt_chars,
                 latency_ms,
                 "agent fire done",
             );
         }
         Err(e) => {
+            // Still record the prompt_chars on failure — the call
+            // hit the provider and we paid for it; the response is
+            // just empty/error.
+            llm.record_usage(user_id, prompt_chars, 0);
             warn!(
-                user_id = %user_id,
+                user_id,
                 provider = ?llm.provider(),
                 error = %e,
                 latency_ms,
@@ -660,8 +714,18 @@ fn write_items_section(buf: &mut String, mode: &str, items: &[Item]) {
         entry.insert("text".into(), serde_json::Value::String(item.text.clone()));
         if let Some(serde_json::Value::Object(map)) = &item.meta {
             for (k, v) in map {
+                // Drop nulls AND empty strings so the agent doesn't
+                // see noise like `"owner":""`. Models that emit
+                // empty strings by mistake (gpt-4.1 does this) get
+                // filtered at write time too — see the tool-call
+                // normalization for the input side.
                 if v.is_null() {
                     continue;
+                }
+                if let Some(s) = v.as_str() {
+                    if s.is_empty() {
+                        continue;
+                    }
                 }
                 entry.insert(k.clone(), v.clone());
             }
@@ -731,5 +795,23 @@ mod tests {
         let mut buf = String::new();
         write_items_section(&mut buf, "highlights", &[]);
         assert!(buf.contains("(none)"));
+    }
+
+    #[test]
+    fn write_items_section_drops_empty_string_meta_fields() {
+        // Models occasionally emit empty strings instead of omitting
+        // optional fields. Those should be filtered the same way
+        // null fields are — keeps the agent's view clean.
+        let item = Item {
+            id: "a-1".into(),
+            text: "Some action".into(),
+            detail: None,
+            t: 0,
+            meta: Some(serde_json::json!({"owner": "", "due": "Friday"})),
+        };
+        let mut buf = String::new();
+        write_items_section(&mut buf, "actions", &[item]);
+        assert!(buf.contains("\"due\":\"Friday\""));
+        assert!(!buf.contains("\"owner\""));
     }
 }
