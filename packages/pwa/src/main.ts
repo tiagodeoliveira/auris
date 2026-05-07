@@ -9,7 +9,6 @@ import { ReconnectingSocket } from "./ws";
 import { handleServerEvent } from "./ws-handlers";
 import { mountUI } from "./ui";
 import { ArtifactsApi } from "./artifacts-api";
-import { SERVER_URL } from "./server-url";
 import type { CtaActions } from "./ui/cta-region";
 import { ListeningSession } from "./listening";
 import { initAuth, readAuth0Config, type AuthBundle } from "./auth";

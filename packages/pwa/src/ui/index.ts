@@ -48,7 +48,7 @@ export function mountUI(root: HTMLElement, ctx: UiContext): void {
   mountItemsMirror(root, ctx.store);
 
   // Sticky bottom action bar (Pause/Stop in active, listening UI when listening).
-  mountCtaRegion(root, ctx.store, ctx.send, ctx.actions);
+  mountCtaRegion(root, ctx.store, ctx.send, ctx.actions, ctx.auth);
 
   // Overlays.
   mountSettingsModal(root, ctx.store, ctx.bridge, ctx.reconnect, ctx.auth);

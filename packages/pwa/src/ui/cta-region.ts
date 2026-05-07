@@ -1,5 +1,9 @@
 import type { Store } from "../store";
 import type { Intent } from "../types";
+import type { AuthBundle } from "../auth";
+import { ArtifactsApi } from "../artifacts-api";
+import { SERVER_URL } from "../server-url";
+import { pickArtifacts } from "./artifact-picker";
 
 const STOP_CONFIRM_WINDOW_MS = 3000;
 
@@ -28,6 +32,7 @@ export function mountCtaRegion(
   store: Store,
   _send: (i: Intent) => void,
   actions: CtaActions,
+  auth: AuthBundle,
 ): void {
   const wrap = document.createElement("div");
   wrap.className = "cta-region";
@@ -51,6 +56,7 @@ export function mountCtaRegion(
     if (s.meetingState === "active") {
       wrap.append(
         iconButton("◆", "Moment", "btn-ghost", actions.markMoment),
+        iconButton("📎", "Attach", "btn-ghost", openAttachPicker),
         iconButton("⏸", "Pause", "btn-ghost", actions.pauseMeeting),
         stopButton(actions.stopMeeting),
       );
@@ -107,6 +113,35 @@ export function mountCtaRegion(
     b.innerHTML = `<span class="cta-btn-icon">${icon}</span><span class="cta-btn-label">${label}</span>`;
     b.addEventListener("click", onClick);
     return b;
+  }
+
+  /// Mid-meeting attach. Opens the same picker the compose flow
+  /// uses, pre-checking whatever's already attached to the running
+  /// meeting. On confirm, fires `api.attach` per selected id and
+  /// updates `attachedArtifactIds` as each succeeds. Server is
+  /// idempotent, so re-confirming the same set is a no-op.
+  async function openAttachPicker(): Promise<void> {
+    const s = store.get();
+    if (!s.currentMeetingId) return;
+    const picked = await pickArtifacts({
+      alreadySelectedIds: s.attachedArtifactIds,
+      auth,
+    });
+    if (picked === null) return;
+    const meetingId = s.currentMeetingId;
+    const api = ArtifactsApi.from(SERVER_URL, () => auth.getAccessToken());
+    if (!api) return;
+    for (const a of picked) {
+      try {
+        await api.attach(meetingId, a.id);
+        store.update({
+          attachedArtifactIds: [...store.get().attachedArtifactIds.filter((x) => x !== a.id), a.id],
+        });
+        console.log(`[artifacts] attached ${a.id} to meeting ${meetingId}`);
+      } catch (e) {
+        console.warn(`[artifacts] attach ${a.id} failed:`, e);
+      }
+    }
   }
 
   render();
