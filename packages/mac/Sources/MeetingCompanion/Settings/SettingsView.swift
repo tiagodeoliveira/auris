@@ -893,74 +893,114 @@ private struct ArtifactsTab: View {
 }
 
 /// One row in the artifacts list. Status badge + name + size +
-/// short-summary preview (when populated). Trash button on the
-/// right; right-click also offers Delete.
+/// short-summary preview (when populated). Disclosure chevron
+/// expands the long summary inline. Trash button on the right;
+/// right-click also offers Delete.
 private struct ArtifactRow: View {
     let artifact: Artifact
     let onDelete: () -> Void
     @State private var confirmDelete = false
+    @State private var isExpanded = false
+
+    /// Long summary is shown only when the artifact is `done` and
+    /// actually has content. Pending/failed artifacts have no
+    /// long summary worth expanding to.
+    private var canExpand: Bool {
+        artifact.summaryStatus == "done"
+            && artifact.longSummary.map { !$0.isEmpty } == true
+    }
 
     var body: some View {
-        HStack(alignment: .top, spacing: 10) {
-            statusBadge
-            VStack(alignment: .leading, spacing: 3) {
-                HStack(spacing: 8) {
-                    Text(artifact.name)
-                        .font(.body)
-                        .fontWeight(.medium)
-                        .lineLimit(1)
-                    Text(artifact.mimeType)
-                        .font(.system(size: 9, weight: .semibold))
-                        .tracking(0.4)
-                        .foregroundStyle(.secondary)
-                        .padding(.horizontal, 5)
-                        .padding(.vertical, 1)
-                        .background {
-                            RoundedRectangle(cornerRadius: 3)
-                                .fill(Color.gray.opacity(0.12))
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .top, spacing: 10) {
+                statusBadge
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack(spacing: 8) {
+                        Text(artifact.name)
+                            .font(.body)
+                            .fontWeight(.medium)
+                            .lineLimit(1)
+                        Text(artifact.mimeType)
+                            .font(.system(size: 9, weight: .semibold))
+                            .tracking(0.4)
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 1)
+                            .background {
+                                RoundedRectangle(cornerRadius: 3)
+                                    .fill(Color.gray.opacity(0.12))
+                            }
+                        Spacer(minLength: 4)
+                        Text(humanSize(artifact.sizeBytes))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        if canExpand {
+                            Button {
+                                isExpanded.toggle()
+                            } label: {
+                                Image(
+                                    systemName: isExpanded ? "chevron.down" : "chevron.right"
+                                )
+                                .font(.system(size: 11, weight: .semibold))
+                                .foregroundStyle(.secondary)
+                                .frame(width: 14, height: 14)
+                            }
+                            .buttonStyle(.plain)
+                            .help(isExpanded ? "Hide details" : "Show details")
                         }
-                    Spacer(minLength: 4)
-                    Text(humanSize(artifact.sizeBytes))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Button {
-                        confirmDelete = true
-                    } label: {
-                        Image(systemName: "trash")
-                            .font(.system(size: 12))
+                        Button {
+                            confirmDelete = true
+                        } label: {
+                            Image(systemName: "trash")
+                                .font(.system(size: 12))
+                                .foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.plain)
+                        .help("Delete artifact")
+                        .confirmationDialog(
+                            "Delete “\(artifact.name)”?",
+                            isPresented: $confirmDelete,
+                            titleVisibility: .visible
+                        ) {
+                            Button("Delete", role: .destructive, action: onDelete)
+                            Button("Cancel", role: .cancel) {}
+                        } message: {
+                            Text("Removes the file from your library and from any meetings it was attached to. This cannot be undone.")
+                        }
+                    }
+                    if artifact.summaryStatus == "done", let s = artifact.shortSummary, !s.isEmpty {
+                        Text(s)
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(3)
+                    }
+                    if artifact.summaryStatus == "pending" {
+                        Text("Generating summary…")
+                            .font(.caption).italic()
                             .foregroundStyle(.secondary)
                     }
-                    .buttonStyle(.plain)
-                    .help("Delete artifact")
-                    .confirmationDialog(
-                        "Delete “\(artifact.name)”?",
-                        isPresented: $confirmDelete,
-                        titleVisibility: .visible
-                    ) {
-                        Button("Delete", role: .destructive, action: onDelete)
-                        Button("Cancel", role: .cancel) {}
-                    } message: {
-                        Text("Removes the file from your library and from any meetings it was attached to. This cannot be undone.")
+                    if artifact.summaryStatus == "failed" {
+                        Text("Summary failed — server logs may have more.")
+                            .font(.caption)
+                            .foregroundStyle(.red)
                     }
                 }
-                if artifact.summaryStatus == "done", let s = artifact.shortSummary, !s.isEmpty {
-                    Text(s)
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(3)
-                }
-                if artifact.summaryStatus == "pending" {
-                    Text("Generating summary…")
-                        .font(.caption).italic()
-                        .foregroundStyle(.secondary)
-                }
-                if artifact.summaryStatus == "failed" {
-                    Text("Summary failed — server logs may have more.")
-                        .font(.caption)
-                        .foregroundStyle(.red)
-                }
+                .frame(maxWidth: .infinity, alignment: .topLeading)
             }
-            .frame(maxWidth: .infinity, alignment: .topLeading)
+
+            if isExpanded, let long = artifact.longSummary, !long.isEmpty {
+                // Long summary panel. Indented past the status badge
+                // column so the alignment matches the short summary
+                // above. Selectable so users can copy useful chunks
+                // (named entities, decisions, etc.) into other apps.
+                Text(long)
+                    .font(.callout)
+                    .foregroundStyle(.primary)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
+                    .padding(.leading, 26)
+                    .padding(.trailing, 4)
+            }
         }
         .padding(10)
         .background(SettingsTheme.card)
