@@ -682,7 +682,9 @@ async fn attach_artifact(
         .agent_kick_tx
         .send(crate::summarizer::agent::AgentKick {
             user_id: user_id.clone(),
-            reason: crate::summarizer::agent::AgentKickReason::ArtifactAttached,
+            reason: crate::summarizer::agent::AgentKickReason::ArtifactAttached {
+                artifact_id: body.artifact_id.clone(),
+            },
         });
     Ok(StatusCode::NO_CONTENT)
 }

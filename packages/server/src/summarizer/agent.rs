@@ -1,22 +1,29 @@
-//! Agentic summarizer loop.
+//! Agentic summarizer loop — stateful, conversation-history-driven.
 //!
 //! One LLM agent per active meeting, holding the ONLY path from
-//! transcript → items. Replaces the previous three per-mode
-//! summarizers (highlights / actions / open_questions); they no
-//! longer exist as separate summarizer tasks. The agent reasons
-//! over each batch of new transcript chunks and emits items via
-//! tool calls.
+//! transcript → items. The agent maintains a `Vec<Message>`
+//! conversation history that grows across the entire meeting:
+//! every fire appends only the delta (new transcript chunks +
+//! optional event blocks) as the next user turn, and rig appends
+//! the agent's reply (assistant turns + tool calls + tool results)
+//! back onto the same history. The agent's tool-calling history
+//! IS its memory of what was already recorded — there's no
+//! separate items-as-memory section in the prompt.
 //!
 //! Trigger model — fires when ANY of:
 //!   - new-token threshold (`AGENT_TRIGGER_TOKENS`, default 200)
 //!   - new-sentence threshold (`AGENT_TRIGGER_SENTENCES`, default 4)
 //!   - silence boundary (`AGENT_TRIGGER_SILENCE_MS`, default 4000)
 //!   - hard ceiling (`AGENT_TRIGGER_MAX_MS`, default 30000)
-//!   - kick (e.g., user attached an artifact mid-meeting)
+//!   - kick (e.g., user attached an artifact)
 //!
-//! Working-context shape (current — pre-stateful rewrite):
-//!   - items-as-memory + tail transcript window + meeting meta +
-//!     attached-artifact pre-load.
+//! Per-fire user message structure:
+//!   - first fire: `[meeting]` + `[attached artifacts]` (bootstrap)
+//!     + `[transcript]` (new chunks). Subsequent fires: only
+//!     `[transcript]` and/or `[event]` blocks.
+//!   - kick events (e.g. mid-meeting artifact attach) are folded
+//!     into the next user message as `[event]` blocks alongside
+//!     any pending transcript.
 //!
 //! Tools:
 //!   - `push_highlight`, `replace_highlights`,
@@ -57,32 +64,33 @@ const AGENT_TRIGGER_MAX_MS_DEFAULT: u64 = 30_000;
 /// for "1 chunk, 5 sentences" and "5 chunks, 5 sentences".
 const AGENT_TRIGGER_SENTENCES_DEFAULT: usize = 4;
 
-/// Tail-window cap on transcript chunks the agent sees verbatim.
-/// PLAN.md §3.5 starts at N=80 (~5-10 minutes of speech). Older
-/// chunks are dropped when the window exceeds this — v1 has no
-/// rolling-summary compression yet (PLAN.md §3.6). Truncation is
-/// fine for personal-use meetings under ~30 minutes.
-const TAIL_WINDOW_MAX_CHUNKS: usize = 80;
-
 /// Rough chars-per-token estimate for the trigger threshold.
 /// 4:1 is the well-known English ballpark. Provider-specific
 /// tokenization is more accurate but rig doesn't surface it.
 const CHARS_PER_TOKEN: usize = 4;
 
+/// Max tool-call rounds per fire. The agent sometimes wants to
+/// fetch_artifact_summary then act on it — that's 2 rounds. Allow
+/// a few more headroom turns for fetch → reason → emit chains.
+const MAX_TURNS_PER_FIRE: usize = 8;
+
 const SYSTEM_PROMPT: &str = "You are an agent inside a real-time meeting note-taker. \
 Your job: emit structured items via tool calls when transcript chunks contain something noteworthy.\n\
 \n\
-CRITICAL RULES (in priority order):\n\
+HOW THE CONVERSATION WORKS\n\
+- Each user turn delivers one or more of: a [meeting] header (first turn only, with title/description), \
+[event] blocks (e.g., \"User just attached artifact …\"), and a [transcript] block (new speech since the last turn).\n\
+- Your past assistant turns and tool calls are visible in this conversation history. They are your memory \
+of what's already been recorded — there is no separate \"existing items\" list.\n\
 \n\
-1. CHECK ITEMS-AS-MEMORY BEFORE EMITTING.\n\
-The user message contains \"# Current items\" sections showing what's already been recorded. \
-Never push anything that paraphrases, restates, or expands on an existing item. If the new chunk \
-says \"Bob will send slides\" and an existing action says \"Bob to share design\", these are the \
-SAME THING — do not push. Treat dedup by intent, not by exact wording.\n\
+EMISSION RULES\n\
 \n\
-2. EMIT NOTHING WHEN THERE'S NOTHING NEW.\n\
-Most chunks should produce zero tool calls. When in doubt, skip. The user prefers 5 high-signal \
-items over 30 mediocre ones.\n\
+1. NO DUPLICATES. If you previously called push_action(text=\"Bob to send slides\") and the new transcript \
+says \"Bob will share design\", DO NOT emit again — same intent, already captured. Treat dedup by intent, \
+not by exact wording. Consult your prior tool calls in the conversation history before each emission.\n\
+\n\
+2. EMIT NOTHING WHEN THERE'S NOTHING NEW. Most turns produce zero tool calls. When in doubt, skip. \
+The user prefers 5 high-signal items over 30 mediocre ones.\n\
 \n\
 3. PICK THE RIGHT MODE. The three modes are distinct:\n\
 \n\
@@ -95,41 +103,35 @@ OMIT optional fields entirely if not stated — never pass empty strings.\n\
 Examples:\n\
 - \"I'll keep you in the loop on what I find out\" → push_action(text=\"Share findings with the team\")\n\
 - \"We will have testing results next week\" → push_action(text=\"Deliver testing results\", due=\"next week\")\n\
-- \"Next week I want to present infrastructure costs\" → push_action(text=\"Present AWS infrastructure costs\", due=\"next week\")\n\
 \n\
 OPEN_QUESTIONS — UNRESOLVED queries. Real questions raised but not answered, or topics that need follow-up. \
 Trigger: chunks ending in \"?\", \"we need to figure out\", \"still TBD\", \"who's responsible for\".\n\
 \n\
 Examples:\n\
 - \"Is it a migration or a new workload?\" → push_open_question\n\
-- \"What's responsible for access?\" → push_open_question\n\
-- \"Did everyone get access yet?\" → push_open_question\n\
+- \"Who's responsible for access?\" → push_open_question\n\
 \n\
 HIGHLIGHTS — DECISIONS, surprising facts, named entities, conclusions, specific numbers. \
-Reserve for substance the user would highlight in a re-read. SKIP pleasantries, introductions, \
-small talk, process commentary, and meta-commentary about the meeting itself.\n\
+Reserve for substance worth highlighting on a re-read. SKIP pleasantries, introductions, small talk, \
+process commentary, and meta-commentary about the meeting itself.\n\
 \n\
 Examples:\n\
 - \"The cutover target is January or February of next year\" → push_highlight (specific decision)\n\
 - \"There's a Slack channel #oracle-database-at-aws for relevant posts\" → push_highlight (named resource)\n\
-- SKIP: \"The meeting is titled X and is related to project Y\" (meta about the meeting itself)\n\
 - SKIP: \"OK\", \"yeah\", \"I see\", \"Thank you for being here\"\n\
 \n\
 4. ACTIONS AND QUESTIONS ARE USUALLY MORE NUMEROUS THAN HIGHLIGHTS in working meetings. \
 Expect 5-10 actions, 3-7 open_questions, 2-5 highlights for a 30-minute call. \
-DO NOT default to push_highlight when the chunk is really an action or question.\n\
+DO NOT default to push_highlight when something is really an action or question.\n\
 \n\
-5. ATTACHED ARTIFACTS — use them. The user message may contain a \"# Attached artifacts\" \
-section listing documents the user uploaded for this meeting. Each row has id + name + mime \
-+ short_summary. When the transcript references an attached artifact (e.g., \"per the agenda…\", \
-\"as the design doc says…\"), use the retrieval tools to ground your reasoning:\n\
+5. ATTACHED ARTIFACTS. When a [event] block says the user attached an artifact, you receive its \
+id + name + mime + short_summary. Use the retrieval tools to ground your reasoning when the transcript \
+references it (\"per the agenda…\", \"as the design doc says…\"):\n\
+- fetch_artifact_summary(id): LONG summary (~500 tokens). Cheap, use freely.\n\
+- fetch_artifact(id): FULL text content. Use sparingly. Falls back to long summary for binary formats.\n\
 \n\
-- fetch_artifact_summary {id}: get the LONG summary (~500 tokens). Cheap, use freely.\n\
-- fetch_artifact {id}: get the FULL text content. Use sparingly — large docs are expensive. \
-Falls back to long summary for binary formats (PDFs, images).\n\
-\n\
-The pre-load short summary is enough for ~70-80% of references. Only fetch when you need \
-specific facts, decisions, or named entities the short summary doesn't capture.\n\
+The short summary in the [event] block is enough for ~70-80% of references; only fetch when you need \
+specific facts the short summary doesn't capture.\n\
 \n\
 6. Speak in the same language as the transcript. Don't translate.";
 
@@ -643,15 +645,18 @@ pub fn spawn_meeting_agent(
             "agent loop started",
         );
 
+        // Stateful conversation: each meeting accumulates a single
+        // Vec<Message> across all fires. Each fire sends only the
+        // delta (new transcript chunks since last fire and any
+        // pending event) — the agent's tool-calling history in
+        // `history` is its memory of what it already pushed.
+        let mut history: Vec<rig::completion::Message> = Vec::new();
+        let mut bootstrapped = false;
         let mut buffer: Vec<TranscriptChunk> = Vec::new();
-        let mut tail_window: Vec<TranscriptChunk> = Vec::new();
         let mut last_fire_at = Instant::now();
         let mut last_chunk_at: Option<Instant> = None;
         let mut transcript_rx = transcript_rx;
         let mut kick_rx = kick_rx;
-        // 500 ms tick covers silence + hard-cap checks; chunks that
-        // arrive between ticks are still picked up immediately on
-        // the recv() arm via the token-threshold path.
         let mut tick = tokio::time::interval(Duration::from_millis(500));
         tick.tick().await; // discard immediate tick
 
@@ -667,11 +672,6 @@ pub fn spawn_meeting_agent(
                             if chunk.user_id != user_id { continue; }
                             buffer.push(chunk);
                             last_chunk_at = Some(Instant::now());
-                            // Token + sentence threshold check after each
-                            // chunk push. Token covers "lots of text";
-                            // sentence covers "many complete thoughts" —
-                            // the latter fires similarly for monologues
-                            // and multi-speaker exchanges.
                             let approx_tokens: usize = buffer
                                 .iter()
                                 .map(|c| c.text.len() / CHARS_PER_TOKEN)
@@ -681,7 +681,10 @@ pub fn spawn_meeting_agent(
                                 .map(|c| count_sentences(&c.text))
                                 .sum();
                             if approx_tokens >= token_threshold || sentences >= sentence_threshold {
-                                fire(&state, &db, &events_tx, &user_id, &llm, &mut buffer, &mut tail_window).await;
+                                fire(
+                                    &state, &db, &events_tx, &user_id, &llm,
+                                    &mut buffer, &mut history, &mut bootstrapped, None,
+                                ).await;
                                 last_fire_at = Instant::now();
                                 last_chunk_at = None;
                             }
@@ -698,19 +701,12 @@ pub fn spawn_meeting_agent(
                 kick_result = kick_rx.recv() => {
                     match kick_result {
                         Ok(kick) if kick.user_id == user_id => {
-                            // Instant fire on artifact attach (or future
-                            // SystemNotice causes). Skips threshold checks
-                            // entirely so the agent reacts within a turn
-                            // of the user attaching context. The fire
-                            // queries attached_artifacts fresh in
-                            // build_working_context, so the new artifact
-                            // shows up in the same fire that was kicked.
-                            info!(
-                                user_id = %user_id,
-                                reason = ?kick.reason,
-                                "agent loop kicked",
-                            );
-                            fire(&state, &db, &events_tx, &user_id, &llm, &mut buffer, &mut tail_window).await;
+                            info!(user_id = %user_id, reason = ?kick.reason, "agent loop kicked");
+                            let event_text = format_kick_event(&db, &kick).await;
+                            fire(
+                                &state, &db, &events_tx, &user_id, &llm,
+                                &mut buffer, &mut history, &mut bootstrapped, event_text,
+                            ).await;
                             last_fire_at = Instant::now();
                             last_chunk_at = None;
                         }
@@ -719,8 +715,6 @@ pub fn spawn_meeting_agent(
                             warn!(lagged = n, user_id = %user_id, "agent loop kick channel lagged");
                         }
                         Err(broadcast::error::RecvError::Closed) => {
-                            // Kick channel closing isn't fatal; the loop
-                            // still reacts to transcripts and ticks.
                             warn!(user_id = %user_id, "agent loop kick channel closed");
                         }
                     }
@@ -733,7 +727,10 @@ pub fn spawn_meeting_agent(
                         .unwrap_or(false);
                     let aged = now.duration_since(last_fire_at) >= Duration::from_millis(max_ms);
                     if silent || aged {
-                        fire(&state, &db, &events_tx, &user_id, &llm, &mut buffer, &mut tail_window).await;
+                        fire(
+                            &state, &db, &events_tx, &user_id, &llm,
+                            &mut buffer, &mut history, &mut bootstrapped, None,
+                        ).await;
                         last_fire_at = now;
                         last_chunk_at = None;
                     }
@@ -743,10 +740,13 @@ pub fn spawn_meeting_agent(
     });
 }
 
-/// One agent invocation. Drains `buffer` into `tail_window`, builds
-/// the working-context string, and prompts the LLM with the four
-/// tools registered. Tool calls mutate state + emit events as side
-/// effects; this fn returns when rig's prompt loop completes.
+/// One agent invocation. Builds the next user-turn message from
+/// (optional) bootstrap + (optional) event + new transcript chunks,
+/// fires the agent through rig with the existing `history` as
+/// chat context, and appends rig's returned `Vec<Message>` (the
+/// new user/assistant/tool-result turns produced by this fire) back
+/// onto `history` so the next fire sees them.
+#[allow(clippy::too_many_arguments)]
 async fn fire(
     state: &Arc<Mutex<ServerState>>,
     db: &sqlx::PgPool,
@@ -754,33 +754,44 @@ async fn fire(
     user_id: &str,
     llm: &Arc<LlmClient>,
     buffer: &mut Vec<TranscriptChunk>,
-    tail_window: &mut Vec<TranscriptChunk>,
+    history: &mut Vec<rig::completion::Message>,
+    bootstrapped: &mut bool,
+    kick_event: Option<String>,
 ) {
     let new_chunks: Vec<TranscriptChunk> = std::mem::take(buffer);
-    if new_chunks.is_empty() {
+    if new_chunks.is_empty() && kick_event.is_none() && *bootstrapped {
         return;
     }
-    // Roll the new chunks into the tail window, capped at
-    // TAIL_WINDOW_MAX_CHUNKS. Anything that falls off the front is
-    // simply dropped — v1 has no rolling-summary compression.
     let new_chunks_count = new_chunks.len();
-    tail_window.extend(new_chunks);
-    if tail_window.len() > TAIL_WINDOW_MAX_CHUNKS {
-        let drop_n = tail_window.len() - TAIL_WINDOW_MAX_CHUNKS;
-        tail_window.drain(..drop_n);
+
+    // Compose this turn's user message. Sections, in order:
+    //   [meeting] header (first fire only)
+    //   [event] block (artifact attach, etc. — when set)
+    //   [transcript] block (new chunks since last fire — when present)
+    //
+    // Each fire sends only the delta. The agent's tool-call history
+    // is its memory of what was already pushed.
+    let mut sections: Vec<String> = Vec::new();
+    if !*bootstrapped {
+        if let Some(boot) = build_bootstrap_section(state, db, user_id).await {
+            sections.push(boot);
+        }
+    }
+    if let Some(event) = kick_event {
+        sections.push(format!("[event]\n{event}"));
+    }
+    if !new_chunks.is_empty() {
+        sections.push(format!("[transcript]\n{}", format_chunks(&new_chunks)));
+    }
+    if sections.is_empty() {
+        return;
+    }
+    let user_message = sections.join("\n\n");
+
+    if std::env::var("AGENT_LOG_PROMPT").ok().as_deref() == Some("1") {
+        info!(user_id, prompt = %user_message, "agent prompt");
     }
 
-    let (user_message, ctx_metrics) = build_working_context(state, db, user_id, tail_window).await;
-    // Optional debug dump of the full prompt — set
-    // `AGENT_LOG_PROMPT=1` to see exactly what the agent receives.
-    // Off by default because the prompt is sizable (multi-KB).
-    if std::env::var("AGENT_LOG_PROMPT").ok().as_deref() == Some("1") {
-        info!(
-            user_id,
-            prompt = %user_message,
-            "agent prompt dump",
-        );
-    }
     let started = Instant::now();
     let ctx = ToolCtx {
         state: state.clone(),
@@ -789,8 +800,13 @@ async fn fire(
         user_id: user_id.to_string(),
     };
 
-    // Provider dispatch. Each arm constructs its own tools (cheap
-    // Arc clones via ctx) and runs the prompt loop.
+    // Provider dispatch. Three near-identical arms — rig's
+    // `Agent<M>` is generic over the provider's model type, so
+    // there's no clean trait-object shortcut. Each arm builds
+    // its own agent (cheap), passes the prior `history` via
+    // `with_history`, and uses `extended_details()` to get the
+    // accumulated `Vec<Message>` back so we can append it.
+    let history_input = history.clone();
     let result = match &llm.backend {
         LlmBackend::Bedrock { client, model_id } => {
             let agent = client
@@ -803,7 +819,12 @@ async fn fire(
                 .tool(FetchArtifactSummary(ctx.clone()))
                 .tool(FetchArtifact(ctx))
                 .build();
-            agent.prompt(user_message.clone()).max_turns(3).await
+            agent
+                .prompt(user_message.clone())
+                .with_history(history_input)
+                .max_turns(MAX_TURNS_PER_FIRE)
+                .extended_details()
+                .await
         }
         LlmBackend::OpenAI { client, model_id } => {
             let agent = client
@@ -816,7 +837,12 @@ async fn fire(
                 .tool(FetchArtifactSummary(ctx.clone()))
                 .tool(FetchArtifact(ctx))
                 .build();
-            agent.prompt(user_message.clone()).max_turns(3).await
+            agent
+                .prompt(user_message.clone())
+                .with_history(history_input)
+                .max_turns(MAX_TURNS_PER_FIRE)
+                .extended_details()
+                .await
         }
         LlmBackend::Anthropic { client, model_id } => {
             let agent = client
@@ -829,51 +855,41 @@ async fn fire(
                 .tool(FetchArtifactSummary(ctx.clone()))
                 .tool(FetchArtifact(ctx))
                 .build();
-            agent.prompt(user_message.clone()).max_turns(3).await
+            agent
+                .prompt(user_message.clone())
+                .with_history(history_input)
+                .max_turns(MAX_TURNS_PER_FIRE)
+                .extended_details()
+                .await
         }
     };
 
     let latency_ms = started.elapsed().as_millis() as u64;
     let prompt_chars = (SYSTEM_PROMPT.len() + user_message.len()) as u64;
     match result {
-        Ok(response) => {
-            // Per-fire `llm_call` log mirrors the per-extract logs
-            // from `extract_with_prompt`. Increments the per-user
-            // counter so `llm_usage_at_stop` reflects agent spend.
-            // response_chars is the model's final-turn text, which
-            // for tool-calling responses is usually empty (the
-            // useful work happens in tool calls, not the text). The
-            // tool calls themselves don't surface here — we'd need
-            // a PromptHook to capture them; deferred to v1.1.
-            let response_chars = response.len() as u64;
+        Ok(resp) => {
+            let response_chars = resp.output.len() as u64;
             llm.record_usage(user_id, prompt_chars, response_chars);
-            info!(
-                user_id,
-                provider = ?llm.provider(),
-                call = "agent_fire",
-                prompt_chars,
-                response_chars,
-                latency_ms,
-                "llm_call",
-            );
+            let new_msg_count = resp.messages.as_ref().map(|m| m.len()).unwrap_or(0);
+            if let Some(new_msgs) = resp.messages {
+                history.extend(new_msgs);
+            }
+            *bootstrapped = true;
             info!(
                 user_id,
                 provider = ?llm.provider(),
                 new_chunks = new_chunks_count,
-                tail_chunks = tail_window.len(),
+                history_len = history.len(),
+                new_msg_count,
                 prompt_chars,
-                attached_artifacts = ctx_metrics.attached_artifacts,
-                existing_highlights = ctx_metrics.existing_highlights,
-                existing_actions = ctx_metrics.existing_actions,
-                existing_open_questions = ctx_metrics.existing_open_questions,
+                input_tokens = resp.usage.input_tokens,
+                output_tokens = resp.usage.output_tokens,
+                cached_input_tokens = resp.usage.cached_input_tokens,
                 latency_ms,
                 "agent fire done",
             );
         }
         Err(e) => {
-            // Still record the prompt_chars on failure — the call
-            // hit the provider and we paid for it; the response is
-            // just empty/error.
             llm.record_usage(user_id, prompt_chars, 0);
             warn!(
                 user_id,
@@ -886,207 +902,120 @@ async fn fire(
     }
 }
 
-/// Render the working context the agent sees on each fire.
-/// Sections in order:
-///
-/// 1. Meeting metadata (project / title / owner — flat key=value).
-/// 2. Items-as-memory: current items in highlights / actions /
-///    open_questions, each as a JSON line with id + flattened
-///    fields. Per PLAN.md §3.4 implementation contract the
-///    `meta` blob is flattened (`{id, text, owner, due}` not
-///    `{id, text, meta: {...}}`) so the agent reads it cleanly.
-/// 3. Tail-window transcript: the last N chunks verbatim with
-///    `[Speaker N, mm:ss]` prefixes when diarization is available.
-/// Counts of what landed in the prompt — emitted on `agent fire
-/// done` so operators can verify (e.g.) that an attached artifact
-/// actually made it into the working context for the fire that
-/// followed an attach kick.
-#[derive(Debug, Default)]
-struct ContextMetrics {
-    attached_artifacts: usize,
-    existing_highlights: usize,
-    existing_actions: usize,
-    existing_open_questions: usize,
+/// Render the new transcript chunks for a fire as
+/// `[Speaker N] [mm:ss] text` lines, oldest first.
+fn format_chunks(chunks: &[TranscriptChunk]) -> String {
+    use std::fmt::Write;
+    let mut out = String::with_capacity(chunks.len() * 80);
+    for chunk in chunks {
+        let speaker = chunk
+            .speaker
+            .as_deref()
+            .map(|s| format!("[Speaker {s}] "))
+            .unwrap_or_default();
+        let mm = chunk.t_start_ms / 60_000;
+        let ss = (chunk.t_start_ms % 60_000) / 1000;
+        let _ = writeln!(out, "{speaker}[{mm:02}:{ss:02}] {}", chunk.text);
+    }
+    out.trim_end().to_string()
 }
 
-async fn build_working_context(
+/// Bootstrap section — included only on the first fire of a
+/// meeting. Carries the meeting metadata (title/description, etc.)
+/// and any artifacts the user attached BEFORE the first transcript
+/// chunk arrived. Subsequent attaches arrive as [event] blocks
+/// during normal fires.
+async fn build_bootstrap_section(
     state: &Arc<Mutex<ServerState>>,
     db: &sqlx::PgPool,
     user_id: &str,
-    tail_window: &[TranscriptChunk],
-) -> (String, ContextMetrics) {
+) -> Option<String> {
     use std::fmt::Write;
-    let mut buf = String::with_capacity(2048);
-    let mut metrics = ContextMetrics::default();
-
-    let (metadata, current_meeting_id, highlights, actions, open_questions) = {
+    let (metadata, current_meeting_id) = {
         let s = state.lock().await;
         match s.user(user_id) {
-            Some(u) => (
-                u.metadata.clone(),
-                u.current_meeting_id.clone(),
-                u.items_per_mode
-                    .get("highlights")
-                    .cloned()
-                    .unwrap_or_default(),
-                u.items_per_mode.get("actions").cloned().unwrap_or_default(),
-                u.items_per_mode
-                    .get("open_questions")
-                    .cloned()
-                    .unwrap_or_default(),
-            ),
-            None => (Default::default(), None, Vec::new(), Vec::new(), Vec::new()),
+            Some(u) => (u.metadata.clone(), u.current_meeting_id.clone()),
+            None => (Default::default(), None),
         }
     };
-
-    // Items-as-memory FIRST so the dedup signal is fresh when the
-    // model considers the new transcript. This ordering matters:
-    // small models (gpt-4.1-mini) routinely re-pushed duplicates
-    // when items appeared after transcript in the prompt.
-    metrics.existing_highlights = highlights.len();
-    metrics.existing_actions = actions.len();
-    metrics.existing_open_questions = open_questions.len();
-    buf.push_str("# Already recorded — DO NOT push duplicates of these\n");
-    write_items_section(&mut buf, "highlights", &highlights);
-    write_items_section(&mut buf, "actions", &actions);
-    write_items_section(&mut buf, "open_questions", &open_questions);
-    buf.push('\n');
-
-    // Attached artifacts pre-load. id + name + short_summary so the
-    // agent can ground its reasoning on what the user attached
-    // (PDF docs, images, etc.). The full content + long summary
-    // come via fetch_artifact_summary / fetch_artifact tools (v1.2,
-    // PLAN.md §3.8) — not yet wired. For now, short summary is
-    // enough for the agent to know "this doc exists, here's its
-    // gist" and reference it in highlights/actions.
+    let mut out = String::new();
+    if !metadata.is_empty() {
+        out.push_str("[meeting]\n");
+        let mut keys: Vec<&String> = metadata.keys().collect();
+        keys.sort();
+        for k in keys {
+            let _ = writeln!(out, "  {k}: {}", metadata[k]);
+        }
+    }
     if let Some(mid) = current_meeting_id.as_deref() {
         let attached = crate::db::list_artifacts_for_meeting(db, mid)
             .await
             .unwrap_or_default();
-        metrics.attached_artifacts = attached.len();
         if !attached.is_empty() {
-            buf.push_str("# Attached artifacts (use these as context — the user uploaded them for this meeting)\n");
+            if !out.is_empty() {
+                out.push('\n');
+            }
+            out.push_str("[attached artifacts]\n");
             for a in &attached {
                 let summary = a.short_summary.as_deref().unwrap_or("(summary pending)");
                 let _ = writeln!(
-                    buf,
-                    "  {{\"id\":\"{}\",\"name\":\"{}\",\"mime\":\"{}\",\"summary\":\"{}\"}}",
-                    a.id,
-                    escape_json_str(&a.name),
-                    a.mime_type,
-                    escape_json_str(summary),
+                    out,
+                    "  id={} name={} mime={} summary={}",
+                    a.id, a.name, a.mime_type, summary,
                 );
             }
-            buf.push('\n');
         }
     }
-
-    if !metadata.is_empty() {
-        buf.push_str("# Meeting context\n");
-        let mut keys: Vec<&String> = metadata.keys().collect();
-        keys.sort();
-        for k in keys {
-            let _ = writeln!(buf, "  {k}: {}", metadata[k]);
-        }
-        buf.push('\n');
-    }
-
-    buf.push_str("# Transcript (oldest first, newest at the bottom)\n");
-    if tail_window.is_empty() {
-        buf.push_str("  (empty)\n");
+    if out.is_empty() {
+        None
     } else {
-        for chunk in tail_window {
-            let speaker = chunk
-                .speaker
-                .as_deref()
-                .map(|s| format!("[Speaker {s}] "))
-                .unwrap_or_default();
-            let mm = chunk.t_start_ms / 60_000;
-            let ss = (chunk.t_start_ms % 60_000) / 1000;
-            let _ = writeln!(buf, "  {speaker}[{mm:02}:{ss:02}] {}", chunk.text);
-        }
+        Some(out.trim_end().to_string())
     }
-    buf.push('\n');
-    buf.push_str(
-        "Process the transcript above. For EACH question (line ending in `?` or implying \
-         uncertainty), emit push_open_question. For EACH commitment (\"I'll\", \"we'll\", named \
-         deadline), emit push_action. For surprising/specific facts not already recorded, emit \
-         push_highlight. Skip pleasantries and anything semantically equivalent to existing items.",
-    );
-    (buf, metrics)
 }
 
-/// Minimal JSON string escaper for the working-context renderer.
-/// We're not deserializing this — it's a prompt for an LLM — so
-/// quote/backslash/control-char handling is enough; full RFC 8259
-/// is overkill.
-fn escape_json_str(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for c in s.chars() {
-        match c {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push(' '),
-            '\r' => out.push(' '),
-            '\t' => out.push(' '),
-            _ => out.push(c),
-        }
-    }
-    out
-}
-
-/// Format one mode's items as `{id, text, ...flattened-meta}` JSON
-/// lines. Empty modes render as `(none)` so the agent sees the
-/// presence of the section even without data.
-fn write_items_section(buf: &mut String, mode: &str, items: &[Item]) {
-    use std::fmt::Write;
-    let _ = writeln!(buf, "## {mode}");
-    if items.is_empty() {
-        buf.push_str("  (none)\n");
-        return;
-    }
-    for item in items {
-        let mut entry = serde_json::Map::new();
-        entry.insert("id".into(), serde_json::Value::String(item.id.clone()));
-        entry.insert("text".into(), serde_json::Value::String(item.text.clone()));
-        if let Some(serde_json::Value::Object(map)) = &item.meta {
-            for (k, v) in map {
-                // Drop nulls AND empty strings so the agent doesn't
-                // see noise like `"owner":""`. Models that emit
-                // empty strings by mistake (gpt-4.1 does this) get
-                // filtered at write time too — see the tool-call
-                // normalization for the input side.
-                if v.is_null() {
-                    continue;
+/// Format a kick into the body of an [event] block. Loads the
+/// referenced artifact so the agent sees its name + short summary
+/// in the same fire it's announced. Returns `None` only if the
+/// kick doesn't translate to a meaningful event (shouldn't happen
+/// today, but the future-proof shape supports it).
+async fn format_kick_event(db: &sqlx::PgPool, kick: &AgentKick) -> Option<String> {
+    match &kick.reason {
+        AgentKickReason::ArtifactAttached { artifact_id } => {
+            match crate::db::get_artifact_for_user(db, &kick.user_id, artifact_id).await {
+                Ok(Some(a)) => {
+                    let summary = a.short_summary.as_deref().unwrap_or("(summary pending)");
+                    Some(format!(
+                        "User just attached artifact: id={} name={} mime={} summary={}",
+                        a.id, a.name, a.mime_type, summary,
+                    ))
                 }
-                if let Some(s) = v.as_str() {
-                    if s.is_empty() {
-                        continue;
-                    }
-                }
-                entry.insert(k.clone(), v.clone());
+                _ => Some(format!(
+                    "User just attached artifact: id={artifact_id} (details unavailable)"
+                )),
             }
         }
-        let line = serde_json::to_string(&entry).unwrap_or_default();
-        let _ = writeln!(buf, "  {line}");
     }
 }
 
 // ─── Kick channel ───────────────────────────────────────────────────────
 
 /// Sent on `ServerHandle.agent_kick_tx` to ask the agent loop to
-/// fire immediately for a specific user. Today there's one trigger
-/// — an artifact was attached — but the type is open-ended so
-/// future SystemNotice-style causes can use the same channel.
+/// fire immediately for a specific user, optionally with an event
+/// payload that gets folded into the agent's next user-turn message
+/// (so the agent sees what just happened in the conversation, not
+/// just "fire now").
 #[derive(Debug, Clone)]
 pub struct AgentKick {
     pub user_id: String,
     pub reason: AgentKickReason,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub enum AgentKickReason {
-    ArtifactAttached,
+    /// User attached an artifact to the active meeting. The agent
+    /// task loads the artifact by id to render its name + summary
+    /// into the [event] block on the next fire.
+    ArtifactAttached { artifact_id: String },
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────
@@ -1118,48 +1047,7 @@ fn env_u64(key: &str, default: u64) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// Per PLAN.md §3.4, items-as-memory must flatten `meta` —
-    /// agents see `{id, text, owner, due}`, not nested `{meta: ...}`.
-    #[test]
-    fn write_items_section_flattens_meta() {
-        let item = Item {
-            id: "a-1".into(),
-            text: "Bob to send slides".into(),
-            detail: None,
-            t: 0,
-            meta: Some(serde_json::json!({"owner": "Bob", "due": "Friday"})),
-        };
-        let mut buf = String::new();
-        write_items_section(&mut buf, "actions", &[item]);
-        assert!(buf.contains("\"owner\":\"Bob\""));
-        assert!(buf.contains("\"due\":\"Friday\""));
-        // Should NOT have a "meta" nested key — that's the flattening contract.
-        assert!(!buf.contains("\"meta\""));
-    }
-
-    #[test]
-    fn write_items_section_drops_null_meta_fields() {
-        let item = Item {
-            id: "a-1".into(),
-            text: "Some action".into(),
-            detail: None,
-            t: 0,
-            meta: Some(serde_json::json!({"owner": "Bob", "due": null})),
-        };
-        let mut buf = String::new();
-        write_items_section(&mut buf, "actions", &[item]);
-        assert!(buf.contains("\"owner\":\"Bob\""));
-        // Null fields are dropped so the agent doesn't see noise.
-        assert!(!buf.contains("\"due\""));
-    }
-
-    #[test]
-    fn write_items_section_renders_none_for_empty() {
-        let mut buf = String::new();
-        write_items_section(&mut buf, "highlights", &[]);
-        assert!(buf.contains("(none)"));
-    }
+    use crate::stt::TranscriptChunk;
 
     #[test]
     fn count_sentences_handles_multiple_terminators() {
@@ -1175,21 +1063,26 @@ mod tests {
         assert_eq!(count_sentences("こんにちは。さようなら。"), 2);
     }
 
+    fn chunk(t_ms: u64, speaker: Option<&str>, text: &str) -> TranscriptChunk {
+        TranscriptChunk {
+            id: format!("c-{t_ms}"),
+            user_id: "u".into(),
+            t_start_ms: t_ms,
+            t_end_ms: t_ms + 1000,
+            text: text.into(),
+            speaker: speaker.map(Into::into),
+        }
+    }
+
     #[test]
-    fn write_items_section_drops_empty_string_meta_fields() {
-        // Models occasionally emit empty strings instead of omitting
-        // optional fields. Those should be filtered the same way
-        // null fields are — keeps the agent's view clean.
-        let item = Item {
-            id: "a-1".into(),
-            text: "Some action".into(),
-            detail: None,
-            t: 0,
-            meta: Some(serde_json::json!({"owner": "", "due": "Friday"})),
-        };
-        let mut buf = String::new();
-        write_items_section(&mut buf, "actions", &[item]);
-        assert!(buf.contains("\"due\":\"Friday\""));
-        assert!(!buf.contains("\"owner\""));
+    fn format_chunks_renders_speaker_when_present() {
+        let chunks = vec![chunk(0, Some("1"), "Hello"), chunk(75_000, None, "world")];
+        let out = format_chunks(&chunks);
+        assert!(out.contains("[Speaker 1]"));
+        assert!(out.contains("[00:00] Hello"));
+        // 75s → 01:15.
+        assert!(out.contains("[01:15] world"));
+        // No leading "[Speaker " on the second line — speaker was None.
+        assert_eq!(out.matches("[Speaker").count(), 1);
     }
 }
