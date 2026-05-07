@@ -1704,6 +1704,14 @@ textarea {
   font-size: 12px;
   flex-shrink: 0;
 }
+.artifact-del.armed {
+  background: rgba(229, 72, 77, 0.12);
+  color: rgb(180, 36, 40);
+  font-weight: 600;
+  border-radius: 4px;
+  padding: 2px 8px;
+  font-size: 11px;
+}
 .artifact-short {
   color: var(--steel-gray);
   font-size: 13px;

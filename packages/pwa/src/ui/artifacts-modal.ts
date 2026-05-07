@@ -73,6 +73,34 @@ export function mountArtifactsModal(parent: HTMLElement, store: Store, auth: Aut
   // re-renders across the same modal session.
   const expanded = new Set<string>();
 
+  // Per-row "armed delete" — first trash click arms (button turns
+  // red + label "Confirm?"); second click within 3 s deletes;
+  // auto-disarms otherwise. Replaces a `confirm()` dialog that was
+  // silently suppressed by the EvenHub WebView.
+  let armedDeleteId: string | null = null;
+  let armedTimer: ReturnType<typeof setTimeout> | null = null;
+  const ARMED_WINDOW_MS = 3000;
+  function armOrConfirmDelete(id: string): void {
+    if (armedDeleteId === id) {
+      // Confirmation click.
+      armedDeleteId = null;
+      if (armedTimer !== null) {
+        clearTimeout(armedTimer);
+        armedTimer = null;
+      }
+      void doDelete(id);
+      return;
+    }
+    if (armedTimer !== null) clearTimeout(armedTimer);
+    armedDeleteId = id;
+    render();
+    armedTimer = setTimeout(() => {
+      armedDeleteId = null;
+      armedTimer = null;
+      render();
+    }, ARMED_WINDOW_MS);
+  }
+
   function close(): void {
     if (pollTimer !== null) {
       clearTimeout(pollTimer);
@@ -143,7 +171,6 @@ export function mountArtifactsModal(parent: HTMLElement, store: Store, auth: Aut
   }
 
   async function doDelete(id: string): Promise<void> {
-    if (!confirm("Delete this artifact? This cannot be undone.")) return;
     const api = makeApi();
     if (!api) return;
     // Optimistic remove; revert on failure.
@@ -244,11 +271,12 @@ export function mountArtifactsModal(parent: HTMLElement, store: Store, auth: Aut
     }
 
     const del = document.createElement("button");
-    del.className = "btn-ghost artifact-del";
-    del.setAttribute("aria-label", "Delete artifact");
-    del.title = "Delete";
-    del.textContent = "🗑";
-    del.addEventListener("click", () => void doDelete(a.id));
+    const isArmed = armedDeleteId === a.id;
+    del.className = `btn-ghost artifact-del${isArmed ? " armed" : ""}`;
+    del.setAttribute("aria-label", isArmed ? "Confirm delete" : "Delete artifact");
+    del.title = isArmed ? "Click again to confirm" : "Delete";
+    del.textContent = isArmed ? "Confirm?" : "🗑";
+    del.addEventListener("click", () => armOrConfirmDelete(a.id));
     head.appendChild(del);
 
     row.appendChild(head);
