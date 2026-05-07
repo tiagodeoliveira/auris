@@ -1,7 +1,7 @@
-//! REST API for browsing meetings + screenshot transport.
+//! REST API for browsing meetings + artifact subsystem (PLAN.md §3.7).
 //!
-//! All endpoints are auth'd by `Authorization: Bearer <token>`
-//! against the same `MEETING_COMPANION_TOKEN` the WS protocol uses.
+//! All endpoints are auth'd by `Authorization: Bearer <token>` (Auth0
+//! JWT or the dev-bypass synthetic user when `MEETING_COMPANION_AUTH_DISABLED=1`).
 //!
 //!   GET    /meetings                                       → summaries (newest first)
 //!   GET    /meetings/:id                                   → meeting + transcript + moments
@@ -10,27 +10,54 @@
 //!   POST   /meetings/:id/moments/:moment_id/screenshot     → upload PNG (raw image/png)
 //!   DELETE /moments/:moment_id                             → drop one moment
 //!
+//!   GET    /artifacts                                      → user's library (newest first)
+//!   POST   /artifacts                                      → multipart upload (`file` field)
+//!   GET    /artifacts/:id                                  → one artifact's metadata
+//!   DELETE /artifacts/:id                                  → remove from library + blob
+//!   POST   /meetings/:id/artifacts                         → attach (body: { artifact_id })
+//!   DELETE /meetings/:id/artifacts/:artifact_id            → detach
+//!
 //! Moment *creation* lives on the WS path (`Intent::MarkMoment`); this
-//! module only handles read paths plus the screenshot transport (the
-//! Mac uploads a PNG here in response to `Event::CaptureMomentScreenshot`).
+//! module handles read paths, the screenshot transport, and the
+//! artifact subsystem in full (no WS path for artifacts — they're a
+//! pre-meeting library).
 
 use std::sync::Arc;
 
 use axum::{
     body::Body,
-    extract::{DefaultBodyLimit, Path, State},
+    extract::{DefaultBodyLimit, Multipart, Path, State},
     http::{header, HeaderMap, StatusCode},
     response::{IntoResponse, Response},
-    routing::get,
+    routing::{get, post},
     Json, Router,
 };
 use chrono::{DateTime, Utc};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use tokio::sync::broadcast;
 use tower_http::cors::CorsLayer;
 
 use crate::contract::Item;
+
+/// MIME types we accept for artifact uploads. Matches PLAN.md §3.7
+/// "Format support (v1)" — text formats land via rig's `Document`,
+/// PDFs via `document_raw`, images via `image_base64`. Anything else
+/// is 415.
+const ALLOWED_ARTIFACT_MIMES: &[&str] = &[
+    "text/plain",
+    "text/markdown",
+    "text/html",
+    "text/csv",
+    "application/json",
+    "application/pdf",
+    "image/png",
+    "image/jpeg",
+];
+
+/// Cap individual artifact uploads. Personal-use ceiling — most docs
+/// fit in MB, not GB; very large PDFs still go through.
+const MAX_ARTIFACT_BYTES: usize = 50 * 1024 * 1024;
 
 /// Internal signal published by `POST /meetings/:id/moments` and
 /// consumed by the moment-summary worker (`summarizer/moment.rs`).
@@ -80,6 +107,13 @@ pub fn make_router(state: ApiState) -> Router {
             get(get_moment_screenshot).post(upload_moment_screenshot),
         )
         .route("/moments/:moment_id", axum::routing::delete(delete_moment))
+        .route("/artifacts", get(list_artifacts).post(upload_artifact))
+        .route("/artifacts/:id", get(get_artifact).delete(delete_artifact))
+        .route("/meetings/:meeting_id/artifacts", post(attach_artifact))
+        .route(
+            "/meetings/:meeting_id/artifacts/:artifact_id",
+            axum::routing::delete(detach_artifact),
+        )
         .layer(DefaultBodyLimit::max(SCREENSHOT_BODY_LIMIT))
         .layer(CorsLayer::permissive())
         .with_state(state)
@@ -382,6 +416,245 @@ fn downcast_db(e: anyhow::Error) -> sqlx::Error {
         .unwrap_or_else(|orig| sqlx::Error::Protocol(format!("non-sqlx db error: {orig}")))
 }
 
+// ─── Artifacts (PLAN.md §3.7) ────────────────────────────────────────
+
+/// Wire shape for an artifact row. Hides `asset_path` (clients don't
+/// need it — they reference artifacts by `id`) but exposes both
+/// summary fields so the meeting compose UI can render the short
+/// summary as a chip preview.
+#[derive(Debug, Serialize)]
+struct ArtifactDto {
+    id: String,
+    name: String,
+    mime_type: String,
+    short_summary: Option<String>,
+    long_summary: Option<String>,
+    summary_status: String,
+    size_bytes: i64,
+    created_at: DateTime<Utc>,
+}
+
+impl From<crate::db::ArtifactRow> for ArtifactDto {
+    fn from(row: crate::db::ArtifactRow) -> Self {
+        Self {
+            id: row.id,
+            name: row.name,
+            mime_type: row.mime_type,
+            short_summary: row.short_summary,
+            long_summary: row.long_summary,
+            summary_status: row.summary_status,
+            size_bytes: row.size_bytes,
+            created_at: row.created_at,
+        }
+    }
+}
+
+async fn list_artifacts(
+    State(state): State<ApiState>,
+    headers: HeaderMap,
+) -> Result<Json<Vec<ArtifactDto>>, ApiError> {
+    let user_id = require_user(&headers, &state).await?;
+    let rows = crate::db::list_artifacts_for_user(&state.db, &user_id)
+        .await
+        .map_err(|e| ApiError::Db(downcast_db(e)))?;
+    Ok(Json(rows.into_iter().map(ArtifactDto::from).collect()))
+}
+
+async fn get_artifact(
+    State(state): State<ApiState>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+) -> Result<Json<ArtifactDto>, ApiError> {
+    let user_id = require_user(&headers, &state).await?;
+    let row = crate::db::get_artifact_for_user(&state.db, &id, &user_id)
+        .await
+        .map_err(|e| ApiError::Db(downcast_db(e)))?
+        .ok_or(ApiError::NotFound)?;
+    Ok(Json(ArtifactDto::from(row)))
+}
+
+/// Multipart upload. Expects exactly one field named `file` carrying
+/// the bytes; `filename` becomes the artifact's display name and
+/// `Content-Type` its mime. Returns the freshly-inserted row with
+/// `summary_status: pending` — the async summarizer worker (PLAN.md
+/// §3.12 step 3d) populates the summaries.
+///
+/// On any failure after the blob is on disk, we leave it: a future
+/// cleanup task can scan for orphan blobs (rows with `summary_status
+/// = 'failed'` that never got a paired DB row). For personal-use v1,
+/// this is rare enough that a manual rm is fine.
+async fn upload_artifact(
+    State(state): State<ApiState>,
+    headers: HeaderMap,
+    mut multipart: Multipart,
+) -> Result<Json<ArtifactDto>, ApiError> {
+    let user_id = require_user(&headers, &state).await?;
+
+    let mut file_bytes: Option<axum::body::Bytes> = None;
+    let mut file_name: Option<String> = None;
+    let mut mime_type: Option<String> = None;
+
+    while let Some(field) = multipart
+        .next_field()
+        .await
+        .map_err(|e| ApiError::BadRequest(format!("multipart: {e}")))?
+    {
+        let field_name = field.name().unwrap_or("").to_string();
+        if field_name != "file" {
+            // Ignore unknown fields — don't fail the upload over a
+            // stray client-side metadata field.
+            continue;
+        }
+        file_name = field.file_name().map(|s| s.to_string());
+        mime_type = field
+            .content_type()
+            .map(|s| s.to_string())
+            .or_else(|| Some("application/octet-stream".to_string()));
+        let bytes = field
+            .bytes()
+            .await
+            .map_err(|e| ApiError::BadRequest(format!("read bytes: {e}")))?;
+        file_bytes = Some(bytes);
+    }
+
+    let bytes = file_bytes.ok_or_else(|| ApiError::BadRequest("missing file field".into()))?;
+    let name = file_name.ok_or_else(|| ApiError::BadRequest("missing filename".into()))?;
+    let mime = mime_type.ok_or_else(|| ApiError::BadRequest("missing content type".into()))?;
+    if bytes.is_empty() {
+        return Err(ApiError::BadRequest("empty file".into()));
+    }
+    if bytes.len() > MAX_ARTIFACT_BYTES {
+        return Err(ApiError::BadRequest(format!(
+            "file exceeds {} bytes",
+            MAX_ARTIFACT_BYTES
+        )));
+    }
+    if !ALLOWED_ARTIFACT_MIMES.iter().any(|m| *m == mime) {
+        return Err(ApiError::BadRequest(format!(
+            "unsupported mime type: {mime}"
+        )));
+    }
+
+    let id = uuid::Uuid::new_v4().to_string();
+    let rel = format!("blobs/artifacts/{user_id}/{id}");
+    let dir = crate::db::data_dir().map_err(|e| ApiError::Internal(e.to_string()))?;
+    let abs = dir.join(&rel);
+    if let Some(parent) = abs.parent() {
+        tokio::fs::create_dir_all(parent)
+            .await
+            .map_err(|e| ApiError::Internal(format!("mkdir: {e}")))?;
+    }
+    tokio::fs::write(&abs, &bytes)
+        .await
+        .map_err(|e| ApiError::Internal(format!("write artifact: {e}")))?;
+
+    let size = bytes.len() as i64;
+    crate::db::insert_artifact(&state.db, &id, &user_id, &name, &mime, &rel, size)
+        .await
+        .map_err(|e| ApiError::Db(downcast_db(e)))?;
+
+    let row = crate::db::get_artifact_for_user(&state.db, &id, &user_id)
+        .await
+        .map_err(|e| ApiError::Db(downcast_db(e)))?
+        .ok_or_else(|| ApiError::Internal("artifact vanished after insert".into()))?;
+    Ok(Json(ArtifactDto::from(row)))
+}
+
+async fn delete_artifact(
+    State(state): State<ApiState>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+) -> Result<StatusCode, ApiError> {
+    let user_id = require_user(&headers, &state).await?;
+    // Read the row first so we know the on-disk path; the DB cascade
+    // drops join rows automatically, but we own the blob lifecycle.
+    let row = crate::db::get_artifact_for_user(&state.db, &id, &user_id)
+        .await
+        .map_err(|e| ApiError::Db(downcast_db(e)))?
+        .ok_or(ApiError::NotFound)?;
+    crate::db::delete_artifact_for_user(&state.db, &id, &user_id)
+        .await
+        .map_err(|e| ApiError::Db(downcast_db(e)))?;
+    let dir = crate::db::data_dir().map_err(|e| ApiError::Internal(e.to_string()))?;
+    let abs = dir.join(&row.asset_path);
+    if let Err(e) = tokio::fs::remove_file(&abs).await {
+        // Best-effort: blob may already be gone (manual cleanup, OS
+        // restart wiped /tmp, etc.). DB row is the source of truth.
+        if e.kind() != std::io::ErrorKind::NotFound {
+            tracing::warn!(error = ?e, path = %abs.display(), "artifact blob delete failed");
+        }
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Debug, Deserialize)]
+struct AttachArtifactBody {
+    artifact_id: String,
+}
+
+async fn attach_artifact(
+    State(state): State<ApiState>,
+    Path(meeting_id): Path<String>,
+    headers: HeaderMap,
+    Json(body): Json<AttachArtifactBody>,
+) -> Result<StatusCode, ApiError> {
+    let user_id = require_user(&headers, &state).await?;
+    // Belt-and-suspenders ownership: both the meeting and the
+    // artifact must belong to this caller. 404 (not 403) on miss so
+    // we don't leak existence.
+    let meeting_owned: Option<(String,)> =
+        sqlx::query_as(r#"SELECT id FROM meetings WHERE id = $1 AND user_id = $2"#)
+            .bind(&meeting_id)
+            .bind(&user_id)
+            .fetch_optional(&state.db)
+            .await
+            .map_err(ApiError::Db)?;
+    if meeting_owned.is_none() {
+        return Err(ApiError::NotFound);
+    }
+    let artifact = crate::db::get_artifact_for_user(&state.db, &body.artifact_id, &user_id)
+        .await
+        .map_err(|e| ApiError::Db(downcast_db(e)))?
+        .ok_or(ApiError::NotFound)?;
+    // PLAN.md §3.7 — only `done` artifacts are attachable. Pending
+    // ones aren't fully indexed yet; failed ones never will be.
+    if artifact.summary_status != "done" {
+        return Err(ApiError::BadRequest(format!(
+            "artifact summary_status is {}; only `done` artifacts can be attached",
+            artifact.summary_status
+        )));
+    }
+    crate::db::attach_artifact_to_meeting(&state.db, &meeting_id, &body.artifact_id)
+        .await
+        .map_err(|e| ApiError::Db(downcast_db(e)))?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn detach_artifact(
+    State(state): State<ApiState>,
+    Path((meeting_id, artifact_id)): Path<(String, String)>,
+    headers: HeaderMap,
+) -> Result<StatusCode, ApiError> {
+    let user_id = require_user(&headers, &state).await?;
+    // Ownership check on the meeting side is sufficient — the join
+    // row only exists if both pieces were owned at attach time, and
+    // the artifact_id path param can't bypass that.
+    let meeting_owned: Option<(String,)> =
+        sqlx::query_as(r#"SELECT id FROM meetings WHERE id = $1 AND user_id = $2"#)
+            .bind(&meeting_id)
+            .bind(&user_id)
+            .fetch_optional(&state.db)
+            .await
+            .map_err(ApiError::Db)?;
+    if meeting_owned.is_none() {
+        return Err(ApiError::NotFound);
+    }
+    crate::db::detach_artifact_from_meeting(&state.db, &meeting_id, &artifact_id)
+        .await
+        .map_err(|e| ApiError::Db(downcast_db(e)))?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 /// Best-effort read of the per-meeting transcription jsonl. Lines
 /// that fail to parse are skipped silently — better to surface a
 /// partial transcript than to fail the whole meeting view because
@@ -597,6 +870,249 @@ mod tests {
                 Request::get("/meetings/other-m")
                     .header("authorization", "Bearer dev")
                     .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    // ─── Artifact endpoints (PLAN.md §3.7) ──────────────────────────────
+
+    /// Build a minimal `multipart/form-data` body with a single `file`
+    /// field. Boundary chosen to be unambiguous against the payload.
+    fn multipart_body(filename: &str, mime: &str, content: &[u8]) -> (String, Vec<u8>) {
+        let boundary = "----meetingcompaniontest";
+        let mut body = Vec::new();
+        body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+        body.extend_from_slice(
+            format!("Content-Disposition: form-data; name=\"file\"; filename=\"{filename}\"\r\n")
+                .as_bytes(),
+        );
+        body.extend_from_slice(format!("Content-Type: {mime}\r\n\r\n").as_bytes());
+        body.extend_from_slice(content);
+        body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+        (format!("multipart/form-data; boundary={boundary}"), body)
+    }
+
+    /// Point `MEETING_COMPANION_DATA_DIR` at a unique per-test path so
+    /// blob writes don't leak between concurrent runs. Avoids a
+    /// `tempfile` dep — the dir lives under `/tmp` and gets recycled
+    /// by the OS. Tests don't bother cleaning it up; the volume is
+    /// small (a handful of bytes per artifact).
+    fn scoped_data_dir() {
+        let path =
+            std::env::temp_dir().join(format!("meeting-companion-test-{}", uuid::Uuid::new_v4()));
+        std::env::set_var("MEETING_COMPANION_DATA_DIR", &path);
+    }
+
+    #[sqlx::test]
+    async fn upload_artifact_creates_pending_row(pool: PgPool) {
+        scoped_data_dir();
+        let (app, _uid) = router_with_dev_user(pool).await;
+        let (ct, body) = multipart_body("agenda.md", "text/markdown", b"# Agenda\n- A\n- B\n");
+        let resp = app
+            .oneshot(
+                Request::post("/artifacts")
+                    .header("authorization", "Bearer dev")
+                    .header("content-type", ct)
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let v: serde_json::Value = serde_json::from_str(&body_string(resp).await).unwrap();
+        assert_eq!(v["name"], "agenda.md");
+        assert_eq!(v["mime_type"], "text/markdown");
+        assert_eq!(v["summary_status"], "pending");
+        assert!(v["short_summary"].is_null());
+    }
+
+    #[sqlx::test]
+    async fn upload_artifact_rejects_unsupported_mime(pool: PgPool) {
+        scoped_data_dir();
+        let (app, _uid) = router_with_dev_user(pool).await;
+        let (ct, body) = multipart_body("evil.exe", "application/x-msdownload", b"MZ");
+        let resp = app
+            .oneshot(
+                Request::post("/artifacts")
+                    .header("authorization", "Bearer dev")
+                    .header("content-type", ct)
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[sqlx::test]
+    async fn list_artifacts_returns_users_library(pool: PgPool) {
+        let (app, uid) = router_with_dev_user(pool.clone()).await;
+        crate::db::insert_artifact(&pool, "a1", &uid, "x.md", "text/markdown", "p1", 10)
+            .await
+            .unwrap();
+        crate::db::insert_artifact(&pool, "a2", &uid, "y.md", "text/markdown", "p2", 20)
+            .await
+            .unwrap();
+        let resp = app
+            .oneshot(
+                Request::get("/artifacts")
+                    .header("authorization", "Bearer dev")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let v: Vec<serde_json::Value> = serde_json::from_str(&body_string(resp).await).unwrap();
+        assert_eq!(v.len(), 2);
+    }
+
+    #[sqlx::test]
+    async fn get_artifact_404_for_other_users_artifact(pool: PgPool) {
+        let other = crate::db::upsert_user_by_auth0_sub(&pool, "other|user", None, None)
+            .await
+            .unwrap();
+        crate::db::insert_artifact(&pool, "a1", &other.id, "x.md", "text/markdown", "p", 1)
+            .await
+            .unwrap();
+        let (app, _uid) = router_with_dev_user(pool).await;
+        let resp = app
+            .oneshot(
+                Request::get("/artifacts/a1")
+                    .header("authorization", "Bearer dev")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[sqlx::test]
+    async fn delete_artifact_removes_row(pool: PgPool) {
+        scoped_data_dir();
+        let (app, uid) = router_with_dev_user(pool.clone()).await;
+        crate::db::insert_artifact(&pool, "a1", &uid, "x.md", "text/markdown", "p", 1)
+            .await
+            .unwrap();
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::delete("/artifacts/a1")
+                    .header("authorization", "Bearer dev")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+        // Row gone.
+        let resp2 = app
+            .oneshot(
+                Request::get("/artifacts/a1")
+                    .header("authorization", "Bearer dev")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp2.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[sqlx::test]
+    async fn attach_artifact_rejects_pending_status(pool: PgPool) {
+        let (app, uid) = router_with_dev_user(pool.clone()).await;
+        crate::db::insert_meeting(&pool, "m1", &uid, Utc::now(), None, "{}")
+            .await
+            .unwrap();
+        crate::db::insert_artifact(&pool, "a1", &uid, "x.md", "text/markdown", "p", 1)
+            .await
+            .unwrap();
+        // Status is `pending` by default — attach should reject.
+        let resp = app
+            .oneshot(
+                Request::post("/meetings/m1/artifacts")
+                    .header("authorization", "Bearer dev")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"artifact_id":"a1"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[sqlx::test]
+    async fn attach_then_detach_round_trips(pool: PgPool) {
+        let (app, uid) = router_with_dev_user(pool.clone()).await;
+        crate::db::insert_meeting(&pool, "m1", &uid, Utc::now(), None, "{}")
+            .await
+            .unwrap();
+        crate::db::insert_artifact(&pool, "a1", &uid, "x.md", "text/markdown", "p", 1)
+            .await
+            .unwrap();
+        // Mark as done so attach is allowed.
+        crate::db::update_artifact_summaries(&pool, "a1", "short", "long", "done")
+            .await
+            .unwrap();
+        // Attach.
+        let resp = app
+            .clone()
+            .oneshot(
+                Request::post("/meetings/m1/artifacts")
+                    .header("authorization", "Bearer dev")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"artifact_id":"a1"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+        let attached = crate::db::list_artifacts_for_meeting(&pool, "m1")
+            .await
+            .unwrap();
+        assert_eq!(attached.len(), 1);
+        // Detach.
+        let resp2 = app
+            .oneshot(
+                Request::delete("/meetings/m1/artifacts/a1")
+                    .header("authorization", "Bearer dev")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp2.status(), StatusCode::NO_CONTENT);
+        let attached2 = crate::db::list_artifacts_for_meeting(&pool, "m1")
+            .await
+            .unwrap();
+        assert!(attached2.is_empty());
+    }
+
+    #[sqlx::test]
+    async fn attach_404s_when_meeting_belongs_to_other_user(pool: PgPool) {
+        let other = crate::db::upsert_user_by_auth0_sub(&pool, "other|user", None, None)
+            .await
+            .unwrap();
+        crate::db::insert_meeting(&pool, "other-m", &other.id, Utc::now(), None, "{}")
+            .await
+            .unwrap();
+        let (app, uid) = router_with_dev_user(pool.clone()).await;
+        crate::db::insert_artifact(&pool, "a1", &uid, "x.md", "text/markdown", "p", 1)
+            .await
+            .unwrap();
+        crate::db::update_artifact_summaries(&pool, "a1", "s", "l", "done")
+            .await
+            .unwrap();
+        let resp = app
+            .oneshot(
+                Request::post("/meetings/other-m/artifacts")
+                    .header("authorization", "Bearer dev")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"artifact_id":"a1"}"#))
                     .unwrap(),
             )
             .await
