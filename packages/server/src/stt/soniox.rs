@@ -12,7 +12,12 @@ use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
 const SONIOX_URL: &str = "wss://stt-rt.soniox.com/transcribe-websocket";
-const MODEL_DEFAULT: &str = "stt-rt-preview";
+// `stt-rt-v4` is Soniox's current real-time model. We previously used
+// `stt-rt-preview` which appears to be deprecated — sessions died after
+// 10-20 s and transcripts came back as Finnish/Spanish gibberish once
+// `enable_speaker_diarization` was set. Override via
+// `MEETING_COMPANION_SONIOX_MODEL` if a newer model ships.
+const MODEL_DEFAULT: &str = "stt-rt-v4";
 const SAMPLE_RATE: u32 = 16000;
 const RECONNECT_BASE: Duration = Duration::from_millis(500);
 const RECONNECT_MAX: Duration = Duration::from_secs(30);
