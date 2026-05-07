@@ -190,6 +190,18 @@ dominate the prompt; if the cap repeatedly clips relevant context,
 that's a signal we want a new mnemo memory mode (separate work,
 mnemo-side change).
 
+**Trigger buffer composition.** The buffer that drives the trigger
+thresholds (§3.3) is a tagged union, not a flat `Vec<TranscriptChunk>`:
+it carries both transcript chunks (from the STT pipeline) and
+`SystemNotice` items (e.g., the "user attached artifact X"
+notification from §3.7). Both contribute to the token-threshold
+count and both reset the silence timer; both appear in the
+tail-window when the agent fires, with system notices formatted as
+`[system, mm:ss] message` to distinguish them from speaker turns.
+A small refactor of whatever channel / buffer shape the agent task
+uses internally — called out so it isn't a surprise during
+implementation.
+
 ### 3.6 Boot recovery
 
 Agent state lives in memory only. On a server crash + boot recovery:
@@ -205,7 +217,207 @@ item or two on a recovered meeting. Revisit only if quality
 degrades — persisting the rolled summary to a transcript-blob
 sidecar JSON is a small additive change when needed.
 
-### 3.7 Precursor — Soniox speaker diarization
+### 3.7 Artifact subsystem
+
+Per-meeting documents and images, library-first. The user uploads
+to a personal artifact library; only previously-uploaded library
+artifacts can be attached to meetings. Always a two-step flow
+from the user's perspective: upload, then attach.
+
+#### Lifecycle
+
+1. User uploads a file (Mac or PWA). Server stores bytes under
+   `<DATA_DIR>/blobs/artifacts/<user_id>/<artifact_id>`.
+2. Server async-summarizes via the LLM client. One call produces
+   both the `short_summary` (~50 tokens, for pre-load) and the
+   `long_summary` (~500 tokens, for the long-summary tool).
+   Native attachment via rig's `Document` / `Image` content types
+   — no pre-extraction needed for PDFs, markdown, or images.
+3. Library row transitions `summary_status: pending → done` when
+   the worker finishes (or `failed` if the LLM call gives up).
+4. User selects from the library (pre-meeting compose or
+   mid-meeting picker). Server writes a `meeting_artifacts` row.
+5. Server broadcasts `Event::ArtifactAttached { artifact_id, name,
+short_summary }` so all WS clients update their UI.
+6. If the meeting is active, the server also pushes a synthetic
+   system chunk into the agent's trigger buffer announcing the
+   attachment (see §3.5 working context). The agent decides on
+   its next trigger whether to act on it.
+
+#### Schema
+
+```sql
+CREATE TABLE artifacts (
+    id              TEXT PRIMARY KEY,
+    user_id         TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    name            TEXT NOT NULL,
+    mime_type       TEXT NOT NULL,
+    asset_path      TEXT NOT NULL,            -- relative to <DATA_DIR>/blobs/
+    short_summary   TEXT,                     -- ~50 tokens, pre-load
+    long_summary    TEXT,                     -- ~500 tokens, fetch_artifact_summary
+    summary_status  TEXT NOT NULL DEFAULT 'pending',  -- pending | done | failed
+    size_bytes      BIGINT NOT NULL,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX idx_artifacts_user ON artifacts(user_id, created_at DESC);
+
+CREATE TABLE meeting_artifacts (
+    meeting_id   TEXT NOT NULL REFERENCES meetings(id) ON DELETE CASCADE,
+    artifact_id  TEXT NOT NULL REFERENCES artifacts(id) ON DELETE CASCADE,
+    attached_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (meeting_id, artifact_id)
+);
+```
+
+#### Format support (v1)
+
+Native via rig 0.36's `UserContent`:
+
+| Family | MIME types                                                                 | rig type                                                              |
+| ------ | -------------------------------------------------------------------------- | --------------------------------------------------------------------- |
+| Text   | `text/plain`, `text/markdown`, `text/html`, `text/csv`, `application/json` | `UserContent::document` (string)                                      |
+| PDF    | `application/pdf`                                                          | `UserContent::document_raw` with `DocumentMediaType::PDF`             |
+| Image  | `image/png`, `image/jpeg`                                                  | `UserContent::image_base64` (reuses moment infra)                     |
+| Code   | per-language MIME or extension                                             | `UserContent::document` with the matching `DocumentMediaType` variant |
+
+Out of scope for v1: `.docx`, `.pptx`, Google Docs / Sheets links,
+audio. Added if a real need shows up.
+
+#### REST endpoints
+
+- `POST /api/artifacts` — multipart upload. Returns the artifact
+  row immediately with `summary_status: pending`. Server kicks off
+  the summarization worker async.
+- `GET /api/artifacts` — list the user's library, newest first.
+- `GET /api/artifacts/:id` — one artifact's metadata + summaries.
+- `DELETE /api/artifacts/:id` — remove from the library. Cascades
+  to `meeting_artifacts`; past meetings lose the attachment but
+  keep living. Blob deleted from disk.
+- `POST /api/meetings/:id/artifacts` — attach a library artifact
+  to a meeting. Body: `{ artifact_id }`. Server enforces that the
+  artifact is `summary_status: done` before allowing attach.
+- `DELETE /api/meetings/:id/artifacts/:artifact_id` — detach.
+
+### 3.8 Retrieval tools
+
+Three new tools available to the agent. All read-only against
+external state (none mutate the LLM-driven mode buffers).
+
+#### `fetch_artifact_summary { id }`
+
+Returns the artifact's `long_summary` as the tool result text. No
+conversation-history mutation. Cheap. The agent uses this for
+"this attachment looks relevant, give me more than the pre-load
+summary" without committing to the full doc.
+
+Unknown id → `"no such artifact: <id>"` (same self-correction
+contract as the mode tools — see §3.4).
+
+#### `fetch_artifact { id }`
+
+Side-effecting. Tool result text: `"Artifact 'X' attached to your
+context. Reference it directly in your reasoning."`
+
+The runtime intercepts this tool call: fetches the artifact's
+bytes from `<DATA_DIR>/blobs/...`, then appends a synthetic
+`Message::User` to the agent's conversation history with the
+content as a `Document` (PDF / markdown / code) or `Image`. On the
+agent's next trigger fire, the model sees the actual content
+natively — PDF pages, image, markdown — not extracted text.
+
+The attachment stays in conversation history for the rest of the
+meeting. Eviction (e.g., LRU on attached docs older than N turns)
+is additive; design it in only if cost instrumentation flags it.
+
+#### `mnemo_query { ... }`
+
+Passthrough to mnemo's recall API, mirroring its existing
+parameter shape exactly:
+
+```
+mnemo_query {
+  preferences?: bool,
+  facts?: bool,
+  episodes?: bool,
+  about?: bool,             // mnemo's about-me mode (in flight)
+  project?: string,         // narrow to /projects/{actorId}/{name}/
+  task?: string,            // narrow to /tasks/{actorId}/{domain}/
+  date?: string             // YYYY-MM-DD, /daily/{actorId}/{date}/
+}
+```
+
+Multiple parameters combine in one call (`preferences=true +
+project=helix`). Result text capped at ~1500 tokens — same budget
+as the always-on `recalled_context`, oldest episodes dropped first
+when over budget. The agent uses this for "what do we know about
+project X" / "what was on yesterday's log" / "what does the user
+prefer" queries beyond what's pre-loaded.
+
+The `about` flag tracks mnemo's in-flight about-me work. The
+client-side `RecallDimensions` struct in `mnemo/recall.rs` adds
+the field; the tool exposes it; the field becomes useful when
+mnemo populates that namespace. Not a blocker — landing the tool
+without it is fine; flipping it on is a one-line change.
+
+**Server-side change — `RecallDimensions` extension.** Today's
+`packages/server/src/mnemo/recall.rs` defines `RecallDimensions`
+with `preferences`, `facts`, `episodes`, `project`. The
+`mnemo_query` tool requires extending this struct with three new
+fields: `task: Option<String>`, `date: Option<String>`, and
+`about: bool`. The `to_query_string()` impl gets matching cases.
+Trivial in isolation (~10 lines) but called out so it isn't lost
+inside the larger §3.12 ordering — it's a precondition for the
+`mnemo_query` tool, not an implementation detail of it.
+
+### 3.9 UX surfaces
+
+#### Library management
+
+- **Mac**: Settings → "Artifacts" tab. List view (name + short
+  summary preview + size + `summary_status` badge), drag-and-drop
+  or "Upload…" button, per-row delete.
+- **PWA**: dedicated modal triggered from a new header icon (next
+  to the meetings list icon). Same list / upload / delete flow,
+  responsive to phone viewport.
+
+#### Pre-meeting attach (compose panel)
+
+A chip strip below the description textarea, mirroring the
+existing metadata chips pattern:
+
+- Chips show currently-attached artifacts by name. Tapping
+  removes (with confirm on PWA to avoid fat-finger removals).
+- A `+ Artifact` button opens a picker (Mac sheet / PWA
+  sub-modal) showing the full library alphabetically. Multi-select
+  with checkboxes; confirm to attach.
+- Picker only allows selecting `summary_status: done` rows;
+  `pending` items show a spinner and are unselectable; `failed`
+  items show a retry button.
+
+#### Mid-meeting attach (during a live meeting)
+
+The overlay's `…` menu gets an "Attach artifact…" entry that
+opens the same picker. Less discoverable than a dedicated icon
+but cheaper UI real estate; promote to a 📎 paperclip icon in the
+overlay toolbar if mid-meeting attach turns out to be a common
+gesture in personal use.
+
+#### Mid-meeting upload + attach
+
+Always two steps:
+
+1. Upload to the library (via Mac Settings → Artifacts or PWA
+   header-icon modal, even while a meeting is live).
+2. Open the mid-meeting picker, select the just-uploaded
+   artifact, confirm.
+
+Intentional: keeps a single upload code path, lets the async
+summarizer finish before the agent can attach (so `pending` items
+can't be attached prematurely), and the artifact's `pending →
+done` transition is visible in the library list.
+
+### 3.10 Precursor — Soniox speaker diarization
 
 Soniox supports streaming speaker diarization; we just don't enable
 it. The plumbing is already in place: `TranscriptChunk.speaker:
@@ -228,11 +440,11 @@ then formats the tail window as `[Speaker N, mm:ss] text`. Better
 attribution for actions ("the person who proposed shipping by
 Friday") at marginal token cost.
 
-Land this as a separate small commit before the agent ships — it's
+Lands as a separate small commit before the agent core ships —
 cheap to verify on its own and the agent design assumes it's
 present.
 
-### 3.8 Cost instrumentation
+### 3.11 Cost instrumentation
 
 Per-meeting LLM-call and token counters logged at meeting stop —
 not for comparison against the per-mode summarizers (we know the
@@ -243,6 +455,8 @@ operational signal. Useful for:
   cost 10× normal).
 - Sanity-checking provider switches (Bedrock vs Anthropic-direct
   cost shape).
+- Detecting artifact attachment cost drift (a fetched PDF that
+  stays in context for a long meeting is a real cost driver).
 - Future per-user budgeting if multi-tenancy ever hardens.
 
 Implementation: a `LlmUsageCounter` in `llm.rs` that each
@@ -250,20 +464,50 @@ Implementation: a `LlmUsageCounter` in `llm.rs` that each
 `tracing::info!(calls, tokens, "agent usage at stop")` on
 `stop_meeting`. ~30 lines.
 
-### 3.9 Migration
+### 3.12 Bundled release ordering
 
-- Land behind `MEETING_COMPANION_AGENT_SUMMARIZER=1` env flag;
-  default off so existing behavior is preserved.
-- New module `summarizer/agent.rs` parallel to today's per-mode
-  files. Spawn site is the existing `spawn_live_pipeline` in `ws.rs`
-  — replaces the three LLM-driven summarizer-task spawns with one
-  agent task when the flag is on.
-- Run in parallel with the existing summarizers for a couple of
-  weeks of personal use.
-- Delete the three per-mode summarizers once the agent runs
-  cleanly. Keep `transcript.rs` (it's not LLM-driven). The
-  dedicated tests for each summarizer become agent-level
-  integration tests.
+The agent loop, artifact subsystem, and `mnemo_query` tool ship as
+one bundled release — we're not versioning sub-features. v1 has
+all three from day one, behind a single feature flag.
+
+Order of work within the release:
+
+1. **Soniox speaker diarization** (§3.10). Cheap precursor; the
+   agent design assumes it. Lands independently first.
+2. **Cost instrumentation** (§3.11). Independent quick add to
+   `llm.rs`; useful from day one for tuning and operational
+   awareness.
+3. **Artifact subsystem backend** (§3.7). Schema migration, REST
+   endpoints, blob storage, async summarization worker. Ships
+   without UI; testable via `curl`. Adds the
+   `Event::ArtifactAttached` wire event and the synthetic-chunk
+   injection mechanism (see §3.5).
+4. **Artifact UI** (§3.9 — Mac Settings tab + PWA modal +
+   compose-panel chip strip + mid-meeting `…` attach). Fills in
+   the user surface; backend already works.
+5. **Agent core**. New `summarizer/agent.rs` with the mode tools
+   from §3.4 (push / update / dismiss × 3 modes +
+   `replace_highlights`). Spawn site is the existing
+   `spawn_live_pipeline` in `ws.rs` — replaces the three
+   LLM-driven summarizer-task spawns with one agent task when
+   `MEETING_COMPANION_AGENT_SUMMARIZER=1`.
+6. **Retrieval tools** (§3.8). `fetch_artifact_summary`,
+   `fetch_artifact` (with the conversation-history append
+   pattern), `mnemo_query` (passthrough to the existing mnemo
+   client, with the `about` field added in `RecallDimensions`).
+7. **Parallel run.** Behind the feature flag, default off. Run
+   alongside the existing per-mode summarizers for a couple of
+   weeks of personal use.
+8. **Cleanup.** Delete the three per-mode summarizer modules
+   (`summarizer/{actions,highlights,open_questions}.rs`). Keep
+   `transcript.rs` (not LLM-driven) and `moment.rs` (separate
+   pipeline, unaffected). The dedicated tests for each summarizer
+   become agent-level integration tests.
+
+Step 1 lands as a separate commit before the rest. Steps 2-6
+overlap as makes sense; a sensible commit topology is one commit
+per backend chunk, one per UI surface, then the agent core +
+tools as a coherent unit, then the parallel-run flag flip.
 
 ---
 
