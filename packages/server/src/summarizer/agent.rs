@@ -858,7 +858,17 @@ async fn fire(
         tail_window.drain(..drop_n);
     }
 
-    let user_message = build_working_context(state, db, user_id, tail_window).await;
+    let (user_message, ctx_metrics) = build_working_context(state, db, user_id, tail_window).await;
+    // Optional debug dump of the full prompt — set
+    // `AGENT_LOG_PROMPT=1` to see exactly what the agent receives.
+    // Off by default because the prompt is sizable (multi-KB).
+    if std::env::var("AGENT_LOG_PROMPT").ok().as_deref() == Some("1") {
+        info!(
+            user_id,
+            prompt = %user_message,
+            "agent prompt dump",
+        );
+    }
     let started = Instant::now();
     let ctx = ToolCtx {
         state: state.clone(),
@@ -940,6 +950,10 @@ async fn fire(
                 new_chunks = new_chunks_count,
                 tail_chunks = tail_window.len(),
                 prompt_chars,
+                attached_artifacts = ctx_metrics.attached_artifacts,
+                existing_highlights = ctx_metrics.existing_highlights,
+                existing_actions = ctx_metrics.existing_actions,
+                existing_open_questions = ctx_metrics.existing_open_questions,
                 latency_ms,
                 "agent fire done",
             );
@@ -971,14 +985,27 @@ async fn fire(
 ///    `{id, text, meta: {...}}`) so the agent reads it cleanly.
 /// 3. Tail-window transcript: the last N chunks verbatim with
 ///    `[Speaker N, mm:ss]` prefixes when diarization is available.
+/// Counts of what landed in the prompt — emitted on `agent fire
+/// done` so operators can verify (e.g.) that an attached artifact
+/// actually made it into the working context for the fire that
+/// followed an attach kick.
+#[derive(Debug, Default)]
+struct ContextMetrics {
+    attached_artifacts: usize,
+    existing_highlights: usize,
+    existing_actions: usize,
+    existing_open_questions: usize,
+}
+
 async fn build_working_context(
     state: &Arc<Mutex<ServerState>>,
     db: &sqlx::PgPool,
     user_id: &str,
     tail_window: &[TranscriptChunk],
-) -> String {
+) -> (String, ContextMetrics) {
     use std::fmt::Write;
     let mut buf = String::with_capacity(2048);
+    let mut metrics = ContextMetrics::default();
 
     let (metadata, current_meeting_id, highlights, actions, open_questions) = {
         let s = state.lock().await;
@@ -1004,6 +1031,9 @@ async fn build_working_context(
     // model considers the new transcript. This ordering matters:
     // small models (gpt-4.1-mini) routinely re-pushed duplicates
     // when items appeared after transcript in the prompt.
+    metrics.existing_highlights = highlights.len();
+    metrics.existing_actions = actions.len();
+    metrics.existing_open_questions = open_questions.len();
     buf.push_str("# Already recorded — DO NOT push duplicates of these\n");
     write_items_section(&mut buf, "highlights", &highlights);
     write_items_section(&mut buf, "actions", &actions);
@@ -1021,6 +1051,7 @@ async fn build_working_context(
         let attached = crate::db::list_artifacts_for_meeting(db, mid)
             .await
             .unwrap_or_default();
+        metrics.attached_artifacts = attached.len();
         if !attached.is_empty() {
             buf.push_str("# Attached artifacts (use these as context — the user uploaded them for this meeting)\n");
             for a in &attached {
@@ -1070,7 +1101,7 @@ async fn build_working_context(
          deadline), emit push_action. For surprising/specific facts not already recorded, emit \
          push_highlight. Skip pleasantries and anything semantically equivalent to existing items.",
     );
-    buf
+    (buf, metrics)
 }
 
 /// Minimal JSON string escaper for the working-context renderer.
