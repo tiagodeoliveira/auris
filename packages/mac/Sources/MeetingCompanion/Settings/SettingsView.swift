@@ -354,6 +354,11 @@ private struct MeetingDetailView: View {
                     metadataBlock
                 }
 
+                if let artifacts = detail.artifacts, !artifacts.isEmpty {
+                    Divider()
+                    artifactsBlock(artifacts)
+                }
+
                 if let moments = detail.moments, !moments.isEmpty {
                     Divider()
                     momentsBlock(moments)
@@ -377,6 +382,47 @@ private struct MeetingDetailView: View {
         VStack(alignment: .leading, spacing: 10) {
             ForEach(moments) { moment in
                 MomentCard(moment: moment, meetingId: detail.id, model: model)
+            }
+        }
+    }
+
+    /// Attached artifacts block. Compact rows: name + mime pill +
+    /// short summary. Doesn't expose detach (past meetings should
+    /// preserve their attachment history); cleaning up an artifact
+    /// uses Settings → Artifacts → trash, which cascades.
+    @ViewBuilder
+    private func artifactsBlock(_ artifacts: [Artifact]) -> some View {
+        Text("Attached artifacts").font(.headline)
+        VStack(alignment: .leading, spacing: 8) {
+            ForEach(artifacts) { a in
+                HStack(alignment: .top, spacing: 10) {
+                    Image(systemName: "doc.text")
+                        .foregroundStyle(.secondary)
+                        .padding(.top, 2)
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack(spacing: 6) {
+                            Text(a.name).font(.callout).fontWeight(.medium).lineLimit(1)
+                            Text(a.mimeType)
+                                .font(.system(size: 9, weight: .semibold))
+                                .tracking(0.4)
+                                .foregroundStyle(.secondary)
+                                .padding(.horizontal, 5)
+                                .padding(.vertical, 1)
+                                .background {
+                                    RoundedRectangle(cornerRadius: 3)
+                                        .fill(Color.gray.opacity(0.12))
+                                }
+                        }
+                        if let s = a.shortSummary, !s.isEmpty {
+                            Text(s).font(.caption).foregroundStyle(.secondary).lineLimit(3)
+                        }
+                    }
+                    Spacer()
+                }
+                .padding(8)
+                .background(SettingsTheme.card)
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+                .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(SettingsTheme.border))
             }
         }
     }

@@ -181,6 +181,9 @@ struct MeetingDetail {
     transcript: Vec<Item>,
     /// Moments captured during this meeting, oldest first.
     moments: Vec<MomentDto>,
+    /// Library artifacts attached to this meeting, in attach order.
+    /// PLAN.md §3.7. Empty when none were attached.
+    artifacts: Vec<ArtifactDto>,
 }
 
 /// Wire shape for a moment. Mirrors `db::MomentRow` minus internal
@@ -245,6 +248,12 @@ async fn get_meeting(
         .into_iter()
         .map(|r| MomentDto::from_row(r, &row.id))
         .collect();
+    let artifacts: Vec<ArtifactDto> = crate::db::list_artifacts_for_meeting(&state.db, &row.id)
+        .await
+        .map_err(|e| ApiError::Db(downcast_db(e)))?
+        .into_iter()
+        .map(ArtifactDto::from)
+        .collect();
     let MeetingSummary {
         id,
         description,
@@ -260,6 +269,7 @@ async fn get_meeting(
         ended_at,
         transcript,
         moments,
+        artifacts,
     }))
 }
 

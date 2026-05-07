@@ -72,6 +72,13 @@ final class AppModel {
     /// id. Cleared on idle so a future compose starts fresh.
     private(set) var pendingArtifactAttachments: [String] = []
 
+    /// Artifact IDs we've successfully attached to the current
+    /// active meeting. Mid-meeting picker reads this to pre-check
+    /// already-attached rows; updated as attaches succeed and on
+    /// the active transition (compose-time attaches roll in here).
+    /// Cleared on idle.
+    private(set) var currentMeetingAttachedArtifactIds: Set<String> = []
+
     /// Wall-clock time the meeting started locally. Used to compute
     /// the `t` ms-offset when the user marks a moment. `nil` when no
     /// meeting is active or when we connected mid-meeting and the
@@ -263,6 +270,7 @@ final class AppModel {
         for aid in ids {
             do {
                 try await api.attach(meetingId: meetingId, artifactId: aid)
+                currentMeetingAttachedArtifactIds.insert(aid)
                 print("[AppModel] attached artifact \(aid) to meeting \(meetingId)")
             } catch {
                 print("[AppModel] attach \(aid) failed: \(error)")
@@ -574,6 +582,7 @@ final class AppModel {
                 // failure during start) is dropped — the user can
                 // re-pick on the next compose.
                 pendingArtifactAttachments = []
+                currentMeetingAttachedArtifactIds = []
             }
             if state == "active", let mid = meetingId, !pendingArtifactAttachments.isEmpty {
                 let ids = pendingArtifactAttachments

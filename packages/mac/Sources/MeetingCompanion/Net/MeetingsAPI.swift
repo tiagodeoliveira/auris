@@ -40,9 +40,13 @@ struct MeetingDetail: Decodable, Identifiable, Sendable {
     /// moments-API commit) omit the field entirely; the optional
     /// decode keeps Mac builds compatible.
     let moments: [Moment]?
+    /// Artifacts attached to this meeting, in attach order. Same
+    /// optional-decode rule as `moments` for forward compatibility
+    /// with older server builds.
+    let artifacts: [Artifact]?
 
     enum CodingKeys: String, CodingKey {
-        case id, description, metadata, transcript, moments
+        case id, description, metadata, transcript, moments, artifacts
         case startedAt = "started_at"
         case endedAt = "ended_at"
     }

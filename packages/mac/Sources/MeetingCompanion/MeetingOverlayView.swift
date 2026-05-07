@@ -359,22 +359,15 @@ struct MeetingOverlayView: View {
             .disabled(!model.isMeetingActive)
             .help("Mark moment (⇧⌘M)")
 
-            Menu {
-                Button {
-                    showLiveArtifactPicker = true
-                } label: {
-                    Label("Attach artifact…", systemImage: "doc.text")
-                }
-                .disabled(!model.auth0.isSignedIn)
+            Button {
+                showLiveArtifactPicker = true
             } label: {
-                Image(systemName: "ellipsis.circle.fill")
+                Image(systemName: "paperclip.circle.fill")
                     .font(.system(size: 20))
-                    .foregroundStyle(MCTheme.muted)
             }
-            .menuStyle(.borderlessButton)
-            .menuIndicator(.hidden)
-            .fixedSize()
-            .help("More actions")
+            .buttonStyle(IconCircleButtonStyle(tint: MCTheme.blue))
+            .disabled(!model.auth0.isSignedIn || !model.isMeetingActive)
+            .help("Attach artifact")
 
             Button {
                 Task { await model.stopMeeting() }
@@ -393,10 +386,11 @@ struct MeetingOverlayView: View {
         .sheet(isPresented: $showLiveArtifactPicker) {
             ArtifactPickerSheet(
                 model: model,
-                // Mid-meeting picker doesn't pre-check anything.
-                // The user picks what to add; attach is idempotent
-                // server-side so re-attaching is a no-op.
-                alreadySelectedIds: [],
+                // Pre-check what's already attached to the running
+                // meeting so the picker reflects current state.
+                // Server-side attach is idempotent, so user picks
+                // are translated into the *delta* (newly checked).
+                alreadySelectedIds: model.currentMeetingAttachedArtifactIds,
                 onConfirm: { picked in
                     let ids = picked.map { $0.id }
                     Task { await model.attachArtifactsToCurrentMeeting(ids: ids) }
@@ -1181,6 +1175,11 @@ private struct ArtifactPickerSheet: View {
             .padding(.vertical, 10)
         }
         .frame(width: 480, height: 420)
+        // The compose panel uses the app's default scheme; the
+        // overlay window itself is rendered against an arbitrary
+        // desktop. Force light so the picker is legible regardless
+        // of system appearance — matches SettingsView.
+        .preferredColorScheme(.light)
         .task { await load() }
         .onAppear { selectedIds = alreadySelectedIds }
     }
