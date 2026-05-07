@@ -62,6 +62,7 @@ struct ConfigFrame<'a> {
     sample_rate: u32,
     num_channels: u32,
     model: &'a str,
+    enable_speaker_diarization: bool,
 }
 
 #[derive(Deserialize)]
@@ -250,6 +251,31 @@ fn ends_at_soft_boundary(s: &str) -> bool {
     }
 }
 
+/// Pick a single speaker label for an utterance from the per-token
+/// `speaker` values that Soniox returns. Most-common wins; ties break
+/// by first-seen order. Returns `None` when no token carried a speaker
+/// (diarization disabled or unavailable for the chunk).
+fn aggregate_speaker(speakers: &[Option<String>]) -> Option<String> {
+    use std::collections::HashMap;
+    let mut counts: HashMap<&str, usize> = HashMap::new();
+    let mut order: Vec<&str> = Vec::new();
+    for s in speakers.iter().flatten() {
+        let key = s.as_str();
+        if !counts.contains_key(key) {
+            order.push(key);
+        }
+        *counts.entry(key).or_insert(0) += 1;
+    }
+    if counts.is_empty() {
+        return None;
+    }
+    let max_count = *counts.values().max().unwrap();
+    order
+        .into_iter()
+        .find(|s| counts[s] == max_count)
+        .map(|s| s.to_string())
+}
+
 /// Flush the accumulated finalized-token buffer as a single TranscriptChunk
 /// and clear it. No-op if the buffer is empty after trimming.
 ///
@@ -261,6 +287,7 @@ fn flush_buffer(
     buffer: &mut String,
     buffer_first_start_ms: &mut Option<u64>,
     buffer_last_end_ms: &mut Option<u64>,
+    speakers: &mut Vec<Option<String>>,
     transcript_tx: &broadcast::Sender<TranscriptChunk>,
     user_id: &str,
     session_started: std::time::Instant,
@@ -270,17 +297,20 @@ fn flush_buffer(
         buffer.clear();
         *buffer_first_start_ms = None;
         *buffer_last_end_ms = None;
+        speakers.clear();
         return;
     }
     let elapsed_ms = session_started.elapsed().as_millis() as u64;
     let t_start = buffer_first_start_ms.unwrap_or_else(|| elapsed_ms.saturating_sub(2000));
     let t_end = buffer_last_end_ms.unwrap_or(elapsed_ms);
+    let speaker = aggregate_speaker(speakers);
     // One info log per finalized utterance — operator-meaningful signal that
     // the live pipeline is producing transcripts. Replaces the per-frame
     // PCM/response counters that were too noisy to be useful.
     info!(
         ms = t_end.saturating_sub(t_start),
         user_id = %user_id,
+        speaker = ?speaker,
         text = %trimmed,
         "transcript"
     );
@@ -289,13 +319,14 @@ fn flush_buffer(
         text: trimmed.to_string(),
         t_start_ms: t_start,
         t_end_ms: t_end,
-        speaker: None,
+        speaker,
         user_id: user_id.to_string(),
     };
     let _ = transcript_tx.send(chunk);
     buffer.clear();
     *buffer_first_start_ms = None;
     *buffer_last_end_ms = None;
+    speakers.clear();
 }
 
 /// One WS session attempt. Returns Ok on cancellation, Err on protocol failure
@@ -324,6 +355,7 @@ async fn try_one_session(
         sample_rate: SAMPLE_RATE,
         num_channels: 1,
         model: &cfg.model,
+        enable_speaker_diarization: true,
     };
     let config_json = serde_json::to_string(&config).map_err(|e| format!("encode config: {e}"))?;
     writer
@@ -348,6 +380,10 @@ async fn try_one_session(
     let mut buffer = String::new();
     let mut buffer_first_start_ms: Option<u64> = None;
     let mut buffer_last_end_ms: Option<u64> = None;
+    // Per-finalized-token speaker labels, parallel to `buffer`. Aggregated
+    // at flush time via `aggregate_speaker` (most-common wins). Empty when
+    // diarization isn't enabled or tokens carry no speaker.
+    let mut speakers: Vec<Option<String>> = Vec::new();
     let mut last_token_at: Option<std::time::Instant> = None;
     const MAX_BUFFER_LEN: usize = 240;
     // 3s of no new tokens = a real conversational pause. Sub-3s gaps are
@@ -362,7 +398,7 @@ async fn try_one_session(
     loop {
         tokio::select! {
             _ = cancel.cancelled() => {
-                flush_buffer(&mut buffer, &mut buffer_first_start_ms, &mut buffer_last_end_ms, transcript_tx, user_id, session_started);
+                flush_buffer(&mut buffer, &mut buffer_first_start_ms, &mut buffer_last_end_ms, &mut speakers, transcript_tx, user_id, session_started);
                 emit_live(events_tx, user_id, "", "");
                 let _ = writer.close().await;
                 return Ok(());
@@ -382,7 +418,7 @@ async fn try_one_session(
                     }
                     None => {
                         // Audio source ended — close the session
-                        flush_buffer(&mut buffer, &mut buffer_first_start_ms, &mut buffer_last_end_ms, transcript_tx, user_id, session_started);
+                        flush_buffer(&mut buffer, &mut buffer_first_start_ms, &mut buffer_last_end_ms, &mut speakers, transcript_tx, user_id, session_started);
                         emit_live(events_tx, user_id, "", "");
                         let _ = writer.close().await;
                         return Ok(());
@@ -398,7 +434,7 @@ async fn try_one_session(
                     if let Some(t) = last_token_at {
                         let stale = t.elapsed().as_millis() as u64 >= IDLE_FLUSH_MS;
                         if stale && ends_at_soft_boundary(&buffer) {
-                            flush_buffer(&mut buffer, &mut buffer_first_start_ms, &mut buffer_last_end_ms, transcript_tx, user_id, session_started);
+                            flush_buffer(&mut buffer, &mut buffer_first_start_ms, &mut buffer_last_end_ms, &mut speakers, transcript_tx, user_id, session_started);
                             last_token_at = None;
                             emit_live(events_tx, user_id, "", "");
                         }
@@ -435,6 +471,7 @@ async fn try_one_session(
                                             buffer_last_end_ms = Some(tok.end_ms);
                                         }
                                         buffer.push_str(&tok.text);
+                                        speakers.push(tok.speaker.clone());
                                         got_final = true;
                                     } else {
                                         interim_text.push_str(&tok.text);
@@ -448,7 +485,7 @@ async fn try_one_session(
                                 if ends_with_terminator(&buffer)
                                     || buffer.len() >= MAX_BUFFER_LEN
                                 {
-                                    flush_buffer(&mut buffer, &mut buffer_first_start_ms, &mut buffer_last_end_ms, transcript_tx, user_id, session_started);
+                                    flush_buffer(&mut buffer, &mut buffer_first_start_ms, &mut buffer_last_end_ms, &mut speakers, transcript_tx, user_id, session_started);
                                     last_token_at = None;
                                 }
                                 // Emit a live preview AFTER any flush so the buffer
@@ -463,7 +500,7 @@ async fn try_one_session(
                         }
                     }
                     Some(Ok(Message::Close(_))) | None => {
-                        flush_buffer(&mut buffer, &mut buffer_first_start_ms, &mut buffer_last_end_ms, transcript_tx, user_id, session_started);
+                        flush_buffer(&mut buffer, &mut buffer_first_start_ms, &mut buffer_last_end_ms, &mut speakers, transcript_tx, user_id, session_started);
                         emit_live(events_tx, user_id, "", "");
                         return Err("Soniox closed connection".into());
                     }
@@ -836,5 +873,63 @@ mod tests {
             Some(v) => std::env::set_var("SONIOX_API_KEY", v),
             None => std::env::remove_var("SONIOX_API_KEY"),
         }
+    }
+
+    #[test]
+    fn aggregate_speaker_returns_none_for_empty_input() {
+        let speakers: Vec<Option<String>> = vec![];
+        assert_eq!(aggregate_speaker(&speakers), None);
+    }
+
+    #[test]
+    fn aggregate_speaker_returns_none_when_all_none() {
+        let speakers: Vec<Option<String>> = vec![None, None, None];
+        assert_eq!(aggregate_speaker(&speakers), None);
+    }
+
+    #[test]
+    fn aggregate_speaker_returns_single_speaker_when_uniform() {
+        let speakers = vec![
+            Some("1".to_string()),
+            Some("1".to_string()),
+            Some("1".to_string()),
+        ];
+        assert_eq!(aggregate_speaker(&speakers), Some("1".to_string()));
+    }
+
+    #[test]
+    fn aggregate_speaker_picks_most_common_when_mixed() {
+        let speakers = vec![
+            Some("1".to_string()),
+            Some("2".to_string()),
+            Some("1".to_string()),
+            Some("1".to_string()),
+        ];
+        assert_eq!(aggregate_speaker(&speakers), Some("1".to_string()));
+    }
+
+    #[test]
+    fn aggregate_speaker_breaks_ties_by_first_seen() {
+        let speakers = vec![
+            Some("2".to_string()),
+            Some("1".to_string()),
+            Some("2".to_string()),
+            Some("1".to_string()),
+        ];
+        // 2 and 1 each appear twice; 2 was seen first → 2 wins.
+        assert_eq!(aggregate_speaker(&speakers), Some("2".to_string()));
+    }
+
+    #[test]
+    fn aggregate_speaker_ignores_none_entries_in_count() {
+        let speakers = vec![
+            None,
+            Some("1".to_string()),
+            None,
+            Some("2".to_string()),
+            Some("1".to_string()),
+        ];
+        // 1 appears twice, 2 once → 1 wins; None entries ignored.
+        assert_eq!(aggregate_speaker(&speakers), Some("1".to_string()));
     }
 }
