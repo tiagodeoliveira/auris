@@ -65,6 +65,13 @@ final class AppModel {
     /// server's view diverged from ours and we should resync.
     private(set) var currentMeetingId: String? = nil
 
+    /// Library artifact IDs the user picked during compose. Drained
+    /// when MeetingStateChanged fires with state=active and a
+    /// non-nil `meetingId` — at that point the meeting exists
+    /// server-side and we POST `/meetings/:id/artifacts` once per
+    /// id. Cleared on idle so a future compose starts fresh.
+    private(set) var pendingArtifactAttachments: [String] = []
+
     /// Wall-clock time the meeting started locally. Used to compute
     /// the `t` ms-offset when the user marks a moment. `nil` when no
     /// meeting is active or when we connected mid-meeting and the
@@ -232,6 +239,47 @@ final class AppModel {
                 userInfo: [NSLocalizedDescriptionKey: "Invalid server URL"])
         }
         return api
+    }
+
+    /// Stage artifact ids to attach once the next start_meeting
+    /// transitions the server to `active`. The compose UI calls
+    /// this; `handle(event:)` consumes on the active transition.
+    func setPendingArtifactAttachments(_ ids: [String]) {
+        pendingArtifactAttachments = ids
+    }
+
+    /// Attach pending artifacts to a freshly-active meeting. Best
+    /// effort — log on failure, don't fail the meeting itself.
+    /// Per-artifact attach errors are independent so one rejection
+    /// (e.g., status not yet `done`) doesn't drop the others.
+    private func attachArtifacts(ids: [String], toMeeting meetingId: String) async {
+        let api: ArtifactsAPI
+        do {
+            api = try await makeArtifactsAPI()
+        } catch {
+            print("[AppModel] attachArtifacts: makeArtifactsAPI failed: \(error)")
+            return
+        }
+        for aid in ids {
+            do {
+                try await api.attach(meetingId: meetingId, artifactId: aid)
+                print("[AppModel] attached artifact \(aid) to meeting \(meetingId)")
+            } catch {
+                print("[AppModel] attach \(aid) failed: \(error)")
+            }
+        }
+    }
+
+    /// Mid-meeting attach. Caller (overlay's `…` menu picker) hands
+    /// us a set of artifact ids; we attach each to whatever meeting
+    /// is currently active. Idempotent server-side, so re-attaching
+    /// the same artifact is a no-op.
+    func attachArtifactsToCurrentMeeting(ids: [String]) async {
+        guard let mid = currentMeetingId else {
+            print("[AppModel] attachArtifactsToCurrentMeeting: no active meeting")
+            return
+        }
+        await attachArtifacts(ids: ids, toMeeting: mid)
     }
 
     /// Open a WS connection using the current settings + a token
@@ -522,6 +570,15 @@ final class AppModel {
                 metadata = [:]
                 extractingMetadata = false
                 audioToBackendPaused = false
+                // Anything we didn't manage to attach (e.g., server
+                // failure during start) is dropped — the user can
+                // re-pick on the next compose.
+                pendingArtifactAttachments = []
+            }
+            if state == "active", let mid = meetingId, !pendingArtifactAttachments.isEmpty {
+                let ids = pendingArtifactAttachments
+                pendingArtifactAttachments = []
+                Task { await attachArtifacts(ids: ids, toMeeting: mid) }
             }
         case .deviceRegistered(let device):
             ownDevice = device

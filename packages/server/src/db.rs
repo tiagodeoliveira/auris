@@ -513,8 +513,10 @@ pub async fn delete_artifact_for_user(pool: &PgPool, id: &str, user_id: &str) ->
 }
 
 /// Attach an artifact to a meeting. FK-checked: both rows must
-/// exist. Idempotency is the caller's concern — a duplicate attach
-/// returns a PK-violation error.
+/// exist. Idempotent — re-attaching the same artifact silently
+/// no-ops via `ON CONFLICT DO NOTHING`. Mid-meeting picker UX
+/// relies on this so the user doesn't have to track what's
+/// already attached.
 pub async fn attach_artifact_to_meeting(
     pool: &PgPool,
     meeting_id: &str,
@@ -522,7 +524,8 @@ pub async fn attach_artifact_to_meeting(
 ) -> Result<()> {
     sqlx::query(
         r#"INSERT INTO meeting_artifacts (meeting_id, artifact_id)
-           VALUES ($1, $2)"#,
+           VALUES ($1, $2)
+           ON CONFLICT (meeting_id, artifact_id) DO NOTHING"#,
     )
     .bind(meeting_id)
     .bind(artifact_id)

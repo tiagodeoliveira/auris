@@ -28,6 +28,18 @@ struct MeetingOverlayView: View {
     /// IDs change anyway, so the set goes stale naturally).
     @State private var expandedItemIds: Set<String> = []
 
+    /// Library artifacts selected for attach during this compose
+    /// session. Flushed into `AppModel.pendingArtifactAttachments`
+    /// on Start; the WS event handler picks them up when the
+    /// meeting transitions to active.
+    @State private var selectedArtifacts: [Artifact] = []
+    @State private var showArtifactPicker = false
+
+    /// Separate sheet for the live-meeting attach flow (overlay
+    /// `…` menu). Keeps onConfirm semantics distinct from the
+    /// compose-time picker which stages into selectedArtifacts.
+    @State private var showLiveArtifactPicker = false
+
     init(model: AppModel) {
         self.model = model
         _mode = State(initialValue: model.isMeetingActive ? .live : .compose)
@@ -192,6 +204,14 @@ struct MeetingOverlayView: View {
                 }
             )
 
+            ArtifactChipStrip(
+                attached: selectedArtifacts,
+                onPick: { showArtifactPicker = true },
+                onRemove: { id in
+                    selectedArtifacts.removeAll { $0.id == id }
+                }
+            )
+
             HStack(spacing: 10) {
                 Button {
                     Task { await model.extractMetadata(description: description) }
@@ -221,6 +241,19 @@ struct MeetingOverlayView: View {
                 .disabled(!model.canStartMeeting || model.extractingMetadata)
                 .buttonStyle(PrimaryPillButtonStyle())
             }
+        }
+        .sheet(isPresented: $showArtifactPicker) {
+            ArtifactPickerSheet(
+                model: model,
+                alreadySelectedIds: Set(selectedArtifacts.map { $0.id }),
+                onConfirm: { picked in
+                    // Replace, not append: the picker shows current
+                    // selection state (checked rows for already-
+                    // attached items), so the result is the new
+                    // canonical set.
+                    selectedArtifacts = picked
+                }
+            )
         }
     }
 
@@ -326,6 +359,23 @@ struct MeetingOverlayView: View {
             .disabled(!model.isMeetingActive)
             .help("Mark moment (⇧⌘M)")
 
+            Menu {
+                Button {
+                    showLiveArtifactPicker = true
+                } label: {
+                    Label("Attach artifact…", systemImage: "doc.text")
+                }
+                .disabled(!model.auth0.isSignedIn)
+            } label: {
+                Image(systemName: "ellipsis.circle.fill")
+                    .font(.system(size: 20))
+                    .foregroundStyle(MCTheme.muted)
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .help("More actions")
+
             Button {
                 Task { await model.stopMeeting() }
             } label: {
@@ -340,6 +390,19 @@ struct MeetingOverlayView: View {
         .background(MCTheme.panel.opacity(0.82))
         .clipShape(Capsule())
         .overlay(Capsule().strokeBorder(MCTheme.border))
+        .sheet(isPresented: $showLiveArtifactPicker) {
+            ArtifactPickerSheet(
+                model: model,
+                // Mid-meeting picker doesn't pre-check anything.
+                // The user picks what to add; attach is idempotent
+                // server-side so re-attaching is a no-op.
+                alreadySelectedIds: [],
+                onConfirm: { picked in
+                    let ids = picked.map { $0.id }
+                    Task { await model.attachArtifactsToCurrentMeeting(ids: ids) }
+                }
+            )
+        }
     }
 
     /// Right column: mode-tabs row over a scrollable items list.
@@ -480,12 +543,18 @@ struct MeetingOverlayView: View {
     private func submitDescription() {
         let trimmed = description.trimmingCharacters(in: .whitespacesAndNewlines)
         let payload: String? = trimmed.isEmpty ? nil : trimmed
+        // Hand the picked artifact ids to AppModel; the WS event
+        // handler will fire `attach` for each once the server
+        // transitions the meeting to active. Stage *before* sending
+        // start_meeting so the active event handler always sees them.
+        model.setPendingArtifactAttachments(selectedArtifacts.map { $0.id })
         mode = .starting
         descriptionFocused = false
         Task {
             await model.startMeeting(description: payload)
             if model.isMeetingActive {
                 mode = .live
+                selectedArtifacts = []
             } else {
                 mode = .compose
                 descriptionFocused = true
@@ -988,5 +1057,240 @@ private struct WindowAccessor: NSViewRepresentable {
                 configure(window)
             }
         }
+    }
+}
+
+// MARK: - Artifact compose UI
+
+/// Horizontal strip of currently-attached artifact chips with a
+/// trailing "+ Artifact" button. Lives between the metadata chip
+/// editor and the compose-panel buttons so attachments read as a
+/// peer concept to project / title metadata.
+private struct ArtifactChipStrip: View {
+    let attached: [Artifact]
+    let onPick: () -> Void
+    let onRemove: (String) -> Void
+
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 6) {
+                ForEach(attached) { a in
+                    ArtifactChip(artifact: a, onRemove: { onRemove(a.id) })
+                }
+                Button(action: onPick) {
+                    HStack(spacing: 4) {
+                        Image(systemName: "plus")
+                            .font(.system(size: 10, weight: .semibold))
+                        Text(attached.isEmpty ? "Attach artifact" : "Add")
+                            .font(.system(size: 11, weight: .medium))
+                    }
+                    .foregroundStyle(MCTheme.blue)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background {
+                        RoundedRectangle(cornerRadius: 6)
+                            .strokeBorder(MCTheme.blue.opacity(0.4), style: StrokeStyle(lineWidth: 1, dash: [3, 2]))
+                    }
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .frame(height: 28)
+    }
+}
+
+private struct ArtifactChip: View {
+    let artifact: Artifact
+    let onRemove: () -> Void
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Image(systemName: "doc.text")
+                .font(.system(size: 9))
+                .foregroundStyle(MCTheme.muted)
+            Text(artifact.name)
+                .font(.system(size: 11, weight: .medium))
+                .lineLimit(1)
+                .foregroundStyle(MCTheme.text)
+            Button(action: onRemove) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 8, weight: .semibold))
+                    .foregroundStyle(MCTheme.muted)
+            }
+            .buttonStyle(.plain)
+            .help("Remove")
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background {
+            RoundedRectangle(cornerRadius: 6)
+                .fill(MCTheme.input)
+        }
+        .overlay(
+            RoundedRectangle(cornerRadius: 6)
+                .strokeBorder(MCTheme.border)
+        )
+    }
+}
+
+/// Modal sheet showing the user's library with a multi-select
+/// checkbox column. Only `done` artifacts are selectable; pending
+/// rows show a spinner and are unselectable; failed rows show in
+/// red. Confirming returns the picked set to the caller.
+private struct ArtifactPickerSheet: View {
+    @Bindable var model: AppModel
+    let alreadySelectedIds: Set<String>
+    let onConfirm: ([Artifact]) -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var library: [Artifact] = []
+    @State private var selectedIds: Set<String> = []
+    @State private var loading = true
+    @State private var loadError: String?
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text("Attach artifacts")
+                    .font(.headline)
+                Spacer()
+                Text("\(selectedIds.count) selected")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+            Divider()
+
+            content
+
+            Divider()
+            HStack {
+                Spacer()
+                Button("Cancel") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+                Button("Attach") {
+                    let picked = library.filter { selectedIds.contains($0.id) }
+                    onConfirm(picked)
+                    dismiss()
+                }
+                .keyboardShortcut(.defaultAction)
+                .buttonStyle(.borderedProminent)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+        }
+        .frame(width: 480, height: 420)
+        .task { await load() }
+        .onAppear { selectedIds = alreadySelectedIds }
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        if loading && library.isEmpty {
+            VStack { Spacer(); ProgressView(); Spacer() }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if let err = loadError {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Couldn't load artifacts").font(.headline)
+                Text(err).font(.caption).foregroundStyle(.secondary)
+                Button("Retry") { Task { await load() } }
+            }
+            .padding(20)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        } else if library.isEmpty {
+            VStack(spacing: 8) {
+                Image(systemName: "doc.text").font(.system(size: 28)).foregroundStyle(.secondary)
+                Text("No artifacts yet").foregroundStyle(.secondary)
+                Text("Upload one from Settings → Artifacts.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            ScrollView {
+                LazyVStack(spacing: 4) {
+                    ForEach(library) { a in
+                        ArtifactPickerRow(
+                            artifact: a,
+                            isSelected: selectedIds.contains(a.id),
+                            onToggle: {
+                                if selectedIds.contains(a.id) {
+                                    selectedIds.remove(a.id)
+                                } else if a.summaryStatus == "done" {
+                                    selectedIds.insert(a.id)
+                                }
+                            }
+                        )
+                    }
+                }
+                .padding(8)
+            }
+        }
+    }
+
+    private func load() async {
+        loading = true
+        defer { loading = false }
+        let api: ArtifactsAPI
+        do {
+            api = try await model.makeArtifactsAPI()
+        } catch {
+            loadError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            return
+        }
+        do {
+            library = try await api.list()
+            loadError = nil
+        } catch {
+            loadError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+        }
+    }
+}
+
+private struct ArtifactPickerRow: View {
+    let artifact: Artifact
+    let isSelected: Bool
+    let onToggle: () -> Void
+
+    private var isSelectable: Bool { artifact.summaryStatus == "done" }
+
+    var body: some View {
+        Button(action: onToggle) {
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: isSelected ? "checkmark.square.fill" : "square")
+                    .font(.system(size: 14))
+                    .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
+                    .opacity(isSelectable ? 1.0 : 0.4)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(artifact.name)
+                        .font(.body)
+                        .fontWeight(.medium)
+                        .lineLimit(1)
+                        .foregroundStyle(isSelectable ? Color.primary : Color.secondary)
+                    if let s = artifact.shortSummary, !s.isEmpty {
+                        Text(s)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                    }
+                    if artifact.summaryStatus == "pending" {
+                        Text("Generating summary…")
+                            .font(.caption2).italic()
+                            .foregroundStyle(.secondary)
+                    } else if artifact.summaryStatus == "failed" {
+                        Text("Summary failed")
+                            .font(.caption2)
+                            .foregroundStyle(.red)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .padding(8)
+            .background(isSelected ? Color.accentColor.opacity(0.08) : Color.clear)
+            .clipShape(RoundedRectangle(cornerRadius: 6))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(!isSelectable && !isSelected)
     }
 }
