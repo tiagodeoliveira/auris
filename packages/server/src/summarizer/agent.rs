@@ -71,31 +71,56 @@ const TAIL_WINDOW_MAX_CHUNKS: usize = 80;
 const CHARS_PER_TOKEN: usize = 4;
 
 const SYSTEM_PROMPT: &str = "You are an agent inside a real-time meeting note-taker. \
-You receive transcript chunks as they're committed by the STT (typically one sentence \
-at a time). Your job is to emit structured items in three modes via tool calls.\n\
+Your job: emit structured items via tool calls when transcript chunks contain something noteworthy.\n\
 \n\
-The three modes:\n\
-- highlights: short standalone insights or noteworthy points worth remembering. Concise, non-redundant. Reserve for substance: decisions, surprising facts, conclusions, named entities, key numbers. Skip pleasantries, small talk, introductions.\n\
-- actions: action items with optional owner and due date. Examples: \"Bob to send slides\" / \"Alice to review by Friday\". Only push when someone actually committed to do something — never invent owners or invent actions from descriptive statements.\n\
-- open_questions: questions raised but not answered, or topics that need follow-up. Real unresolved questions, not rhetorical ones.\n\
+CRITICAL RULES (in priority order):\n\
 \n\
-Tools available:\n\
-- push_highlight {text, importance?}: add a highlight.\n\
-- replace_highlights {items: [{text, importance?}]}: replace ALL highlights — use sparingly.\n\
-- push_action {text, owner?, due?}: add an action item. OMIT the owner field entirely if no one was named (do not pass empty strings). OMIT due if no deadline was stated.\n\
-- push_open_question {question, kind?, context?}: add a question.\n\
+1. CHECK ITEMS-AS-MEMORY BEFORE EMITTING.\n\
+The user message contains \"# Current items\" sections showing what's already been recorded. \
+Never push anything that paraphrases, restates, or expands on an existing item. If the new chunk \
+says \"Bob will send slides\" and an existing action says \"Bob to share design\", these are the \
+SAME THING — do not push. Treat dedup by intent, not by exact wording.\n\
 \n\
-DEDUPLICATION IS CRITICAL. The user message includes \"items-as-memory\" — the current items in each mode. Before pushing anything, check the existing items. If a new transcript chunk restates, paraphrases, or expands on something already in the buffer, DO NOT push a duplicate. Skip it.\n\
+2. EMIT NOTHING WHEN THERE'S NOTHING NEW.\n\
+Most chunks should produce zero tool calls. When in doubt, skip. The user prefers 5 high-signal \
+items over 30 mediocre ones.\n\
 \n\
-QUALITY OVER QUANTITY. Most chunks should produce zero tool calls. The user wants 3-5 high-signal highlights for a 30-minute meeting, not 30 mediocre ones. When in doubt, say nothing — emit no tool calls and let the next batch settle.\n\
+3. PICK THE RIGHT MODE. The three modes are distinct:\n\
 \n\
-Skip:\n\
-- Pleasantries (\"Thank you for being here\", \"Have you ever seen this program?\")\n\
-- Introductions and small talk\n\
-- Restatements of facts already in items-as-memory\n\
-- Process commentary (\"OK\", \"I see\", \"yeah\")\n\
+ACTIONS — COMMITMENTS. Someone said they (or someone) will do something. \
+Trigger phrases: \"I'll\", \"I will\", \"we'll\", \"X to Y\", \"X is responsible for\", \"next week we'll\", \
+\"I want to present\", \"will share\", \"will have results\". \
+The `owner` is whoever was named or self-referenced. The `due` is the timing if stated. \
+OMIT optional fields entirely if not stated — never pass empty strings.\n\
 \n\
-Speak in the same language as the transcript. Don't translate.";
+Examples:\n\
+- \"I'll keep you in the loop on what I find out\" → push_action(text=\"Share findings with the team\")\n\
+- \"We will have testing results next week\" → push_action(text=\"Deliver testing results\", due=\"next week\")\n\
+- \"Next week I want to present infrastructure costs\" → push_action(text=\"Present AWS infrastructure costs\", due=\"next week\")\n\
+\n\
+OPEN_QUESTIONS — UNRESOLVED queries. Real questions raised but not answered, or topics that need follow-up. \
+Trigger: chunks ending in \"?\", \"we need to figure out\", \"still TBD\", \"who's responsible for\".\n\
+\n\
+Examples:\n\
+- \"Is it a migration or a new workload?\" → push_open_question\n\
+- \"What's responsible for access?\" → push_open_question\n\
+- \"Did everyone get access yet?\" → push_open_question\n\
+\n\
+HIGHLIGHTS — DECISIONS, surprising facts, named entities, conclusions, specific numbers. \
+Reserve for substance the user would highlight in a re-read. SKIP pleasantries, introductions, \
+small talk, process commentary, and meta-commentary about the meeting itself.\n\
+\n\
+Examples:\n\
+- \"The cutover target is January or February of next year\" → push_highlight (specific decision)\n\
+- \"There's a Slack channel #oracle-database-at-aws for relevant posts\" → push_highlight (named resource)\n\
+- SKIP: \"The meeting is titled X and is related to project Y\" (meta about the meeting itself)\n\
+- SKIP: \"OK\", \"yeah\", \"I see\", \"Thank you for being here\"\n\
+\n\
+4. ACTIONS AND QUESTIONS ARE USUALLY MORE NUMEROUS THAN HIGHLIGHTS in working meetings. \
+Expect 5-10 actions, 3-7 open_questions, 2-5 highlights for a 30-minute call. \
+DO NOT default to push_highlight when the chunk is really an action or question.\n\
+\n\
+5. Speak in the same language as the transcript. Don't translate.";
 
 // ─── Tool surface ───────────────────────────────────────────────────────
 
@@ -113,6 +138,20 @@ struct ToolCtx {
     state: Arc<Mutex<ServerState>>,
     events_tx: broadcast::Sender<UserEvent>,
     user_id: String,
+}
+
+/// Guard against tool calls landing after the meeting has already
+/// transitioned to Idle (e.g., user clicked Stop while an LLM
+/// call was in flight). `push_item_for_mode` asserts the
+/// items-empty-when-idle invariant; we'd panic on commit. Returns
+/// `true` if the meeting is still active/paused and the tool
+/// should proceed.
+async fn meeting_is_live(ctx: &ToolCtx) -> bool {
+    let s = ctx.state.lock().await;
+    matches!(
+        s.user(&ctx.user_id).map(|u| u.meeting_state),
+        Some(crate::contract::MeetingState::Active) | Some(crate::contract::MeetingState::Paused)
+    )
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]
@@ -149,6 +188,9 @@ Don't push duplicates of items already in the highlights buffer."
     }
 
     async fn call(&self, args: PushHighlightArgs) -> Result<String, AgentToolError> {
+        if !meeting_is_live(&self.0).await {
+            return Ok("skipped: meeting no longer active".into());
+        }
         let item = Item {
             id: format!("h-{}", uuid::Uuid::new_v4()),
             text: args.text.clone(),
@@ -227,6 +269,9 @@ re-order by importance). Pass the new full list."
     }
 
     async fn call(&self, args: ReplaceHighlightsArgs) -> Result<String, AgentToolError> {
+        if !meeting_is_live(&self.0).await {
+            return Ok("skipped: meeting no longer active".into());
+        }
         let n = args.items.len();
         let items: Vec<Item> = args
             .items
@@ -292,6 +337,9 @@ infer owners from context. Don't push duplicates of items already in the actions
     }
 
     async fn call(&self, args: PushActionArgs) -> Result<String, AgentToolError> {
+        if !meeting_is_live(&self.0).await {
+            return Ok("skipped: meeting no longer active".into());
+        }
         // Models like gpt-4.1 sometimes pass empty strings instead
         // of omitting optional fields. Normalize so meta carries
         // only fields that actually have content; otherwise the
@@ -373,6 +421,9 @@ Don't push duplicates."
     }
 
     async fn call(&self, args: PushOpenQuestionArgs) -> Result<String, AgentToolError> {
+        if !meeting_is_live(&self.0).await {
+            return Ok("skipped: meeting no longer active".into());
+        }
         let kind = args.kind.as_deref().filter(|s| !s.trim().is_empty());
         let context = args.context.as_deref().filter(|s| !s.trim().is_empty());
         let mut meta_map = serde_json::Map::new();
@@ -546,7 +597,7 @@ async fn fire(
                 .tool(PushAction(ctx.clone()))
                 .tool(PushOpenQuestion(ctx))
                 .build();
-            agent.prompt(user_message.clone()).max_turns(1).await
+            agent.prompt(user_message.clone()).max_turns(3).await
         }
         LlmBackend::OpenAI { client, model_id } => {
             let agent = client
@@ -557,7 +608,7 @@ async fn fire(
                 .tool(PushAction(ctx.clone()))
                 .tool(PushOpenQuestion(ctx))
                 .build();
-            agent.prompt(user_message.clone()).max_turns(1).await
+            agent.prompt(user_message.clone()).max_turns(3).await
         }
         LlmBackend::Anthropic { client, model_id } => {
             let agent = client
@@ -568,7 +619,7 @@ async fn fire(
                 .tool(PushAction(ctx.clone()))
                 .tool(PushOpenQuestion(ctx))
                 .build();
-            agent.prompt(user_message.clone()).max_turns(1).await
+            agent.prompt(user_message.clone()).max_turns(3).await
         }
     };
 
