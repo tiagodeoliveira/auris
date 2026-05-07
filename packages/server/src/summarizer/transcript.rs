@@ -143,4 +143,63 @@ mod tests {
         cancel.cancel();
         handle.await.unwrap();
     }
+
+    #[tokio::test]
+    async fn transcript_summarizer_propagates_speaker_to_meta() {
+        let state = Arc::new(Mutex::new(ServerState::new()));
+        let uid = "test-user".to_string();
+        {
+            let mut s = state.lock().await;
+            s.apply_intent(
+                &uid,
+                Intent::StartMeeting {
+                    description: None,
+                    metadata: None,
+                    audio_source_device_id: None,
+                },
+            );
+            s.apply_intent(
+                &uid,
+                Intent::SetMode {
+                    mode: "transcript".into(),
+                },
+            );
+        }
+        let (chunk_tx, chunk_rx) = broadcast::channel::<TranscriptChunk>(16);
+        let (event_tx, mut event_rx) = broadcast::channel::<UserEvent>(16);
+        let cancel = CancellationToken::new();
+        let task_cancel = cancel.clone();
+        let task_state = Arc::clone(&state);
+        let task_uid = uid.clone();
+        let handle = tokio::spawn(async move {
+            run_transcript_summarizer(task_state, chunk_rx, event_tx, task_uid, task_cancel).await;
+        });
+
+        chunk_tx
+            .send(TranscriptChunk {
+                id: "c1".into(),
+                text: "first utterance".into(),
+                t_start_ms: 100,
+                t_end_ms: 500,
+                speaker: Some("1".into()),
+                user_id: uid.clone(),
+            })
+            .unwrap();
+
+        let envelope = tokio::time::timeout(std::time::Duration::from_millis(500), event_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        match envelope.event {
+            Event::ItemsUpdate { items, .. } => {
+                assert_eq!(items.len(), 1);
+                let meta = items[0].meta.as_ref().expect("meta should be populated");
+                assert_eq!(meta["speaker"], serde_json::json!("1"));
+            }
+            _ => panic!("expected ItemsUpdate"),
+        }
+
+        cancel.cancel();
+        handle.await.unwrap();
+    }
 }

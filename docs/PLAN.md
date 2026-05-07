@@ -136,10 +136,8 @@ Tool shapes:
 Merge across duplicates is just `dismiss(id_a) + push(merged_text)` —
 two tool calls in the same turn — so no explicit merge tool.
 
-A second-round addition is planned: a tool that lets the agent
-fetch uploaded documents or meeting artifacts (e.g., agenda, slide
-deck) for context. Designed and added in a separate pass to keep v1
-scope tight.
+The retrieval tools (`fetch_artifact_summary`, `fetch_artifact`,
+`mnemo_query`) live in §3.8 and ship with this same release.
 
 **Implementation contracts:**
 
