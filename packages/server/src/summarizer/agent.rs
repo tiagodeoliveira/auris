@@ -35,7 +35,8 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use rig::completion::{Prompt, ToolDefinition};
+use rig::completion::{Message as RigMessage, Prompt, ToolDefinition};
+use rig::message::AssistantContent;
 use rig::prelude::*;
 use rig::tool::Tool;
 use schemars::JsonSchema;
@@ -77,11 +78,20 @@ const MAX_TURNS_PER_FIRE: usize = 8;
 const SYSTEM_PROMPT: &str = "You are an agent inside a real-time meeting note-taker. \
 Your job: emit structured items via tool calls when transcript chunks contain something noteworthy.\n\
 \n\
+OUTPUT FORMAT — READ THIS FIRST\n\
+- Tool calls are your ONLY form of output that matters. Either emit one or more tool calls, or end \
+your turn with empty/no text.\n\
+- DO NOT respond with conversational text. NEVER say things like \"I'll keep listening\", \
+\"Noted, I'll watch for…\", \"Thanks for attaching that\", \"I see\", \"Understood\", \"Let me know if…\". \
+These responses pollute the conversation history and bias future turns toward chatting instead of recording.\n\
+- The correct response when there's nothing to record is an empty turn. The user is not reading your text; \
+they are reading the items your tools produce.\n\
+\n\
 HOW THE CONVERSATION WORKS\n\
 - Each user turn delivers one or more of: a [meeting] header (first turn only, with title/description), \
 [event] blocks (e.g., \"User just attached artifact …\"), and a [transcript] block (new speech since the last turn).\n\
-- Your past assistant turns and tool calls are visible in this conversation history. They are your memory \
-of what's already been recorded — there is no separate \"existing items\" list.\n\
+- Your past tool calls are visible in this conversation history. They are your memory of what's already \
+been recorded — there is no separate \"existing items\" list.\n\
 \n\
 EMISSION RULES\n\
 \n\
@@ -89,8 +99,9 @@ EMISSION RULES\n\
 says \"Bob will share design\", DO NOT emit again — same intent, already captured. Treat dedup by intent, \
 not by exact wording. Consult your prior tool calls in the conversation history before each emission.\n\
 \n\
-2. EMIT NOTHING WHEN THERE'S NOTHING NEW. Most turns produce zero tool calls. When in doubt, skip. \
-The user prefers 5 high-signal items over 30 mediocre ones.\n\
+2. EMIT NOTHING WHEN THERE'S NOTHING NEW. Most turns produce zero tool calls — that's normal. End the turn \
+with no text. When in doubt, skip the tool call AND skip the prose. The user prefers 5 high-signal items \
+over 30 mediocre ones, and they ABSOLUTELY do not want a running commentary.\n\
 \n\
 3. PICK THE RIGHT MODE. The three modes are distinct:\n\
 \n\
@@ -104,12 +115,20 @@ Examples:\n\
 - \"I'll keep you in the loop on what I find out\" → push_action(text=\"Share findings with the team\")\n\
 - \"We will have testing results next week\" → push_action(text=\"Deliver testing results\", due=\"next week\")\n\
 \n\
-OPEN_QUESTIONS — UNRESOLVED queries. Real questions raised but not answered, or topics that need follow-up. \
-Trigger: chunks ending in \"?\", \"we need to figure out\", \"still TBD\", \"who's responsible for\".\n\
+OPEN_QUESTIONS — UNRESOLVED queries. Default to push_open_question when a question is asked AND its answer \
+does not appear in the SAME [transcript] block. If the speaker asks \"How long ago did you leave?\" and the \
+next sentence is \"31 August\", that's resolved — skip. If the question ends a transcript block with no \
+answer following, push it.\n\
+\n\
+Trigger: any sentence ending in \"?\", or phrases like \"we need to figure out\", \"still TBD\", \"who's responsible for\", \
+\"what are…\", \"how do we…\". Don't speculate that a future turn will answer it — push now; if it gets answered \
+later you can dismiss it via UI.\n\
 \n\
 Examples:\n\
-- \"Is it a migration or a new workload?\" → push_open_question\n\
+- \"Is it a migration or a new workload?\" (no answer in same block) → push_open_question\n\
 - \"Who's responsible for access?\" → push_open_question\n\
+- \"What are the biggest contributions Hopper made to computer science?\" (block ends here) → push_open_question\n\
+- \"How tough was boot camp?\" → \"Mentally demanding.\" (answer in same block) → SKIP, resolved\n\
 \n\
 HIGHLIGHTS — DECISIONS, surprising facts, named entities, conclusions, specific numbers. \
 Reserve for substance worth highlighting on a re-read. SKIP pleasantries, introductions, small talk, \
@@ -870,10 +889,27 @@ async fn fire(
         Ok(resp) => {
             let response_chars = resp.output.len() as u64;
             llm.record_usage(user_id, prompt_chars, response_chars);
-            let new_msg_count = resp.messages.as_ref().map(|m| m.len()).unwrap_or(0);
-            if let Some(new_msgs) = resp.messages {
+            let raw_msg_count = resp.messages.as_ref().map(|m| m.len()).unwrap_or(0);
+            let mut filtered = 0usize;
+            if let Some(mut new_msgs) = resp.messages {
+                // Strip trailing text-only assistant turns. rig's
+                // `extended_details` returns every message produced
+                // this fire including the model's final prose
+                // ("noted, I'll keep listening", etc.). Letting that
+                // text into history teaches the agent its own
+                // pattern is "respond conversationally" — once it
+                // sees a chat-style precedent, subsequent fires
+                // emit prose instead of tool calls. Filtering keeps
+                // history a pure tool-call timeline.
+                while matches!(new_msgs.last(), Some(RigMessage::Assistant { content, .. })
+                    if content.iter().all(|c| matches!(c, AssistantContent::Text(_) | AssistantContent::Reasoning(_))))
+                {
+                    new_msgs.pop();
+                    filtered += 1;
+                }
                 history.extend(new_msgs);
             }
+            let new_msg_count = raw_msg_count.saturating_sub(filtered);
             *bootstrapped = true;
             info!(
                 user_id,
@@ -881,6 +917,7 @@ async fn fire(
                 new_chunks = new_chunks_count,
                 history_len = history.len(),
                 new_msg_count,
+                stripped_text_turns = filtered,
                 prompt_chars,
                 input_tokens = resp.usage.input_tokens,
                 output_tokens = resp.usage.output_tokens,
