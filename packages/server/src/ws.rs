@@ -1178,75 +1178,98 @@ async fn spawn_live_pipeline(handle: ServerHandle, user_id: String, cancel: Canc
         });
     }
 
-    // Highlights summarizer
-    {
-        let task_state = Arc::clone(&handle.state);
-        let task_llm = Arc::clone(&handle.llm);
-        let task_events = handle.events_tx.clone();
-        let task_cancel = cancel.child_token();
-        let task_uid = user_id.clone();
-        let interval_ms: u64 = std::env::var("MEETING_COMPANION_HIGHLIGHTS_INTERVAL_MS")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(crate::summarizer::highlights::HEARTBEAT_DEFAULT_MS);
-        tokio::spawn(async move {
-            crate::summarizer::highlights::run_highlights_summarizer(
-                task_state,
-                task_llm,
-                task_events,
-                task_uid,
-                task_cancel,
-                Duration::from_millis(interval_ms),
-            )
-            .await;
-        });
-    }
+    // Behind `MEETING_COMPANION_AGENT_SUMMARIZER=1`, swap the three
+    // LLM-driven per-mode summarizers for one agent task that
+    // reasons about transcript chunks and emits items via tool
+    // calls. PLAN.md §3.12 step 5.
+    let agent_enabled = std::env::var("MEETING_COMPANION_AGENT_SUMMARIZER")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
 
-    // Actions summarizer
-    {
-        let task_state = Arc::clone(&handle.state);
-        let task_llm = Arc::clone(&handle.llm);
-        let task_events = handle.events_tx.clone();
-        let task_cancel = cancel.child_token();
-        let task_uid = user_id.clone();
-        let interval_ms: u64 = std::env::var("MEETING_COMPANION_ACTIONS_INTERVAL_MS")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(crate::summarizer::actions::HEARTBEAT_DEFAULT_MS);
-        tokio::spawn(async move {
-            crate::summarizer::actions::run_actions_summarizer(
-                task_state,
-                task_llm,
-                task_events,
-                task_uid,
-                task_cancel,
-                Duration::from_millis(interval_ms),
-            )
-            .await;
-        });
-    }
+    if agent_enabled {
+        tracing::info!(
+            user_id = %user_id,
+            "agentic summarizer enabled — per-mode summarizers skipped"
+        );
+        crate::summarizer::agent::spawn_meeting_agent(
+            Arc::clone(&handle.state),
+            chunk_tx.subscribe(),
+            handle.events_tx.clone(),
+            user_id.clone(),
+            Arc::clone(&handle.llm),
+            cancel.child_token(),
+        );
+    } else {
+        // Highlights summarizer
+        {
+            let task_state = Arc::clone(&handle.state);
+            let task_llm = Arc::clone(&handle.llm);
+            let task_events = handle.events_tx.clone();
+            let task_cancel = cancel.child_token();
+            let task_uid = user_id.clone();
+            let interval_ms: u64 = std::env::var("MEETING_COMPANION_HIGHLIGHTS_INTERVAL_MS")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(crate::summarizer::highlights::HEARTBEAT_DEFAULT_MS);
+            tokio::spawn(async move {
+                crate::summarizer::highlights::run_highlights_summarizer(
+                    task_state,
+                    task_llm,
+                    task_events,
+                    task_uid,
+                    task_cancel,
+                    Duration::from_millis(interval_ms),
+                )
+                .await;
+            });
+        }
 
-    // Open-questions summarizer
-    {
-        let task_state = Arc::clone(&handle.state);
-        let task_llm = Arc::clone(&handle.llm);
-        let task_events = handle.events_tx.clone();
-        let task_cancel = cancel.child_token();
-        let task_uid = user_id.clone();
-        let interval_ms: u64 = std::env::var("MEETING_COMPANION_OPEN_QUESTIONS_INTERVAL_MS")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(crate::summarizer::open_questions::HEARTBEAT_DEFAULT_MS);
-        tokio::spawn(async move {
-            crate::summarizer::open_questions::run_open_questions_summarizer(
-                task_state,
-                task_llm,
-                task_events,
-                task_uid,
-                task_cancel,
-                Duration::from_millis(interval_ms),
-            )
-            .await;
-        });
+        // Actions summarizer
+        {
+            let task_state = Arc::clone(&handle.state);
+            let task_llm = Arc::clone(&handle.llm);
+            let task_events = handle.events_tx.clone();
+            let task_cancel = cancel.child_token();
+            let task_uid = user_id.clone();
+            let interval_ms: u64 = std::env::var("MEETING_COMPANION_ACTIONS_INTERVAL_MS")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(crate::summarizer::actions::HEARTBEAT_DEFAULT_MS);
+            tokio::spawn(async move {
+                crate::summarizer::actions::run_actions_summarizer(
+                    task_state,
+                    task_llm,
+                    task_events,
+                    task_uid,
+                    task_cancel,
+                    Duration::from_millis(interval_ms),
+                )
+                .await;
+            });
+        }
+
+        // Open-questions summarizer
+        {
+            let task_state = Arc::clone(&handle.state);
+            let task_llm = Arc::clone(&handle.llm);
+            let task_events = handle.events_tx.clone();
+            let task_cancel = cancel.child_token();
+            let task_uid = user_id.clone();
+            let interval_ms: u64 = std::env::var("MEETING_COMPANION_OPEN_QUESTIONS_INTERVAL_MS")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(crate::summarizer::open_questions::HEARTBEAT_DEFAULT_MS);
+            tokio::spawn(async move {
+                crate::summarizer::open_questions::run_open_questions_summarizer(
+                    task_state,
+                    task_llm,
+                    task_events,
+                    task_uid,
+                    task_cancel,
+                    Duration::from_millis(interval_ms),
+                )
+                .await;
+            });
+        }
     }
 }

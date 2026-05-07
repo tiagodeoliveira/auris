@@ -210,7 +210,7 @@ fn parse_provider(s: &str) -> Result<Provider, LlmInitError> {
 #[derive(Clone)]
 pub struct LlmClient {
     extractor: LlmExtractor,
-    backend: LlmBackend,
+    pub(crate) backend: LlmBackend,
     provider: Provider,
     /// Per-user counter shared across clones. Increments on each successful
     /// typed extract; drained at meeting stop for the operational summary.

@@ -7,6 +7,7 @@
 //! - open_questions: rig Extractor on a 15s heartbeat (task 7)
 
 pub mod actions;
+pub mod agent;
 pub mod artifact;
 pub mod highlights;
 pub mod moment;
