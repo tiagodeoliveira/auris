@@ -12,6 +12,7 @@ import { mountCtaRegion, type CtaActions } from "./cta-region";
 import { mountItemsMirror } from "./items-mirror";
 import { mountSettingsModal } from "./settings-modal";
 import { mountMeetingsModal } from "./meetings-modal";
+import { mountArtifactsModal } from "./artifacts-modal";
 import { mountToasts } from "./toast";
 import { mountErrorOverlay } from "./error-overlay";
 
@@ -52,6 +53,7 @@ export function mountUI(root: HTMLElement, ctx: UiContext): void {
   // Overlays.
   mountSettingsModal(root, ctx.store, ctx.bridge, ctx.reconnect, ctx.auth);
   mountMeetingsModal(root, ctx.store, ctx.auth);
+  mountArtifactsModal(root, ctx.store, ctx.auth);
   mountToasts(root, ctx.store);
   mountErrorOverlay(root, ctx.store);
 }

@@ -37,6 +37,16 @@ export function mountTopBar(parent: HTMLElement, store: Store, onSettings: () =>
   meetings.addEventListener("click", () => store.update({ meetingsModalOpen: true }));
   bar.appendChild(meetings);
 
+  const artifacts = document.createElement("button");
+  artifacts.className = "top-bar-icon-btn";
+  artifacts.setAttribute("aria-label", "Browse artifacts");
+  artifacts.title = "Artifacts";
+  // 📄 (page-with-curl) reads as "documents" without competing with
+  // the meetings hamburger or the gear visually.
+  artifacts.textContent = "📄";
+  artifacts.addEventListener("click", () => store.update({ artifactsModalOpen: true }));
+  bar.appendChild(artifacts);
+
   const gear = document.createElement("button");
   gear.className = "top-bar-icon-btn";
   gear.setAttribute("aria-label", "Open settings");

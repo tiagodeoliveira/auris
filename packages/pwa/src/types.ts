@@ -85,6 +85,15 @@ export interface AppState {
   wearing: boolean;
   settingsModalOpen: boolean;
   meetingsModalOpen: boolean;
+  artifactsModalOpen: boolean;
+  /// IDs of library artifacts staged for attach during compose.
+  /// On meeting start, the WS-event handler drains these to
+  /// `attachedArtifactIds` after firing one POST per id.
+  pendingArtifactAttachments: string[];
+  /// IDs of artifacts attached to the currently-active meeting.
+  /// Cleared on idle. The mid-meeting picker reads this to
+  /// pre-check rows already in the meeting's set.
+  attachedArtifactIds: string[];
   toasts: Toast[];
   errorOverlay: ErrorOverlay | null;
   /// Auth0-resolved identity of the active user. `null` while still
@@ -135,6 +144,9 @@ export function defaultAppState(): AppState {
     wearing: false,
     settingsModalOpen: false,
     meetingsModalOpen: false,
+    artifactsModalOpen: false,
+    pendingArtifactAttachments: [],
+    attachedArtifactIds: [],
     toasts: [],
     errorOverlay: null,
     auth: null,

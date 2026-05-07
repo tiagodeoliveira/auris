@@ -1574,3 +1574,154 @@ textarea {
     max-height: 200px;
   }
 }
+
+/* === ARTIFACTS MODAL === */
+/* Reuses .settings-overlay / .settings-modal chrome. Artifacts-
+   specific layout is the header (title + Upload + Reload + Close)
+   plus a vertical list of rows. */
+.artifacts-modal {
+  max-width: 720px;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100vh - 48px);
+  padding: 24px;
+  gap: 16px;
+}
+.artifacts-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.artifacts-header .settings-title {
+  flex: 1 1 auto;
+  margin: 0;
+}
+.artifacts-upload-btn {
+  /* Matches btn-primary look but slightly compact for the header. */
+  font-weight: 600;
+}
+.artifacts-body {
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 200px;
+}
+.artifacts-empty,
+.artifacts-error,
+.artifacts-uploading {
+  padding: 16px;
+  text-align: center;
+  color: var(--steel-gray);
+  font-size: 14px;
+}
+.artifacts-error {
+  color: var(--accent-red, #c53030);
+  text-align: left;
+}
+.artifacts-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.artifact-row {
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+  background: rgba(255, 255, 255, 0.7);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.artifact-row-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.artifact-status-badge {
+  width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  font-size: 11px;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+.artifact-row.status-done .artifact-status-badge {
+  background: rgba(46, 160, 67, 0.15);
+  color: rgb(28, 113, 49);
+}
+.artifact-row.status-pending .artifact-status-badge {
+  background: rgba(120, 144, 168, 0.18);
+  color: var(--steel-gray);
+  /* Subtle pulse so the user notices it's working. */
+  animation: artifact-pulse 1.4s ease-in-out infinite;
+}
+.artifact-row.status-failed .artifact-status-badge {
+  background: rgba(229, 72, 77, 0.15);
+  color: rgb(180, 36, 40);
+}
+@keyframes artifact-pulse {
+  0%,
+  100% {
+    opacity: 0.5;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+.artifact-name {
+  font-weight: 500;
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.artifact-mime,
+.artifact-size {
+  font-size: 10px;
+  color: var(--steel-gray);
+  flex-shrink: 0;
+}
+.artifact-mime {
+  background: rgba(120, 144, 168, 0.12);
+  padding: 1px 5px;
+  border-radius: 3px;
+  letter-spacing: 0.04em;
+}
+.artifact-chev,
+.artifact-del {
+  padding: 2px 6px;
+  font-size: 12px;
+  flex-shrink: 0;
+}
+.artifact-short {
+  color: var(--steel-gray);
+  font-size: 13px;
+  padding-left: 26px;
+  line-height: 1.4;
+}
+.artifact-note {
+  color: var(--steel-gray);
+  font-size: 12px;
+  font-style: italic;
+  padding-left: 26px;
+}
+.artifact-note-failed {
+  color: rgb(180, 36, 40);
+  font-style: normal;
+}
+.artifact-long {
+  margin-top: 6px;
+  padding: 10px 12px;
+  background: rgba(120, 144, 168, 0.08);
+  border-radius: var(--radius);
+  font-size: 13px;
+  line-height: 1.5;
+  user-select: text;
+  white-space: pre-wrap;
+}
