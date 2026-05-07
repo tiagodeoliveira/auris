@@ -256,6 +256,30 @@ fn ends_at_soft_boundary(s: &str) -> bool {
     }
 }
 
+/// Soft cap: prefer to flush around here, but only if the buffer
+/// ends at a word boundary. Holds back mid-word flushes that
+/// produce splits like "Admiral Grace Hopp" / "er. Grace…".
+const MAX_BUFFER_LEN_SOFT: usize = 240;
+
+/// Hard cap: force-flush regardless of position. Safety net for
+/// pathological cases (a speaker emitting one continuous mono-word
+/// or non-Latin script that never hits a soft boundary). Twice the
+/// soft cap is comfortable headroom in normal English.
+const MAX_BUFFER_LEN_HARD: usize = 480;
+
+/// Combined flush decision used by the streaming pump loop.
+/// Pulled out for unit testing — easier than driving the full
+/// mock-WS path to assert flush boundaries.
+fn should_flush(buffer: &str) -> bool {
+    if ends_with_terminator(buffer) {
+        return true;
+    }
+    if buffer.len() >= MAX_BUFFER_LEN_HARD {
+        return true;
+    }
+    buffer.len() >= MAX_BUFFER_LEN_SOFT && ends_at_soft_boundary(buffer)
+}
+
 /// Pick a single speaker label for an utterance from the per-token
 /// `speaker` values that Soniox returns. Most-common wins; ties break
 /// by first-seen order. Returns `None` when no token carried a speaker
@@ -390,7 +414,6 @@ async fn try_one_session(
     // diarization isn't enabled or tokens carry no speaker.
     let mut speakers: Vec<Option<String>> = Vec::new();
     let mut last_token_at: Option<std::time::Instant> = None;
-    const MAX_BUFFER_LEN: usize = 240;
     // 3s of no new tokens = a real conversational pause. Sub-3s gaps are
     // mid-sentence (breath, thinking). Combined with the soft-boundary
     // gate below, this prevents the "Hi, h" / "ello, how are you?"
@@ -485,11 +508,11 @@ async fn try_one_session(
                                 if got_final {
                                     last_token_at = Some(std::time::Instant::now());
                                 }
-                                // Flush on punctuation or length cap. After flush the
-                                // buffer is empty and the live row should clear.
-                                if ends_with_terminator(&buffer)
-                                    || buffer.len() >= MAX_BUFFER_LEN
-                                {
+                                // Flush on punctuation or length cap (soft cap
+                                // requires word boundary; hard cap force-flushes).
+                                // After flush the buffer is empty and the live
+                                // row should clear.
+                                if should_flush(&buffer) {
                                     flush_buffer(&mut buffer, &mut buffer_first_start_ms, &mut buffer_last_end_ms, &mut speakers, transcript_tx, user_id, session_started);
                                     last_token_at = None;
                                 }
@@ -878,6 +901,40 @@ mod tests {
             Some(v) => std::env::set_var("SONIOX_API_KEY", v),
             None => std::env::remove_var("SONIOX_API_KEY"),
         }
+    }
+
+    #[test]
+    fn should_flush_true_on_terminator_under_soft_cap() {
+        assert!(should_flush("hello world."));
+        assert!(should_flush("Wait?"));
+    }
+
+    #[test]
+    fn should_flush_false_when_under_soft_cap_no_terminator() {
+        assert!(!should_flush("partial sentence with"));
+    }
+
+    #[test]
+    fn should_flush_false_at_soft_cap_when_mid_word() {
+        // 250 chars, no whitespace at end → don't split mid-word.
+        let s = "a".repeat(MAX_BUFFER_LEN_SOFT + 10);
+        assert!(!should_flush(&s));
+    }
+
+    #[test]
+    fn should_flush_true_at_soft_cap_when_at_soft_boundary() {
+        // 250 chars ending in whitespace → safe to flush.
+        let mut s = "a".repeat(MAX_BUFFER_LEN_SOFT + 9);
+        s.push(' ');
+        assert!(should_flush(&s));
+    }
+
+    #[test]
+    fn should_flush_true_at_hard_cap_regardless() {
+        // Hard cap force-flushes even mid-word — safety net for
+        // mono-word streams that never hit a soft boundary.
+        let s = "a".repeat(MAX_BUFFER_LEN_HARD + 1);
+        assert!(should_flush(&s));
     }
 
     #[test]
