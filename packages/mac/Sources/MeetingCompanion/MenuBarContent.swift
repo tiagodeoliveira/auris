@@ -58,6 +58,15 @@ struct MenuBarContent: View {
         }
         .disabled(!model.auth0.isSignedIn)
 
+        Button {
+            model.selectedSettingsTab = .artifacts
+            openWindow(id: "settings")
+            NSApp.activate(ignoringOtherApps: true)
+        } label: {
+            Label("Artifacts…", systemImage: "doc.text")
+        }
+        .disabled(!model.auth0.isSignedIn)
+
         Divider()
 
         // Connection toggle. Only one of these is shown at a time, so

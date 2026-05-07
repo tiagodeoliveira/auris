@@ -893,11 +893,12 @@ private struct ArtifactsTab: View {
 }
 
 /// One row in the artifacts list. Status badge + name + size +
-/// short-summary preview (when populated). Right-side delete on
-/// hover or via context menu.
+/// short-summary preview (when populated). Trash button on the
+/// right; right-click also offers Delete.
 private struct ArtifactRow: View {
     let artifact: Artifact
     let onDelete: () -> Void
+    @State private var confirmDelete = false
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
@@ -922,6 +923,25 @@ private struct ArtifactRow: View {
                     Text(humanSize(artifact.sizeBytes))
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                    Button {
+                        confirmDelete = true
+                    } label: {
+                        Image(systemName: "trash")
+                            .font(.system(size: 12))
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Delete artifact")
+                    .confirmationDialog(
+                        "Delete “\(artifact.name)”?",
+                        isPresented: $confirmDelete,
+                        titleVisibility: .visible
+                    ) {
+                        Button("Delete", role: .destructive, action: onDelete)
+                        Button("Cancel", role: .cancel) {}
+                    } message: {
+                        Text("Removes the file from your library and from any meetings it was attached to. This cannot be undone.")
+                    }
                 }
                 if artifact.summaryStatus == "done", let s = artifact.shortSummary, !s.isEmpty {
                     Text(s)
