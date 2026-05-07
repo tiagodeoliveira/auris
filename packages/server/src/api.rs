@@ -75,6 +75,22 @@ pub struct MomentCreated {
     pub user_id: String,
 }
 
+/// Internal signal published by `POST /artifacts` and consumed by
+/// the artifact-summary worker (`summarizer/artifact.rs`). Carries
+/// everything the worker needs to read the bytes off disk and call
+/// the LLM — the DB lookup is avoided so the worker doesn't race
+/// against a not-yet-committed transaction.
+#[derive(Debug, Clone)]
+pub struct ArtifactCreated {
+    pub artifact_id: String,
+    pub user_id: String,
+    pub name: String,
+    pub mime_type: String,
+    /// Relative path under `<DATA_DIR>/blobs/` — same shape stored
+    /// in `artifacts.asset_path`.
+    pub asset_path: String,
+}
+
 #[derive(Clone)]
 pub struct ApiState {
     pub db: PgPool,
@@ -87,6 +103,10 @@ pub struct ApiState {
     /// today. Sender is held in `ServerHandle`; this is the cloned
     /// view used by API handlers.
     pub moment_created_tx: broadcast::Sender<MomentCreated>,
+    /// Mirror of `moment_created_tx` for artifacts. Each upload to
+    /// `POST /artifacts` publishes here; the async summary worker
+    /// subscribes.
+    pub artifact_created_tx: broadcast::Sender<ArtifactCreated>,
 }
 
 /// Build the axum Router with all endpoints wired up. CORS is
@@ -557,6 +577,19 @@ async fn upload_artifact(
         .await
         .map_err(|e| ApiError::Db(downcast_db(e)))?
         .ok_or_else(|| ApiError::Internal("artifact vanished after insert".into()))?;
+
+    // Wake the summary worker. `summary_status` stays `pending`
+    // until the worker writes back via `update_artifact_summaries`.
+    // Send is `let _ =` because a closed channel (e.g. tests with no
+    // worker spawned) shouldn't fail the upload.
+    let _ = state.artifact_created_tx.send(ArtifactCreated {
+        artifact_id: row.id.clone(),
+        user_id: user_id.clone(),
+        name: row.name.clone(),
+        mime_type: row.mime_type.clone(),
+        asset_path: row.asset_path.clone(),
+    });
+
     Ok(Json(ArtifactDto::from(row)))
 }
 
@@ -764,6 +797,7 @@ mod tests {
     /// under the right owner.
     async fn router_with_dev_user(pool: PgPool) -> (Router, String) {
         let (moment_created_tx, _) = broadcast::channel::<MomentCreated>(8);
+        let (artifact_created_tx, _) = broadcast::channel::<ArtifactCreated>(8);
         let dev_user = crate::db::upsert_user_by_auth0_sub(
             &pool,
             crate::ws::DEV_AUTH0_SUB,
@@ -776,6 +810,7 @@ mod tests {
             db: pool,
             auth: Arc::new(crate::ws::AuthMode::Disabled),
             moment_created_tx,
+            artifact_created_tx,
         });
         (router, dev_user.id)
     }

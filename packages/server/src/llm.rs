@@ -4,7 +4,10 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use rig::completion::message::{ImageDetail, ImageMediaType, Message, UserContent};
+use rig::completion::message::{
+    Document, DocumentMediaType, DocumentSourceKind, ImageDetail, ImageMediaType, Message,
+    UserContent,
+};
 use rig::extractor::Extractor;
 use rig::prelude::*;
 use rig::OneOrMany;
@@ -514,6 +517,98 @@ impl LlmClient {
             user_id,
             provider = ?self.provider,
             call = "extract_with_prompt_and_image",
+            prompt_chars,
+            response_chars,
+            latency_ms = started.elapsed().as_millis() as u64,
+            "llm_call"
+        );
+        Ok(typed)
+    }
+
+    /// Same shape as `extract_with_prompt`, but also attaches a PDF
+    /// document to the user turn. Used by the artifact summarizer
+    /// when the uploaded artifact is `application/pdf` — providers
+    /// reason about the PDF natively (text + structure + diagrams)
+    /// rather than us pre-extracting text.
+    ///
+    /// Mirrors the image variant's base64-then-pass approach: rig's
+    /// OpenAI provider rejects raw bytes for documents the same way
+    /// it does for images. Encoding here keeps the wire payload
+    /// uniform across providers.
+    pub async fn extract_with_prompt_and_document_pdf<T>(
+        &self,
+        user_id: &str,
+        system_prompt: &str,
+        user_input: &str,
+        document_bytes: Vec<u8>,
+    ) -> Result<T, ExtractionError>
+    where
+        T: schemars::JsonSchema
+            + serde::de::DeserializeOwned
+            + serde::Serialize
+            + Send
+            + Sync
+            + 'static,
+    {
+        use base64::engine::general_purpose::STANDARD as B64;
+        use base64::Engine as _;
+        let encoded = B64.encode(&document_bytes);
+        let doc_chars = encoded.len() as u64;
+
+        let message = Message::User {
+            content: OneOrMany::many(vec![
+                UserContent::text(user_input.to_string()),
+                UserContent::Document(Document {
+                    data: DocumentSourceKind::Base64(encoded),
+                    media_type: Some(DocumentMediaType::PDF),
+                    additional_params: None,
+                }),
+            ])
+            .map_err(|e| ExtractionError::Extract(format!("build message: {e}")))?,
+        };
+
+        let started = std::time::Instant::now();
+        let extractor_call = async {
+            match &self.backend {
+                LlmBackend::Bedrock { client, model_id } => client
+                    .extractor::<T>(model_id.as_str())
+                    .preamble(system_prompt)
+                    .build()
+                    .extract(message.clone())
+                    .await
+                    .map_err(|e| ExtractionError::Extract(e.to_string())),
+                LlmBackend::OpenAI { client, model_id } => client
+                    .extractor::<T>(model_id.as_str())
+                    .preamble(system_prompt)
+                    .build()
+                    .extract(message.clone())
+                    .await
+                    .map_err(|e| ExtractionError::Extract(e.to_string())),
+                LlmBackend::Anthropic { client, model_id } => client
+                    .extractor::<T>(model_id.as_str())
+                    .preamble(system_prompt)
+                    .build()
+                    .extract(message.clone())
+                    .await
+                    .map_err(|e| ExtractionError::Extract(e.to_string())),
+            }
+        };
+        // PDF processing runs longer than image — multi-page docs
+        // routinely need 30-60s. Cap at 90s so a hung API doesn't
+        // freeze the worker forever.
+        const PDF_TIMEOUT: Duration = Duration::from_secs(90);
+        let typed = tokio::time::timeout(PDF_TIMEOUT, extractor_call)
+            .await
+            .map_err(|_| ExtractionError::Timeout(PDF_TIMEOUT))??;
+        let prompt_chars = (system_prompt.len() + user_input.len()) as u64 + doc_chars;
+        let response_chars = serde_json::to_string(&typed)
+            .map(|s| s.len() as u64)
+            .unwrap_or(0);
+        self.usage.record(user_id, prompt_chars, response_chars);
+        info!(
+            user_id,
+            provider = ?self.provider,
+            call = "extract_with_prompt_and_document_pdf",
             prompt_chars,
             response_chars,
             latency_ms = started.elapsed().as_millis() as u64,

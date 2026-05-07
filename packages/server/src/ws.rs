@@ -99,6 +99,9 @@ pub struct ServerHandle {
     /// subscribes; nothing else does today. Held so api.rs can
     /// receive a clone via `ApiState`.
     pub moment_created_tx: broadcast::Sender<crate::api::MomentCreated>,
+    /// Mirror channel for artifact uploads (`POST /artifacts`).
+    /// Subscribed by the artifact-summary worker.
+    pub artifact_created_tx: broadcast::Sender<crate::api::ArtifactCreated>,
 }
 
 impl ServerHandle {
@@ -197,6 +200,7 @@ pub async fn run_server_with_listener(
     // transcripts and can be re-run if ever needed).
     crate::persistence::spawn_task(state.clone(), &events_tx);
     let (moment_created_tx, _) = broadcast::channel::<crate::api::MomentCreated>(64);
+    let (artifact_created_tx, _) = broadcast::channel::<crate::api::ArtifactCreated>(64);
     let handle = ServerHandle {
         state,
         events_tx,
@@ -209,6 +213,7 @@ pub async fn run_server_with_listener(
         audio_sources: Arc::new(StdMutex::new(HashMap::new())),
         db,
         moment_created_tx,
+        artifact_created_tx,
     };
 
     // Async LLM worker that fills in moment summaries. Subscribes
@@ -216,6 +221,14 @@ pub async fn run_server_with_listener(
     // around each moment, prompts the LLM, writes summary back to
     // SQLite. See `summarizer/moment.rs`.
     crate::summarizer::moment::spawn_worker(handle.clone());
+
+    // Sibling worker for artifact uploads. Subscribes to
+    // `artifact_created_tx`; reads bytes off disk, asks the LLM for
+    // short + long summaries in one call, writes them back into
+    // `artifacts.short_summary` / `long_summary` and flips
+    // `summary_status` to `done` (or `failed` on terminal error).
+    // See `summarizer/artifact.rs`.
+    crate::summarizer::artifact::spawn_worker(handle.clone());
 
     // For each recovered user-meeting pair: emit a synthetic
     // `MeetingStateChanged Active` (tagged to that user so only their
@@ -323,6 +336,7 @@ fn make_app_router(handle: ServerHandle) -> Router {
         db: handle.db.clone(),
         auth: handle.auth.clone(),
         moment_created_tx: handle.moment_created_tx.clone(),
+        artifact_created_tx: handle.artifact_created_tx.clone(),
     };
     let api_router = crate::api::make_router(api_state);
     let ws_router = Router::new()
