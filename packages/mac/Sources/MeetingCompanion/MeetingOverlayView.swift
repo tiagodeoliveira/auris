@@ -507,6 +507,7 @@ struct MeetingOverlayView: View {
         case "highlights": return "HIGHLIGHTS"
         case "actions": return "ACTIONS"
         case "open_questions": return "QUESTIONS"
+        case "summary": return "SUMMARY"
         default: return mode.label.uppercased()
         }
     }

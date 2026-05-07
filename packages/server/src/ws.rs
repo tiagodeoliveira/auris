@@ -1201,4 +1201,26 @@ async fn spawn_live_pipeline(handle: ServerHandle, user_id: String, cancel: Canc
         Arc::clone(&handle.llm),
         cancel.child_token(),
     );
+
+    // Conversation summary task — single-item Replace mode driven
+    // by token-threshold + hard-ceiling triggers. Re-summarizes the
+    // full transcript on each fire (separate concern from the agent;
+    // see summarizer/summary.rs).
+    {
+        let task_state = Arc::clone(&handle.state);
+        let task_llm = Arc::clone(&handle.llm);
+        let task_events = handle.events_tx.clone();
+        let task_uid = user_id.clone();
+        let task_cancel = cancel.child_token();
+        tokio::spawn(async move {
+            crate::summarizer::summary::run_summary_summarizer(
+                task_state,
+                task_llm,
+                task_events,
+                task_uid,
+                task_cancel,
+            )
+            .await;
+        });
+    }
 }

@@ -29,6 +29,11 @@ pub fn default_modes() -> Vec<ModeOption> {
             label: "Open Questions".into(),
             update_strategy: UpdateStrategy::Append,
         },
+        ModeOption {
+            id: "summary".into(),
+            label: "Summary".into(),
+            update_strategy: UpdateStrategy::Replace,
+        },
     ]
 }
 
@@ -903,13 +908,14 @@ mod tests {
     }
 
     #[test]
-    fn new_has_four_default_modes() {
+    fn new_has_default_modes() {
         let s = UserState::new();
-        assert_eq!(s.available_modes.len(), 4);
+        assert_eq!(s.available_modes.len(), 5);
         assert_eq!(s.available_modes[0].id, "highlights");
         assert_eq!(s.available_modes[1].id, "transcript");
         assert_eq!(s.available_modes[2].id, "actions");
         assert_eq!(s.available_modes[3].id, "open_questions");
+        assert_eq!(s.available_modes[4].id, "summary");
     }
 
     #[test]
@@ -950,7 +956,7 @@ mod tests {
                     meeting_id.is_none(),
                     "idle snapshot should not carry a meeting_id"
                 );
-                assert_eq!(available_modes.len(), 4);
+                assert_eq!(available_modes.len(), 5);
                 assert_eq!(mode, "transcript");
                 assert!(display_tag.is_none());
                 assert!(metadata.is_empty());

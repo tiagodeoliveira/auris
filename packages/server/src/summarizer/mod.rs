@@ -9,4 +9,5 @@
 pub mod agent;
 pub mod artifact;
 pub mod moment;
+pub mod summary;
 pub mod transcript;

@@ -8,6 +8,7 @@ const SHORT_LABELS: Record<string, string> = {
   highlights: "HIGHLIGHTS",
   actions: "ACTIONS",
   open_questions: "QUESTIONS",
+  summary: "SUMMARY",
 };
 
 export function mountModeTabs(parent: HTMLElement, store: Store, send: (i: Intent) => void): void {
