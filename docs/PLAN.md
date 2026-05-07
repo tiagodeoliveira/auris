@@ -73,85 +73,197 @@ with a hand-tuned dedupe-by-exact-text gate. Three problems compound:
 ### 3.2 Shape
 
 One `meeting_agent` task per active meeting (per user, same per-user
-lifecycle as today's summarizers). Subscribes to the same
+lifecycle as today's summarizers). Subscribes to the
 `TranscriptChunk` broadcast the transcript summarizer already drains.
 
-On each chunk:
-
-1. Append the chunk to the agent's working context.
-2. Invoke the LLM with system prompt + working context. Model has
-   access to four tools:
-   - `push_highlight { text, importance }` — append to highlights mode.
-   - `push_action { text, owner, due }` — append to actions mode.
-   - `push_open_question { question, kind, context }` — append to
-     open_questions mode.
-   - `replace_highlights { items: [...] }` — full-replace when the
-     model decides existing highlights are stale.
-3. Each tool call translates to the same `Event::ItemsUpdate` we
-   broadcast today. Wire shape unchanged — only the producer changes.
-4. The model is also free to do nothing this turn.
+The agent reasons about new transcript material and decides — via
+tool calls — whether to push, update, dismiss, or replace items in
+any of the three LLM-driven modes (highlights, actions,
+open_questions). Each tool call translates to the same
+`Event::ItemsUpdate` we broadcast today; the wire shape and clients
+are unchanged.
 
 The transcript-mode pass-through summarizer stays as-is — it's
 non-LLM and just promotes chunks to items.
 
-### 3.3 Context rollover strategy
+Tool calling (not structured output) is the v1 contract with the
+LLM: "do nothing this turn" is a free signal (just emit no tool
+calls) and the model can fire multiple tool calls per turn (e.g.,
+dismiss two stale items + push one new one to merge them).
 
-Working context grows linearly with meeting length and will exceed
-budget on long calls. Strategy:
+### 3.3 Trigger model — hybrid
+
+Per-chunk invocation is too expensive (5-10× current cost). The
+agent fires when **any** of these conditions hits, whichever comes
+first:
+
+- **Token threshold.** The chunks accumulated since the last
+  invocation reach ~`AGENT_TRIGGER_TOKENS` tokens (start: 200; tunes
+  with real-meeting data).
+- **Silence boundary.** ≥`AGENT_TRIGGER_SILENCE_MS` of no incoming
+  chunks (start: 4000 ms — natural conversational pause).
+- **Hard ceiling.** ≥`AGENT_TRIGGER_MAX_MS` since the last
+  invocation (start: 30000 ms — caps latency on long monologues
+  where neither token-threshold nor silence triggers).
+
+All three thresholds live behind env vars so we can tune without a
+rebuild during early personal use. After invocation the buffer
+clears; the next batch starts accumulating.
+
+### 3.4 Tool surface
+
+Per LLM-driven mode, the agent gets push / update / dismiss. For
+highlights, replace covers the "reorganize the whole list" case
+(matches today's replace strategy). Eight tools total:
+
+| Mode             | Tools                                                                 |
+| ---------------- | --------------------------------------------------------------------- |
+| `highlights`     | `push_highlight`, `replace_highlights`                                |
+| `actions`        | `push_action`, `update_action`, `dismiss_action`                      |
+| `open_questions` | `push_open_question`, `update_open_question`, `dismiss_open_question` |
+
+Tool shapes:
+
+- `push_highlight { text, importance? }`
+- `replace_highlights { items: [{ text, importance? }] }`
+- `push_action { text, owner?, due? }`
+- `update_action { id, text?, owner?, due? }` — partial; only changed fields
+- `dismiss_action { id, reason? }` — for retracted / completed items
+- `push_open_question { question, kind?, context? }`
+- `update_open_question { id, question?, kind?, context? }`
+- `dismiss_open_question { id, reason? }`
+
+Merge across duplicates is just `dismiss(id_a) + push(merged_text)` —
+two tool calls in the same turn — so no explicit merge tool.
+
+A second-round addition is planned: a tool that lets the agent
+fetch uploaded documents or meeting artifacts (e.g., agenda, slide
+deck) for context. Designed and added in a separate pass to keep v1
+scope tight.
+
+**Implementation contracts:**
+
+- **IDs on `push_*`.** Push tools take no `id` argument. The server
+  mints the ID (`<mode-prefix>-<uuid>`, matching today's pattern)
+  when processing the tool call. LLMs hallucinate UUIDs badly; this
+  keeps the agent honest by removing the failure mode entirely.
+- **Unknown IDs on `update_*` / `dismiss_*`.** When the LLM hands a
+  non-existent `id` to an update or dismiss tool, the server returns
+  a descriptive error tool result (`"no such item: a-fake"`) — not a
+  silent no-op. rig's tool-result protocol surfaces the error back
+  to the model, which self-corrects on its next turn. Silent
+  failures break that feedback loop and the agent never learns.
+- **Item shape in the prompt.** `Item.meta` carries action owner /
+  due as a nested object on the wire. Flatten it when formatting
+  items-as-memory for the agent — `{id, text, owner, due}`, not
+  `{id, text, meta: { owner, due }}`. Same data, fewer tokens,
+  cleaner for the LLM to reason about. Wire shape stays as-is; this
+  is a presentation concern in the prompt assembler.
+
+### 3.5 Working context
+
+What the agent sees on every invocation:
+
+| Component                        | Always | Notes                                                                                                                                                               |
+| -------------------------------- | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Tail-window transcript           | ✓      | Recent N chunks verbatim, with `[Speaker N, mm:ss]` prefixes when diarization is available (see §3.7).                                                              |
+| Rolled-up summary of older turns | ✓      | Empty until the tail crosses N; then a 1-paragraph compress of displaced chunks, re-compressed on each rollover.                                                    |
+| Current items in all three modes | ✓      | Items-as-memory: dedup signal, refine-vs-push signal, cross-mode coordination signal.                                                                               |
+| Meeting metadata                 | ✓      | Project, title, owner — frames the conversation.                                                                                                                    |
+| `recalled_context` from mnemo    | ✓      | Same shape today's actions / open_questions summarizers consume. Capped at a token budget to avoid mnemo overload (start: 1500 tokens, drop oldest episodes first). |
+| Tool descriptions                | ✓      | Required for tool calling.                                                                                                                                          |
+
+Context rollover (when the tail crosses N):
 
 - **Tail-window verbatim.** Keep the most recent N chunks in full
   (start with N=80, ~5-10 minutes of speech).
-- **Summarized prefix.** When the tail crosses N, summarize the
-  _displaced_ chunks into a 1-paragraph rolling summary and keep that
-  summary in the system prompt. Each rollover compounds into the
-  same summary slot (re-summarize summary + newly-displaced chunks).
-- **Items-as-memory.** The four mode buffers themselves act as
-  long-term memory: the agent's prompt includes the current state of
-  highlights / actions / open_questions, so it doesn't need raw
-  transcript to remember what's already been extracted.
+- **Summarized prefix.** Summarize the _displaced_ chunks into the
+  rolling summary slot. Each rollover re-compresses summary +
+  newly-displaced chunks into the same slot.
+- **Items-as-memory.** The mode buffers themselves act as long-term
+  memory; the agent doesn't need raw transcript to remember what's
+  already been extracted.
 
-Roughly the "running summary + sliding window" pattern; formalize
-once we have real meeting data showing where context gets unwieldy.
+The mnemo budget is the load-bearing knob here. mnemo can return
+substantial prior-meeting episodes and we don't want them to
+dominate the prompt; if the cap repeatedly clips relevant context,
+that's a signal we want a new mnemo memory mode (separate work,
+mnemo-side change).
 
-### 3.4 Open questions
+### 3.6 Boot recovery
 
-- **Cost.** Per-chunk LLM calls could be 5-10× current spend. Mitigate
-  by coalescing chunks (don't fire until the buffer has N tokens or
-  silence ≥ M seconds). Worth measuring on a real meeting before
-  optimizing.
-- **Tool-calling vs structured output.** rig supports both. Tool
-  calling reads naturally for "decide which mode to update"; the
-  "do nothing this turn" path is a free signal there. Structured
-  output forces a synthetic no-op variant in the schema. Lean tool
-  calling unless instrumentation says otherwise.
-- **Backwards compatibility.** Wire shape stays the same
-  (`Event::ItemsUpdate { mode, items }`). Clients don't need to know
-  the producer changed. Roll out via a feature flag and run the agent
-  in parallel with the existing summarizers for a few meetings before
-  cutting over.
-- **mnemo recaller integration.** Today the per-mode summarizers fold
-  prior-meeting context into their prompt. The agent needs the same —
-  drop the prior-context block into its system prompt on meeting
-  start, same shape as today.
-- **Persistence.** Today's summarizers are stateless across server
-  restarts (state rebuilds from items*per_mode + recalled_context).
-  The agent's \_working context* is just the post-rollover summary +
-  tail-window — both rebuildable from the persisted transcript JSONL
-  and the existing `recalled_context` if we want crash recovery.
-  Probably keep it in memory for v1; revisit if recovery matters.
+Agent state lives in memory only. On a server crash + boot recovery:
 
-### 3.5 Migration
+- The current items in each mode survive (rebroadcast from
+  `UserState`).
+- The rolled-up summary is gone.
+- The tail-window verbatim is gone.
+
+The agent restarts cold with items-as-memory as its only context.
+Acceptable failure mode: the agent might double-push the most recent
+item or two on a recovered meeting. Revisit only if quality
+degrades — persisting the rolled summary to a transcript-blob
+sidecar JSON is a small additive change when needed.
+
+### 3.7 Precursor — Soniox speaker diarization
+
+Soniox supports streaming speaker diarization; we just don't enable
+it. The plumbing is already in place: `TranscriptChunk.speaker:
+Option<String>`, `Token.speaker: Option<String>` deserialize from
+the API response.
+
+To turn it on:
+
+1. Add `enable_speaker_diarization: true` to `ConfigFrame` in
+   `packages/server/src/stt/soniox.rs`.
+2. Aggregate per-token `speaker` values when emitting a chunk
+   (most-common-token wins; multi-speaker turns get a `mixed` label
+   or a `1→2` transition marker).
+3. Thread the result into `TranscriptChunk.speaker` (currently
+   hardcoded `None` at `soniox.rs:292`).
+
+Soniox returns anonymous IDs (`"1"`, `"2"`, …) — exactly the
+"distinguish without labeling" outcome we want. The agent's prompt
+then formats the tail window as `[Speaker N, mm:ss] text`. Better
+attribution for actions ("the person who proposed shipping by
+Friday") at marginal token cost.
+
+Land this as a separate small commit before the agent ships — it's
+cheap to verify on its own and the agent design assumes it's
+present.
+
+### 3.8 Cost instrumentation
+
+Per-meeting LLM-call and token counters logged at meeting stop —
+not for comparison against the per-mode summarizers (we know the
+agent will be different; we're not A/B-testing) but as a permanent
+operational signal. Useful for:
+
+- Spotting trigger-threshold mistunes (a runaway meeting pushes
+  cost 10× normal).
+- Sanity-checking provider switches (Bedrock vs Anthropic-direct
+  cost shape).
+- Future per-user budgeting if multi-tenancy ever hardens.
+
+Implementation: a `LlmUsageCounter` in `llm.rs` that each
+`extract_with_prompt[_and_image]` call increments. Emit
+`tracing::info!(calls, tokens, "agent usage at stop")` on
+`stop_meeting`. ~30 lines.
+
+### 3.9 Migration
 
 - Land behind `MEETING_COMPANION_AGENT_SUMMARIZER=1` env flag;
   default off so existing behavior is preserved.
 - New module `summarizer/agent.rs` parallel to today's per-mode
   files. Spawn site is the existing `spawn_live_pipeline` in `ws.rs`
-  — replaces the four summarizer-task spawns with one agent task
-  when the flag is on.
-- Delete the three per-mode summarizers once the agent runs cleanly
-  for a couple of weeks of personal use. Keep `transcript.rs` (it's
-  not LLM-driven). The dedicated tests for each summarizer become
-  agent-level integration tests.
+  — replaces the three LLM-driven summarizer-task spawns with one
+  agent task when the flag is on.
+- Run in parallel with the existing summarizers for a couple of
+  weeks of personal use.
+- Delete the three per-mode summarizers once the agent runs
+  cleanly. Keep `transcript.rs` (it's not LLM-driven). The
+  dedicated tests for each summarizer become agent-level
+  integration tests.
 
 ---
 
@@ -271,6 +383,17 @@ Not blocking the next phase, but flagged for later resolution.
   only new rows, leave existing ones in place. That lets the fade
   return cleanly (only new items animate in). Small project — a
   100-line patch in `items-mirror.ts` plus restoring the CSS rule.
+- **Agent prompt cost optimization.** v1 accepts higher token cost
+  for clarity (see §3). Real meeting data from the §3.8 cost
+  instrumentation may flag opportunities worth implementing:
+  shortening item IDs (per-meeting counters or base62-encoded UUIDs
+  in place of `<prefix>-<full-uuid>` — currently ~10-12 tokens per
+  ID, ~300 tokens at peak item count), trimming items-as-memory to
+  recent-N-per-mode rather than the full mode buffer, more
+  aggressive compression of mnemo `recalled_context`, or further
+  rollover-summary compression. Each needs the cost data to justify
+  the wire-shape or prompt-assembly change. Don't preempt — measure
+  first.
 
 ### 5.2 Cross-cutting
 
