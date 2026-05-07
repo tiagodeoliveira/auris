@@ -34,7 +34,12 @@ pub const DEFAULT_BEDROCK_MODEL_ID: &str = "us.anthropic.claude-sonnet-4-7-20251
 // to follow the dedup + mode-discrimination rules. Override with
 // `MEETING_COMPANION_LLM_MODEL_ID` if cost-sensitive.
 pub const DEFAULT_OPENAI_MODEL_ID: &str = "gpt-4o";
-pub const DEFAULT_ANTHROPIC_MODEL_ID: &str = "claude-sonnet-4-5";
+// Opus 4.7 has a 1M-token context window at standard pricing with
+// no long-context premium and no beta header required (per
+// Anthropic's April 2026 release notes). The growing
+// per-meeting conversation history would crowd Sonnet's 200k
+// budget on a long meeting; 1M gives meaningful headroom.
+pub const DEFAULT_ANTHROPIC_MODEL_ID: &str = "claude-opus-4-7";
 pub const SYSTEM_PROMPT: &str = "You are a meeting metadata extractor. \
 Given a short spoken description of a meeting (transcribed by an STT system, \
 may contain disfluencies and filler words), extract concise structured \
