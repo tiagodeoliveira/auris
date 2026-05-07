@@ -1193,6 +1193,7 @@ async fn spawn_live_pipeline(handle: ServerHandle, user_id: String, cancel: Canc
         );
         crate::summarizer::agent::spawn_meeting_agent(
             Arc::clone(&handle.state),
+            handle.db.clone(),
             chunk_tx.subscribe(),
             handle.events_tx.clone(),
             user_id.clone(),

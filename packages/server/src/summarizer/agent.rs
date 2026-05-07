@@ -550,6 +550,7 @@ Don't push duplicates."
 /// summarizer task lifecycle).
 pub fn spawn_meeting_agent(
     state: Arc<Mutex<ServerState>>,
+    db: sqlx::PgPool,
     transcript_rx: broadcast::Receiver<TranscriptChunk>,
     events_tx: broadcast::Sender<UserEvent>,
     user_id: String,
@@ -598,7 +599,7 @@ pub fn spawn_meeting_agent(
                                 .map(|c| c.text.len() / CHARS_PER_TOKEN)
                                 .sum();
                             if approx_tokens >= token_threshold {
-                                fire(&state, &events_tx, &user_id, &llm, &mut buffer, &mut tail_window).await;
+                                fire(&state, &db, &events_tx, &user_id, &llm, &mut buffer, &mut tail_window).await;
                                 last_fire_at = Instant::now();
                                 last_chunk_at = None;
                             }
@@ -620,7 +621,7 @@ pub fn spawn_meeting_agent(
                         .unwrap_or(false);
                     let aged = now.duration_since(last_fire_at) >= Duration::from_millis(max_ms);
                     if silent || aged {
-                        fire(&state, &events_tx, &user_id, &llm, &mut buffer, &mut tail_window).await;
+                        fire(&state, &db, &events_tx, &user_id, &llm, &mut buffer, &mut tail_window).await;
                         last_fire_at = now;
                         last_chunk_at = None;
                     }
@@ -636,6 +637,7 @@ pub fn spawn_meeting_agent(
 /// effects; this fn returns when rig's prompt loop completes.
 async fn fire(
     state: &Arc<Mutex<ServerState>>,
+    db: &sqlx::PgPool,
     events_tx: &broadcast::Sender<UserEvent>,
     user_id: &str,
     llm: &Arc<LlmClient>,
@@ -656,7 +658,7 @@ async fn fire(
         tail_window.drain(..drop_n);
     }
 
-    let user_message = build_working_context(state, user_id, tail_window).await;
+    let user_message = build_working_context(state, db, user_id, tail_window).await;
     let started = Instant::now();
     let ctx = ToolCtx {
         state: state.clone(),
@@ -764,17 +766,19 @@ async fn fire(
 ///    `[Speaker N, mm:ss]` prefixes when diarization is available.
 async fn build_working_context(
     state: &Arc<Mutex<ServerState>>,
+    db: &sqlx::PgPool,
     user_id: &str,
     tail_window: &[TranscriptChunk],
 ) -> String {
     use std::fmt::Write;
     let mut buf = String::with_capacity(2048);
 
-    let (metadata, highlights, actions, open_questions) = {
+    let (metadata, current_meeting_id, highlights, actions, open_questions) = {
         let s = state.lock().await;
         match s.user(user_id) {
             Some(u) => (
                 u.metadata.clone(),
+                u.current_meeting_id.clone(),
                 u.items_per_mode
                     .get("highlights")
                     .cloned()
@@ -785,7 +789,7 @@ async fn build_working_context(
                     .cloned()
                     .unwrap_or_default(),
             ),
-            None => (Default::default(), Vec::new(), Vec::new(), Vec::new()),
+            None => (Default::default(), None, Vec::new(), Vec::new(), Vec::new()),
         }
     };
 
@@ -798,6 +802,34 @@ async fn build_working_context(
     write_items_section(&mut buf, "actions", &actions);
     write_items_section(&mut buf, "open_questions", &open_questions);
     buf.push('\n');
+
+    // Attached artifacts pre-load. id + name + short_summary so the
+    // agent can ground its reasoning on what the user attached
+    // (PDF docs, images, etc.). The full content + long summary
+    // come via fetch_artifact_summary / fetch_artifact tools (v1.2,
+    // PLAN.md §3.8) — not yet wired. For now, short summary is
+    // enough for the agent to know "this doc exists, here's its
+    // gist" and reference it in highlights/actions.
+    if let Some(mid) = current_meeting_id.as_deref() {
+        let attached = crate::db::list_artifacts_for_meeting(db, mid)
+            .await
+            .unwrap_or_default();
+        if !attached.is_empty() {
+            buf.push_str("# Attached artifacts (use these as context — the user uploaded them for this meeting)\n");
+            for a in &attached {
+                let summary = a.short_summary.as_deref().unwrap_or("(summary pending)");
+                let _ = writeln!(
+                    buf,
+                    "  {{\"id\":\"{}\",\"name\":\"{}\",\"mime\":\"{}\",\"summary\":\"{}\"}}",
+                    a.id,
+                    escape_json_str(&a.name),
+                    a.mime_type,
+                    escape_json_str(summary),
+                );
+            }
+            buf.push('\n');
+        }
+    }
 
     if !metadata.is_empty() {
         buf.push_str("# Meeting context\n");
@@ -832,6 +864,25 @@ async fn build_working_context(
          push_highlight. Skip pleasantries and anything semantically equivalent to existing items.",
     );
     buf
+}
+
+/// Minimal JSON string escaper for the working-context renderer.
+/// We're not deserializing this — it's a prompt for an LLM — so
+/// quote/backslash/control-char handling is enough; full RFC 8259
+/// is overkill.
+fn escape_json_str(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push(' '),
+            '\r' => out.push(' '),
+            '\t' => out.push(' '),
+            _ => out.push(c),
+        }
+    }
+    out
 }
 
 /// Format one mode's items as `{id, text, ...flattened-meta}` JSON
