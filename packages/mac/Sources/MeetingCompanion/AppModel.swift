@@ -221,6 +221,19 @@ final class AppModel {
         return api
     }
 
+    /// Sibling of `makeMeetingsAPI` for the artifact subsystem. Same
+    /// auth + URL plumbing; separate type so the two clients can
+    /// evolve independently.
+    func makeArtifactsAPI() async throws -> ArtifactsAPI {
+        let token = try await auth0.getAccessToken()
+        guard let api = ArtifactsAPI.fromWSURL(settings.serverURL, token: token) else {
+            throw NSError(
+                domain: "AppModel", code: -1,
+                userInfo: [NSLocalizedDescriptionKey: "Invalid server URL"])
+        }
+        return api
+    }
+
     /// Open a WS connection using the current settings + a token
     /// fetched from the Auth0 client. `WebSocketClient` calls back
     /// into the provider on every (re)connect, so an expired access

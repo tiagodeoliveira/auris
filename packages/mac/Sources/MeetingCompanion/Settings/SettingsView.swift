@@ -18,6 +18,7 @@ import SwiftUI
 enum SettingsTab: String, Hashable, CaseIterable {
     case account
     case meetings
+    case artifacts
     case permissions
 }
 
@@ -33,6 +34,10 @@ struct SettingsView: View {
             MeetingsTab(model: model)
                 .tabItem { Label("Meetings", systemImage: "list.bullet.rectangle") }
                 .tag(SettingsTab.meetings)
+
+            ArtifactsTab(model: model)
+                .tabItem { Label("Artifacts", systemImage: "doc.text") }
+                .tag(SettingsTab.artifacts)
 
             PermissionsView(model: model)
                 .tabItem { Label("Permissions", systemImage: "lock.shield") }
@@ -686,6 +691,292 @@ private struct AuthorizedImage: View {
         } catch {
             failed = true
         }
+    }
+}
+
+// MARK: - Artifacts tab
+
+/// Personal library of uploaded documents/images. PLAN.md §3.7.
+/// Upload via "Upload…" button (NSOpenPanel). Each row shows a
+/// status badge (pending / done / failed) reflecting the async
+/// summarizer worker's progress; the row is selectable for
+/// attaching to a meeting only when status is `done`.
+private struct ArtifactsTab: View {
+    @Bindable var model: AppModel
+    @State private var artifacts: [Artifact] = []
+    @State private var loadError: String?
+    @State private var listLoading = false
+    @State private var uploading = false
+    @State private var refreshTimer: Timer?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            toolbar
+            Divider()
+            list
+        }
+        .background(SettingsTheme.background)
+        .task { await reloadList() }
+        .onDisappear { refreshTimer?.invalidate() }
+    }
+
+    private var toolbar: some View {
+        HStack(spacing: 8) {
+            Button {
+                Task { await pickAndUpload() }
+            } label: {
+                Label("Upload…", systemImage: "arrow.up.doc")
+            }
+            .disabled(uploading)
+            if uploading {
+                ProgressView().controlSize(.small)
+            }
+            Spacer()
+            Button {
+                Task { await reloadList() }
+            } label: {
+                Image(systemName: "arrow.clockwise")
+            }
+            .help("Reload")
+            .disabled(listLoading)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+    }
+
+    @ViewBuilder
+    private var list: some View {
+        if listLoading && artifacts.isEmpty {
+            ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if let err = loadError, artifacts.isEmpty {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Couldn't load artifacts").font(.headline)
+                Text(err).font(.caption).foregroundStyle(.secondary)
+                Button("Retry") { Task { await reloadList() } }.padding(.top, 4)
+            }
+            .padding(20)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        } else if artifacts.isEmpty {
+            VStack(spacing: 8) {
+                Image(systemName: "doc.text").font(.system(size: 32)).foregroundStyle(.secondary)
+                Text("No artifacts yet").foregroundStyle(.secondary)
+                Text("Upload a document or image to give meeting agents context.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            ScrollView {
+                LazyVStack(spacing: 8) {
+                    ForEach(artifacts) { a in
+                        ArtifactRow(artifact: a) {
+                            Task { await deleteArtifact(id: a.id) }
+                        }
+                    }
+                }
+                .padding(16)
+            }
+            .scrollContentBackground(.hidden)
+        }
+    }
+
+    // MARK: networking
+
+    private func makeAPI() async -> ArtifactsAPI? {
+        try? await model.makeArtifactsAPI()
+    }
+
+    private func reloadList() async {
+        guard let api = await makeAPI() else {
+            loadError = "Server URL is invalid; check the Account tab."
+            return
+        }
+        listLoading = true
+        defer { listLoading = false }
+        do {
+            artifacts = try await api.list()
+            loadError = nil
+            // If any artifact is still pending, schedule a refresh
+            // so the user sees the status flip without hitting the
+            // reload button. The summary worker usually completes
+            // within a few seconds for text/markdown.
+            if artifacts.contains(where: { $0.summaryStatus == "pending" }) {
+                scheduleAutoRefresh()
+            } else {
+                refreshTimer?.invalidate()
+                refreshTimer = nil
+            }
+        } catch {
+            loadError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+        }
+    }
+
+    private func scheduleAutoRefresh() {
+        refreshTimer?.invalidate()
+        // Light polling — a meeting-prep upload doesn't need to be
+        // sub-second, but a 2 s tick keeps the UI feeling alive
+        // while the worker runs.
+        refreshTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: false) { _ in
+            Task { @MainActor in await reloadList() }
+        }
+    }
+
+    private func pickAndUpload() async {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.message = "Pick a document or image to add to your artifact library."
+        panel.prompt = "Upload"
+        panel.allowedContentTypes = []  // accept anything; server filters by mime
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        await upload(url: url)
+    }
+
+    private func upload(url: URL) async {
+        guard let api = await makeAPI() else {
+            loadError = "Server URL is invalid; check the Account tab."
+            return
+        }
+        let name = url.lastPathComponent
+        let mime = mimeType(for: url)
+        let data: Data
+        do {
+            data = try Data(contentsOf: url)
+        } catch {
+            loadError = "Couldn't read \(name): \(error.localizedDescription)"
+            return
+        }
+        uploading = true
+        defer { uploading = false }
+        do {
+            _ = try await api.upload(name: name, mimeType: mime, data: data)
+            await reloadList()
+        } catch {
+            loadError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+        }
+    }
+
+    private func deleteArtifact(id: String) async {
+        guard let api = await makeAPI() else { return }
+        let removedIndex = artifacts.firstIndex(where: { $0.id == id })
+        let removed = removedIndex.map { artifacts[$0] }
+        if let i = removedIndex { artifacts.remove(at: i) }
+        do {
+            try await api.delete(id: id)
+        } catch {
+            // Revert on failure.
+            if let i = removedIndex, let r = removed { artifacts.insert(r, at: i) }
+            loadError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+        }
+    }
+
+    /// Best-effort mime-type guess from the URL's extension. Covers
+    /// the formats the server's whitelist accepts (text/markdown,
+    /// text/plain, text/html, text/csv, application/json,
+    /// application/pdf, image/png, image/jpeg). Falls back to
+    /// `application/octet-stream` so the server's whitelist returns
+    /// 400 with a clear message rather than us pre-rejecting on the
+    /// client.
+    private func mimeType(for url: URL) -> String {
+        switch url.pathExtension.lowercased() {
+        case "md", "markdown": return "text/markdown"
+        case "txt": return "text/plain"
+        case "html", "htm": return "text/html"
+        case "csv": return "text/csv"
+        case "json": return "application/json"
+        case "pdf": return "application/pdf"
+        case "png": return "image/png"
+        case "jpg", "jpeg": return "image/jpeg"
+        default: return "application/octet-stream"
+        }
+    }
+}
+
+/// One row in the artifacts list. Status badge + name + size +
+/// short-summary preview (when populated). Right-side delete on
+/// hover or via context menu.
+private struct ArtifactRow: View {
+    let artifact: Artifact
+    let onDelete: () -> Void
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            statusBadge
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 8) {
+                    Text(artifact.name)
+                        .font(.body)
+                        .fontWeight(.medium)
+                        .lineLimit(1)
+                    Text(artifact.mimeType)
+                        .font(.system(size: 9, weight: .semibold))
+                        .tracking(0.4)
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 1)
+                        .background {
+                            RoundedRectangle(cornerRadius: 3)
+                                .fill(Color.gray.opacity(0.12))
+                        }
+                    Spacer(minLength: 4)
+                    Text(humanSize(artifact.sizeBytes))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                if artifact.summaryStatus == "done", let s = artifact.shortSummary, !s.isEmpty {
+                    Text(s)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(3)
+                }
+                if artifact.summaryStatus == "pending" {
+                    Text("Generating summary…")
+                        .font(.caption).italic()
+                        .foregroundStyle(.secondary)
+                }
+                if artifact.summaryStatus == "failed" {
+                    Text("Summary failed — server logs may have more.")
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+        }
+        .padding(10)
+        .background(SettingsTheme.card)
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .strokeBorder(SettingsTheme.border)
+        )
+        .contextMenu {
+            Button(role: .destructive, action: onDelete) {
+                Label("Delete artifact", systemImage: "trash")
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var statusBadge: some View {
+        switch artifact.summaryStatus {
+        case "done":
+            Image(systemName: "checkmark.circle.fill")
+                .foregroundStyle(.green)
+        case "pending":
+            ProgressView().controlSize(.small)
+        case "failed":
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(.red)
+        default:
+            Image(systemName: "questionmark.circle")
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private func humanSize(_ bytes: Int64) -> String {
+        let formatter = ByteCountFormatter()
+        formatter.countStyle = .file
+        return formatter.string(fromByteCount: bytes)
     }
 }
 
