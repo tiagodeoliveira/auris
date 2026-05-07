@@ -44,7 +44,13 @@ export function mountTopBar(parent: HTMLElement, store: Store, onSettings: () =>
      </svg>`,
     () => store.update({ meetingsModalOpen: true }),
   );
-  bar.appendChild(meetings);
+  // Right-aligned action group — three ghost icons sharing one
+  // visual cluster instead of three floating circles.
+  const actions = document.createElement("div");
+  actions.className = "top-bar-actions";
+  bar.appendChild(actions);
+
+  actions.appendChild(meetings);
 
   const artifacts = makeIconBtn(
     "Browse artifacts",
@@ -57,7 +63,7 @@ export function mountTopBar(parent: HTMLElement, store: Store, onSettings: () =>
      </svg>`,
     () => store.update({ artifactsModalOpen: true }),
   );
-  bar.appendChild(artifacts);
+  actions.appendChild(artifacts);
 
   const gear = makeIconBtn(
     "Open settings",
@@ -70,7 +76,7 @@ export function mountTopBar(parent: HTMLElement, store: Store, onSettings: () =>
      </svg>`,
     onSettings,
   );
-  bar.appendChild(gear);
+  actions.appendChild(gear);
 
   function makeIconBtn(
     ariaLabel: string,

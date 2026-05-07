@@ -323,18 +323,17 @@ button.cta:disabled {
   z-index: 10;
 }
 .top-bar-status {
+  /* Borderless inline indicator — the dot + label carry enough
+     state weight on their own; the pill chrome was redundant against
+     the action-group on the right. */
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  padding: 6px 12px;
-  border-radius: 999px;
-  border: 1px solid var(--border-dark);
-  background: var(--bg-card);
+  padding: 4px 0;
   font-size: 12px;
   font-family: var(--font-mono);
   letter-spacing: 0.4px;
-  color: var(--text-light);
-  min-height: 32px;
+  color: var(--text-muted);
 }
 .top-bar-dot {
   width: 8px;
@@ -374,29 +373,51 @@ button.cta:disabled {
   0%, 100% { opacity: 0.45; }
   50% { opacity: 1; }
 }
+/* Action group — three ghost icons clustered tightly on the right.
+   No individual borders; cohesion comes from proximity + a subtle
+   shared rounded container that emerges only on hover/focus. */
+.top-bar-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 10px;
+  background: transparent;
+  border: 1px solid transparent;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+.top-bar-actions:hover,
+.top-bar-actions:focus-within {
+  background: rgba(255, 255, 255, 0.55);
+  border-color: var(--border-light);
+}
 .top-bar-icon-btn {
-  background: var(--bg-card);
-  border: 1px solid var(--border-light);
+  background: transparent;
+  border: none;
   color: var(--text-muted);
-  width: 40px;
-  height: 40px;
+  width: 34px;
+  height: 34px;
   padding: 0;
-  font-size: 16px;
-  border-radius: 50%;
+  border-radius: 8px;
   display: flex;
   align-items: center;
   justify-content: center;
-  transition: all 0.2s ease;
+  transition: background 0.15s ease, color 0.15s ease;
   flex-shrink: 0;
+  cursor: pointer;
 }
 .top-bar-icon-btn svg {
-  width: 20px;
-  height: 20px;
+  width: 18px;
+  height: 18px;
   display: block;
 }
 .top-bar-icon-btn:hover {
-  border-color: var(--brand-blue);
+  background: rgba(38, 99, 235, 0.1);
   color: var(--brand-blue);
+}
+.top-bar-icon-btn:focus-visible {
+  outline: 2px solid var(--brand-blue);
+  outline-offset: 1px;
 }
 
 /* === SETTINGS MODAL (new) === */
@@ -1464,14 +1485,16 @@ textarea {
     padding: max(8px, env(safe-area-inset-top, 0px)) 12px 8px;
   }
   .top-bar-status {
-    min-height: 28px;
-    padding: 4px 10px;
     font-size: 11px;
+    padding: 4px 0;
   }
   .top-bar-icon-btn {
-    width: 34px;
-    height: 34px;
-    font-size: 14px;
+    width: 30px;
+    height: 30px;
+  }
+  .top-bar-icon-btn svg {
+    width: 16px;
+    height: 16px;
   }
   .compose {
     padding: 18px 16px;
