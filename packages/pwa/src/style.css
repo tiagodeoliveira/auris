@@ -389,6 +389,11 @@ button.cta:disabled {
   transition: all 0.2s ease;
   flex-shrink: 0;
 }
+.top-bar-icon-btn svg {
+  width: 20px;
+  height: 20px;
+  display: block;
+}
 .top-bar-icon-btn:hover {
   border-color: var(--brand-blue);
   color: var(--brand-blue);
