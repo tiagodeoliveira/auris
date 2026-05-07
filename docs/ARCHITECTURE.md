@@ -3,9 +3,11 @@
 Real-time meeting summarization with two independent clients and a
 shared server. A native Mac menu-bar app and a phone-hosted PWA each
 connect to a Rust server that owns audio capture, streaming STT, and
-parallel "modes" (transcript, highlights, actions, open questions)
-distilled by per-mode LLM summarizers. The PWA also drives the Even
-Realities G2 glasses display via the EvenHub SDK.
+parallel "modes" (transcript, highlights, actions, open questions).
+A single tool-calling agent loop (Claude Opus 4.7, stateful
+conversation history per meeting) reasons about the live transcript
+and decides what to push to which mode via tool calls. The PWA also
+drives the Even Realities G2 glasses display via the EvenHub SDK.
 
 ```
 ┌──────────────┐                 ┌─────────────────────────┐                ┌──────────────┐
@@ -50,8 +52,8 @@ Modules:
 
 - `ws.rs` — WebSocket entry points (`/`, `/audio`, `/stt`), intent
   dispatch, per-user pipeline lifecycle, the `spawn_live_pipeline`
-  function that wires up STT + four summarizer tasks per active
-  meeting.
+  function that wires up STT + transcript summarizer + agent loop
+  per active meeting.
 - `api.rs` — REST endpoints: `GET/DELETE /api/meetings`, `GET
   /api/meetings/:id`, moment routes, blob serving (`GET /api/blobs/...`).
 - `auth.rs` — Auth0 JWT validation. JWKS fetched lazily, cached by
@@ -72,11 +74,16 @@ Modules:
   dictation mic and the PWA's listening flow both push PCM through
   this; the server owns the Soniox session and broadcasts transcript
   updates back. No provider keys leave the server.
-- `summarizer/` — one module per mode: `transcript` (pass-through, no
-  LLM), `highlights` (20 s heartbeat, replace strategy), `actions` /
-  `open_questions` (15 s heartbeat, append + dedup), and `moment`
-  (per-moment async LLM summary; vision-capable when a screenshot
-  was captured).
+- `summarizer/` — three pipelines:
+  - `transcript` (pass-through, no LLM; emits each finalized chunk
+    as a transcript-mode item).
+  - `agent` (single tool-calling LLM loop per active meeting, with
+    stateful `Vec<rig::Message>` conversation history; emits items
+    into highlights/actions/open_questions via `push_*` /
+    `replace_highlights` tools, and reads attached artifacts via
+    `fetch_artifact_summary` / `fetch_artifact`). See ADR-0011.
+  - `moment` and `artifact` (one-shot async LLM summaries triggered
+    by user action: marking a moment or uploading an artifact).
 - `llm.rs` — `LlmClient` with multi-provider support via `rig`
   (Bedrock / OpenAI / Anthropic). Vision path
   (`extract_with_prompt_and_image`) base64-encodes screenshots and
@@ -224,12 +231,20 @@ ScreenCaptureKit ─┘    timestamp-     finalized +   flushed on        │
                               ▼
                     rolling_transcript ◀── UserState (per user)
                               │
-                              ├─▶ Highlights summarizer (20 s heartbeat)
-                              ├─▶ Actions summarizer    (15 s heartbeat) ─── reads recalled_context
-                              ├─▶ Open Questions       (15 s heartbeat) ─── reads recalled_context
-                              ├─▶ Transcript pass-through
+                              ├─▶ Transcript pass-through (no LLM, raw chunks → items)
                               │
-                              ▼
+                              └─▶ Agent loop (one task per active meeting,
+                                              stateful Vec<Message> history,
+                                              hybrid trigger: tokens / sentences
+                                              / silence / hard cap / kick)
+                                              │
+                                              ├─ tools: push_highlight,
+                                              │         replace_highlights,
+                                              │         push_action,
+                                              │         push_open_question,
+                                              │         fetch_artifact_summary,
+                                              │         fetch_artifact
+                                              ▼
                        items_per_mode  ─▶  Event::ItemsUpdate  ─▶  per-user broadcast bus
                                               │                     │
                                               │                     ├─▶ all WS clients (Mac + PWA)
@@ -248,15 +263,25 @@ Each transcript sentence triggers:
 - A streaming push to mnemo (one `user`-role turn).
 - An append to the per-meeting `transcription.jsonl` blob.
 
-Every 15–20 s, each LLM summarizer:
+The agent fires when any of: ~200 new tokens accumulate,
+4 sentences accumulate, 4 s of silence, 30 s since last fire, or
+a kick (e.g., user attached an artifact). Each fire:
 
-- Reads `rolling_transcript_text()`, existing same-mode items, and
-  (for actions / open_questions) `recalled_context` under the user
-  state lock.
-- Drops the lock, calls `LlmClient::extract_with_prompt`.
-- Re-locks, applies the result via `push_item_for_mode` (append +
-  dedup) or `replace_items_for_mode` (replace).
-- Broadcasts `Event::ItemsUpdate { mode, items }`.
+- Drains the chunk buffer and composes the next user-turn message
+  with new transcript chunks, optional `[event]` blocks, and
+  (first fire only) a `[meeting]` + `[attached artifacts]` header.
+- Calls `agent.prompt(...).with_history(history.clone())
+  .extended_details()` via rig — passes the full prior history,
+  receives back the new turns produced this fire (assistant +
+  tool-call + tool-result messages).
+- Trailing text-only assistant turns are stripped before the new
+  messages are appended onto history (keeps the agent emitting
+  tool calls, not chat).
+- Tool calls execute their side effects: `push_*` /
+  `replace_highlights` mutate state via `push_item_for_mode` /
+  `replace_items_for_mode`, broadcasting `Event::ItemsUpdate`.
+  `fetch_artifact_summary` / `fetch_artifact` read from the
+  artifacts table to ground reasoning.
 
 At meeting Active, the recaller fires one `GET /recall` to mnemo and
 populates `state.recalled_context`. Re-fires if the user edits the
@@ -275,8 +300,9 @@ moment appears in the meeting detail view via `/api/meetings/:id`.
 ADRs covering this flow:
 
 - [0006 — Live audio + STT pipeline](adr/0006-live-audio-stt-pipeline.md)
-- [0007 — Summarizer architecture](adr/0007-summarizer-architecture.md)
+- [0007 — Summarizer architecture](adr/0007-summarizer-architecture.md) (transcript / moment portion; superseded for highlights/actions/open_questions)
 - [0008 — mnemo memory integration](adr/0008-mnemo-memory-integration.md)
+- [0011 — Agentic summarizer loop](adr/0011-agentic-summarizer-loop.md)
 
 ---
 
@@ -312,8 +338,8 @@ ADRs covering this flow:
 
 Two cancellation tokens orthogonalize the two lifetimes:
 
-- `meeting_cancel` covers the audio task, STT adapter, and four
-  summarizer tasks. Scoped to a single Active session.
+- `meeting_cancel` covers the audio task, STT adapter, transcript
+  summarizer, and agent loop. Scoped to a single Active session.
 - `extraction_cancel` covers in-flight LLM-extraction calls and
   in-flight mnemo recalls. Independent — an idle-time
   `ExtractMetadata` survives `start_meeting` (the user shouldn't lose
@@ -383,19 +409,27 @@ Decision and constraints in [ADR-0008](adr/0008-mnemo-memory-integration.md).
 
 ## 7. LLM extraction
 
-Three consumers of one client:
+Four consumers of one client:
 
-- **Metadata extraction** from the meeting description (free-form text →
-  structured `{ project, title, owner, … }`).
-- **Per-mode summarizers** (rolling transcript → mode-specific schema).
+- **Metadata extraction** from the meeting description (free-form text
+  → structured `{ project, title, owner, … }`). Goes through
+  `LlmClient::extract_with_prompt::<Schema>` for typed output.
+- **Agent loop** (live transcript → tool calls). Goes through rig's
+  `Agent.prompt(...).with_history(...).extended_details()` directly
+  (not the typed extractor); a tool surface drives item emission. See
+  ADR-0011.
 - **Moment summaries** (transcript context + screenshot → structured
   note). The vision-capable path base64-encodes the screenshot bytes
   and routes through `extract_with_prompt_and_image`.
+- **Artifact summaries** (uploaded PDF/image/text → short + long
+  summary). One-shot async worker; routes through
+  `extract_with_prompt_and_document_pdf` for PDFs,
+  `extract_with_prompt_and_image` for images, plain
+  `extract_with_prompt` for text.
 
-All three go through `LlmClient::extract_with_prompt[_and_image]::<Schema>`,
-which is backed by [`rig`](https://github.com/0xPlaygrounds/rig) and
-routes to Bedrock, OpenAI, or Anthropic-direct based on
-`MEETING_COMPANION_LLM_PROVIDER`.
+All paths share `rig::providers::{bedrock, openai, anthropic}`,
+routed by `MEETING_COMPANION_LLM_PROVIDER`. The agent loop's default
+model is Claude Opus 4.7 (1M context).
 
 Vision moments use a longer timeout (30 s) than text-only calls (8 s)
 because vision providers are noticeably slower.

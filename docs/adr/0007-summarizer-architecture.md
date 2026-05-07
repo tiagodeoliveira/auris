@@ -1,6 +1,6 @@
 # ADR-0007: Per-mode summarizer architecture
 
-**Status:** Accepted
+**Status:** Partially superseded by [ADR-0011](0011-agentic-summarizer-loop.md) (highlights/actions/open_questions modes only; transcript and moment summarizers continue as decided here).
 **Date:** 2026-05-03
 
 ## Context
