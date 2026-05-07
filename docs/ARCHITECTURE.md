@@ -1,28 +1,39 @@
 # Architecture
 
-Real-time meeting summarization on Even Realities G2 glasses. A
-laptop-hosted Rust server captures audio, runs streaming STT, and
-distills four parallel "modes" (transcript, highlights, actions, open
-questions) via per-mode LLM summarizers. A phone-hosted PWA — running
-inside the EvenHub Flutter WebView — is the user's control surface and
-the conduit to the glasses display.
+Real-time meeting summarization with two independent clients and a
+shared server. A native Mac menu-bar app and a phone-hosted PWA each
+connect to a Rust server that owns audio capture, streaming STT, and
+parallel "modes" (transcript, highlights, actions, open questions)
+distilled by per-mode LLM summarizers. The PWA also drives the Even
+Realities G2 glasses display via the EvenHub SDK.
 
 ```
-┌──────────────────┐   WebSocket   ┌──────────────────────┐    BLE    ┌──────────────┐
-│  Laptop Server   │◀━━━━━━━━━━━━▶│  Phone PWA           │◀━━━━━━━━━▶│  G2 Glasses  │
-│  (Rust)          │  :7331         │  (TS, EvenHub plugin)│   E.R. App│  thin display │
-│                  │                │                      │           │              │
-│  • audio capture │                │  • control surface   │           │  • renders    │
-│  • streaming STT │                │  • mirrors items     │           │    page      │
-│  • summarizers   │                │  • dictation client  │           │    containers│
-│  • LLM extraction│                │  • settings + auth   │           │              │
-│  • mnemo memory  │                │                      │           │              │
-└──────────────────┘                └──────────────────────┘           └──────────────┘
+┌──────────────┐                 ┌─────────────────────────┐                ┌──────────────┐
+│  Mac app     │◀━━ WebSocket ━━▶│  Server (Rust, Docker)  │◀━━━━━━━━━━━━━━▶│  Phone PWA   │
+│  (SwiftUI,   │   :7331         │                         │   :7331        │  (TS, EvenHub│
+│   menu bar)  │                 │  • audio ingest         │                │   WebView)   │
+│              │                 │  • streaming STT (Soniox)│               │              │
+│  • capture   │                 │  • summarizers          │                │  • control   │
+│  • dictation │                 │  • LLM extraction (rig) │                │  • items     │
+│  • overlay   │                 │  • moments + screenshots│                │    mirror    │
+│              │                 │  • mnemo memory         │                │              │
+│  • Auth0     │                 │  • Auth0 / per-user     │                │  • Auth0 SPA │
+│              │                 │  • Postgres + blobs     │                │              │
+└──────────────┘                 └─────────────────────────┘                └──────┬───────┘
+                                                                                   │
+                                                                                   │ BLE
+                                                                                   ▼
+                                                                          ┌──────────────┐
+                                                                          │  G2 Glasses  │
+                                                                          │  (E.R. App)  │
+                                                                          │  thin display│
+                                                                          └──────────────┘
 ```
 
-Two transports: a single WebSocket between server and PWA carries
-state; BLE between phone and glasses (managed by the Even Realities
-companion app, hidden behind the EvenHub SDK) carries the rendered UI.
+Both clients are bidirectional WebSocket peers — each can send intents
+and receive events. Pairing is additive: either client works alone.
+The glasses are PWA-only (LVGL pages built in `packages/pwa/src/glasses/`,
+shipped to the Even Realities companion app over BLE).
 
 ---
 
@@ -30,66 +41,133 @@ companion app, hidden behind the EvenHub SDK) carries the rendered UI.
 
 ### Server — `packages/server/` (Rust)
 
-Source of truth for meeting state. Owns audio capture, STT, LLM
-extraction, summarizers, and the mnemo integration. Single binary,
-single process, single connected WS client at a time.
+The source of truth for active meeting state, per user. Single binary,
+single process, but multi-tenant in shape: state is sharded by `user_id`
+in a `HashMap<UserId, UserState>` and JWT-authenticated WS / REST
+endpoints route every request to its owner.
 
 Modules:
 
-- `ws.rs` — WebSocket entry point, intent dispatch, connection lifetime,
-  spawn-on-boot side tasks (heartbeat, mnemo pusher, mnemo recaller).
-- `state.rs` — `ServerState` and `IntentOutcome`. The state machine.
-  Lock granularity is a single `tokio::sync::Mutex<ServerState>`.
-- `contract.rs` — `Intent`, `Event`, all wire types, `PROTOCOL_VERSION`.
-- `audio/` — ScreenCaptureKit capture + 50 fps in-process mixer.
-  macOS-only.
+- `ws.rs` — WebSocket entry points (`/`, `/audio`, `/stt`), intent
+  dispatch, per-user pipeline lifecycle, the `spawn_live_pipeline`
+  function that wires up STT + four summarizer tasks per active
+  meeting.
+- `api.rs` — REST endpoints: `GET/DELETE /api/meetings`, `GET
+  /api/meetings/:id`, moment routes, blob serving (`GET /api/blobs/...`).
+- `auth.rs` — Auth0 JWT validation. JWKS fetched lazily, cached by
+  `kid`, refetch-on-miss with cooldown to resist forged-`kid` floods.
+  `MEETING_COMPANION_AUTH_DISABLED=1` provides a synthetic dev user
+  for local / CI.
+- `state.rs` — `ServerState` (the multi-user shard), `UserState`
+  (per-user meeting + mode buffers + devices + recalled context),
+  `IntentOutcome` (the state machine's reply shape).
+- `contract.rs` — `Intent`, `Event`, `UserEvent` envelope, all wire
+  types, `PROTOCOL_VERSION`.
+- `audio/` — ScreenCaptureKit local capture (legacy / dev-only path)
+  + `RemoteAudioSource` that ingests PCM frames from the `/audio`
+  WebSocket.
 - `stt/` — `SttAdapter` trait + `SonioxAdapter` (production) +
   `MockAdapter` (offline / CI).
-- `summarizer/` — one module per mode (`transcript`, `highlights`,
-  `actions`, `open_questions`). Each is an async heartbeat task.
+- `stt_ws.rs` — server-mediated STT endpoint (`/stt`). The Mac
+  dictation mic and the PWA's listening flow both push PCM through
+  this; the server owns the Soniox session and broadcasts transcript
+  updates back. No provider keys leave the server.
+- `summarizer/` — one module per mode: `transcript` (pass-through, no
+  LLM), `highlights` (20 s heartbeat, replace strategy), `actions` /
+  `open_questions` (15 s heartbeat, append + dedup), and `moment`
+  (per-moment async LLM summary; vision-capable when a screenshot
+  was captured).
 - `llm.rs` — `LlmClient` with multi-provider support via `rig`
-  (Bedrock / OpenAI / Anthropic).
-- `extraction.rs` — metadata extraction from the meeting description.
+  (Bedrock / OpenAI / Anthropic). Vision path
+  (`extract_with_prompt_and_image`) base64-encodes screenshots and
+  routes through the same provider abstraction.
+- `extraction.rs` — metadata extraction from the meeting description
+  (free-form text → `{ project, title, owner, … }`).
+- `db.rs` — Postgres connection pool, query helpers, redacted URL
+  logging.
+- `persistence.rs` — transcript JSONL writer. Subscribes to the
+  `events_tx` broadcast and appends each finalized transcript item to
+  `<DATA_DIR>/blobs/meetings/<meeting_id>/transcription.jsonl`.
 - `mnemo/` — memory integration. `client.rs` (HTTP), `payload.rs`
   (pure builders), `pusher.rs` (sentence streaming + summary at stop),
-  `recaller.rs` (recall at start), `recall.rs` (response types and
-  prompt formatting).
+  `recall.rs` (recall + prompt formatting).
+
+### Mac app — `packages/mac/` (SwiftUI)
+
+A native macOS menu-bar app. `LSUIElement = true` (accessory app, no
+Dock entry). Two surfaces: the menu bar dropdown and a floating
+overlay panel during meetings.
+
+Files of note:
+
+- `MeetingCompanionApp.swift` — App entry, App Delegate.
+- `AppModel.swift` — central observable model. Mirrors server state:
+  `availableModes`, `currentMode`, `itemsByMode`, `transcriptInterim`,
+  device list. Reduces incoming events; sends intents back.
+- `MenuBarContent.swift` — menu dropdown UI. Status, Start / Stop
+  meeting, Meetings…, Settings…, Permissions….
+- `MeetingOverlayView.swift` — floating overlay panel during meetings.
+  Mode tabs (TRANSCRIPT / HIGHLIGHTS / ACTIONS / QUESTIONS), live items
+  list, Live indicator, dictation mic, mark-moment, stop.
+- `DictationController.swift` — mic-capture → `SttSession` → compose
+  panel description binding for the dictation flow.
+- `Net/`:
+  - `WebSocketClient.swift` — main control / event WS.
+  - `Auth0Client.swift` — native Auth0 OAuth flow, token storage in
+    Keychain.
+  - `MeetingsAPI.swift` — REST client for `/api/meetings`.
+  - `Protocol.swift` — wire types (hand-synced with `contract.rs`).
+  - `SttSession.swift` — `/stt` WS client for the dictation mic path.
+- `Audio/` — `AudioCapture` + `MicCapture` + `AudioStreamer`
+  (system + mic mixer at ~50 fps), `DictationMicCapture` (mic-only
+  for dictation, runs on the realtime audio thread, `@unchecked
+  Sendable` because the tap fires off the main actor).
+- `Capture/ScreenshotCapture.swift` — on-demand screenshot for moments.
+- `Settings/`, `Permissions/` — onboarding, microphone + screen
+  recording prompts, server URL display.
 
 ### PWA — `packages/pwa/` (TypeScript)
 
-The user's control surface. Runs inside the EvenHub Flutter WebView on
-the phone, or inside the EvenHub simulator on a laptop during dev.
-~37 KB gzipped.
+The user's control surface on the phone. Runs inside the EvenHub
+Flutter WebView (via `@evenrealities/even_hub_sdk`'s
+`waitForEvenAppBridge`) or inside the EvenHub simulator on a laptop
+during dev.
 
 Layered roughly as:
 
 - `main.ts` — boot, `waitForEvenAppBridge`, store creation, WS open.
+- `boot.ts` — settings load (bridge + `localStorage` fallback), env
+  defaults, Auth0 SPA flow, first-paint state.
+- `auth.ts` — Auth0 SPA client, token storage, getAccessToken hook.
+- `server-url.ts` — `SERVER_URL` constant from
+  `import.meta.env.VITE_SERVER_URL` (build-time, not runtime; matches
+  the Mac app's `AppSettings.serverURLDefault`).
 - `store.ts` — typed `Store<AppState>` with selector subscriptions.
 - `types.ts` — `AppState`, glasses view enum, derived helpers.
 - `ws.ts` — `ReconnectingSocket`. Backoff-driven reconnect with
   status callbacks.
 - `ws-handlers.ts` — server → store reducer. One case per event type.
-- `boot.ts` — settings load (bridge + `localStorage` fallback), env
-  defaults, first-paint state.
 - `glasses/` — page-container builder. Translates the store's items
   into LVGL-friendly text containers via the EvenHub SDK.
 - `input/` — gesture and lifecycle event routers (temple taps, ring
   taps, foreground/background).
-- `listening.ts` — Soniox client for the meeting-description dictation
-  flow (mic only; runs in the user's browser context).
+- `listening.ts` — `/stt` WS client for the dictation flow (matches
+  the Mac path; PCM through server).
+- `meetings-api.ts` — REST client for `/api/meetings`.
 - `ui/` — DOM components. One file per surface; all self-hide based
   on `meetingState`.
-- `state-machine.ts` — small reducer that maps bridge events to glasses
-  view transitions.
+- `state-machine.ts` — small reducer that maps bridge events to
+  glasses view transitions.
 
 Detailed UX in [`UX.md`](UX.md).
 
 ### Glasses — Even Realities G2 (display only)
 
-Renders page containers built by the PWA via `bridge.createStartUpPageContainer`
-and `bridge.rebuildPageContainer`. No business logic on-glasses; the
-layout-builder code in `packages/pwa/src/glasses/` is the entire
-contract surface. Hardware constraints (ADR-0002):
+Renders page containers built by the PWA via
+`bridge.createStartUpPageContainer` and `bridge.rebuildPageContainer`.
+No business logic on-glasses; the layout-builder code in
+`packages/pwa/src/glasses/` is the entire contract surface. Hardware
+constraints (ADR-0002):
 
 - 576 × 288 px, 4-bit greyscale (16 levels).
 - `ListContainer` cannot be incrementally updated — every change is a
@@ -104,12 +182,27 @@ contract surface. Hardware constraints (ADR-0002):
 
 ## 2. Wire protocol
 
-A single WebSocket on `:7331/?token=<MEETING_COMPANION_TOKEN>`. Two
-hand-maintained contract files (Rust + TS) kept in sync by review.
-Snake-case `type` discriminator, opt-in optional fields, versioned via
-`PROTOCOL_VERSION`. A two-stage intent dispatch produces named errors
-(`bad_json` / `unknown_intent` / `bad_payload`) instead of generic
-deserialize failures.
+Three WebSocket endpoints + a REST API on a single port (7331), all
+JWT-authenticated:
+
+- `GET /` — control WS. Carries `Intent` (client → server) and `Event`
+  (server → client) messages, snake-case `type` discriminator,
+  `PROTOCOL_VERSION` versioned.
+- `GET /audio` — binary PCM frames from a capture-capable client into
+  the server's audio pipeline.
+- `GET /stt` — server-mediated STT. Client sends PCM frames, server
+  owns the Soniox session, broadcasts JSON transcript updates back
+  (`Ready` / `Interim` / `Final` / `Error`).
+- `GET /api/...` — REST endpoints for meetings, moments, blobs.
+
+JWT is passed as `?token=<JWT>` on the WS handshake or as
+`Authorization: Bearer <JWT>` on REST. Auth0 issues the JWT; the
+server validates against Auth0's JWKS. A bypass mode for local dev
+(`MEETING_COMPANION_AUTH_DISABLED=1`) substitutes a synthetic user.
+
+A two-stage intent dispatch produces named errors (`bad_json` /
+`unknown_intent` / `bad_payload`) instead of generic deserialize
+failures.
 
 Full reference in [`PROTOCOL.md`](PROTOCOL.md). Decision in
 [ADR-0004](adr/0004-websocket-protocol.md).
@@ -119,8 +212,8 @@ Full reference in [`PROTOCOL.md`](PROTOCOL.md). Decision in
 ## 3. Data flow during a live meeting
 
 ```
-ScreenCaptureKit ─┐
-   (system audio) │
+ScreenCaptureKit ─┐                                      ┌── /audio WS ──┐
+   (system audio) │                                      │   from Mac    │
                   ├─▶ Audio Mixer ─▶ Soniox WS ─▶ TranscriptChunk ─┐
    (microphone)   │   (50 fps,      (streaming,     (sentence-       │
 ScreenCaptureKit ─┘    timestamp-     finalized +   flushed on        │
@@ -129,15 +222,19 @@ ScreenCaptureKit ─┘    timestamp-     finalized +   flushed on        │
                                                                       │
                               ┌───────────────────────────────────────┘
                               ▼
-                    rolling_transcript ◀── ServerState
+                    rolling_transcript ◀── UserState (per user)
                               │
                               ├─▶ Highlights summarizer (20 s heartbeat)
                               ├─▶ Actions summarizer    (15 s heartbeat) ─── reads recalled_context
                               ├─▶ Open Questions       (15 s heartbeat) ─── reads recalled_context
+                              ├─▶ Transcript pass-through
                               │
                               ▼
-                       items_per_mode  ─▶  Event::ItemsUpdate  ─▶  PWA store  ─▶  glasses + items mirror
-                                              │
+                       items_per_mode  ─▶  Event::ItemsUpdate  ─▶  per-user broadcast bus
+                                              │                     │
+                                              │                     ├─▶ all WS clients (Mac + PWA)
+                                              │                     ├─▶ persistence task → JSONL blob
+                                              │                     └─▶ glasses page rebuilds (PWA)
                                               ▼
                                      mnemo pusher (per sentence: user-role turn)
                                                   (at stop: assistant-role bundle)
@@ -145,16 +242,17 @@ ScreenCaptureKit ─┘    timestamp-     finalized +   flushed on        │
 
 Each transcript sentence triggers:
 
-- Append to `state.rolling_transcript`.
+- Append to that user's `rolling_transcript`.
 - An `Event::ItemsUpdate { mode: "transcript", items }` broadcast to
-  the WS client.
+  the user's WS clients.
 - A streaming push to mnemo (one `user`-role turn).
+- An append to the per-meeting `transcription.jsonl` blob.
 
 Every 15–20 s, each LLM summarizer:
 
 - Reads `rolling_transcript_text()`, existing same-mode items, and
-  (for actions / open_questions) `recalled_context` under the state
-  lock.
+  (for actions / open_questions) `recalled_context` under the user
+  state lock.
 - Drops the lock, calls `LlmClient::extract_with_prompt`.
 - Re-locks, applies the result via `push_item_for_mode` (append +
   dedup) or `replace_items_for_mode` (replace).
@@ -163,8 +261,16 @@ Every 15–20 s, each LLM summarizer:
 At meeting Active, the recaller fires one `GET /recall` to mnemo and
 populates `state.recalled_context`. Re-fires if the user edits the
 project tag mid-meeting. At meeting Idle, the pusher emits one final
-`POST /events` bundling actions/highlights/open_questions as
+`POST /events` bundling actions / highlights / open_questions as
 `assistant`-role turns.
+
+**Moments** are a parallel side-pipeline. On `MarkMoment`, the server
+inserts a moments row, asks a `screen_capture`-capable device for a
+fresh frame, persists the screenshot under
+`<DATA_DIR>/blobs/meetings/<meeting_id>/moments/<moment_id>.jpg`, then
+schedules an async vision-LLM summarizer (`summarizer/moment.rs`) that
+reads back the screenshot bytes and produces a structured note. The
+moment appears in the meeting detail view via `/api/meetings/:id`.
 
 ADRs covering this flow:
 
@@ -206,14 +312,22 @@ ADRs covering this flow:
 
 Two cancellation tokens orthogonalize the two lifetimes:
 
-- `meeting_cancel` covers audio task, STT adapter, summarizer tasks.
-  Scoped to a single Active session.
+- `meeting_cancel` covers the audio task, STT adapter, and four
+  summarizer tasks. Scoped to a single Active session.
 - `extraction_cancel` covers in-flight LLM-extraction calls and
   in-flight mnemo recalls. Independent — an idle-time
   `ExtractMetadata` survives `start_meeting` (the user shouldn't lose
   the chips just because they hit Start), but `stop_meeting` cancels
   any in-flight extraction so a stale recall can't pollute the next
   idle's empty state.
+
+**Boot recovery.** A meeting that was Active when the server crashed
+remains in Postgres with `ended_at IS NULL`. On startup, the server
+scans for these rows (cheap via the partial index
+`idx_meetings_active`), respawns the live pipeline for each, and
+broadcasts a synthetic state-change event so reconnecting clients see
+`Active`. The previous WS audio source is gone — the recovered meeting
+sits idle until a capture-capable client reconnects and binds.
 
 `ExtractMetadata` decision in [ADR-0010](adr/0010-extract-metadata-flow.md).
 
@@ -269,16 +383,22 @@ Decision and constraints in [ADR-0008](adr/0008-mnemo-memory-integration.md).
 
 ## 7. LLM extraction
 
-Two consumers of one client:
+Three consumers of one client:
 
-- Metadata extraction from the meeting description (free-form text →
+- **Metadata extraction** from the meeting description (free-form text →
   structured `{ project, title, owner, … }`).
-- Per-mode summarizers (rolling transcript → mode-specific schema).
+- **Per-mode summarizers** (rolling transcript → mode-specific schema).
+- **Moment summaries** (transcript context + screenshot → structured
+  note). The vision-capable path base64-encodes the screenshot bytes
+  and routes through `extract_with_prompt_and_image`.
 
-Both go through `LlmClient::extract_with_prompt::<Schema>`, which is
-backed by [`rig`](https://github.com/0xPlaygrounds/rig) and routes to
-Bedrock, OpenAI, or Anthropic-direct based on
+All three go through `LlmClient::extract_with_prompt[_and_image]::<Schema>`,
+which is backed by [`rig`](https://github.com/0xPlaygrounds/rig) and
+routes to Bedrock, OpenAI, or Anthropic-direct based on
 `MEETING_COMPANION_LLM_PROVIDER`.
+
+Vision moments use a longer timeout (30 s) than text-only calls (8 s)
+because vision providers are noticeably slower.
 
 Decision in [ADR-0005](adr/0005-multi-provider-llm.md).
 
@@ -286,48 +406,97 @@ Decision in [ADR-0005](adr/0005-multi-provider-llm.md).
 
 ## 8. Persistence
 
-Two state surfaces survive a process restart:
+Three persistence surfaces, each with a clear job:
 
-- **Settings** (server URL, server token, last metadata) — in the PWA,
-  via `bridge.setLocalStorage` with browser `localStorage` fallback.
+### 8.1 Postgres (relational state)
+
+Schema in `packages/server/migrations/0001_initial_schema.sql`:
+
+- `users` — `id` (UUID v4 we mint), `auth0_sub` (Auth0's stable id),
+  `email` / `name` (best-effort from JWT claims), timestamps.
+- `meetings` — `id`, `user_id` (CASCADE), `started_at`, `ended_at`
+  (NULL while active), `description`, `metadata` (JSON-as-TEXT).
+  Composite index on `(user_id, started_at DESC)` for the dominant
+  list-meetings read pattern. Partial index on active meetings for
+  cheap boot-recovery scans.
+- `moments` — `id`, `meeting_id` (CASCADE), `kind`, `t` (millisecond
+  offset from `started_at`), `note`, `asset_path` (relative path
+  under `<DATA_DIR>/blobs`), `summary`, `summary_status`
+  (`pending` / `done` / `failed`).
+
+`metadata` is intentionally JSON-as-TEXT (not `JSONB`) because the
+access pattern is "load the blob, hand it to the client" — there are
+no server-side filters into the JSON yet. One-line `ALTER` if that
+ever changes.
+
+### 8.2 Blob storage (transcript JSONL + moment screenshots)
+
+`<DATA_DIR>/blobs/meetings/<meeting_id>/`:
+
+- `transcription.jsonl` — one JSON-encoded `Item` per line, appended
+  by `persistence.rs` as the transcript-mode broadcast fires. The
+  ground truth for a meeting; highlights / actions / open_questions
+  are derived from it and could be re-run if lost.
+- `moments/<moment_id>.jpg` — screenshot for each moment.
+
+Local dev uses the filesystem directly. The shape is intentionally
+S3-compatible (one prefix per meeting) so `S3BlobStore` is an additive
+swap when horizontal scale arrives (see `PLAN.md` §4).
+
+### 8.3 mnemo (cross-session memory)
+
+See §6. The summary bundle pushed at meeting stop is the source of
+truth for cross-meeting recall.
+
+### 8.4 What's NOT persisted in the DB
+
+- **Items per mode** (highlights / actions / open_questions). They
+  live in `UserState` in memory only. Re-derivable from the transcript
+  by replaying the summarizers if we ever build a "review meeting"
+  feature.
+- **Devices.** Registered per WS connection, in-memory only.
+- **`recalled_context`.** Fetched from mnemo at meeting start; not
+  cached server-side beyond the active meeting.
+- **PWA settings** (server URL, last metadata) — in the PWA, via
+  `bridge.setLocalStorage` with browser `localStorage` fallback.
   Per-key debounced writes, ~500 ms.
-- **mnemo memories** — in mnemo. AgentCore-managed, not under the
-  companion's direct control.
 
-The server itself is stateless across restarts. A meeting in flight
-when the server crashes is lost; the PWA reconnects, sees Idle, and
-the user starts again. Acceptable for the personal-project scope.
+### 8.5 Crash semantics
+
+A meeting Active when the server crashes remains in Postgres with
+`ended_at IS NULL`. On restart the server respawns its live pipeline
+(see §4 Boot recovery). Items per mode are lost — they were in-memory
+only. The transcript JSONL on disk is intact, so summarizers replay
+from a clean state and items rebuild as the conversation continues.
 
 ---
 
-## 9. Status and roadmap
+## 9. Identity & multi-tenancy
 
-**Phase 0 (simulator-first stub) — complete.** Server (110 tests),
-PWA (66 unit tests + 2 simulator-gated integration tests skipped on no
-sim) green. Four glasses layouts, ReconnectingSocket reconciliation,
-Soniox dictation flow, end-to-end against EvenHub simulator.
+The server is multi-tenant in shape. Two clients share the same
+identity model:
 
-**Phase 1 (real hardware sideload) — pending.** Manual checklist in
-`packages/pwa/README.md`. Open items: empirical source-distinction for
-G2 vs R1 events (ADR-0001 follow-up), full-restart persistence
-verification (ADR-0003 follow-up), LVGL font metrics calibration.
-
-**Phase 2 (real audio + LLM extraction + memory) — complete.**
-
-- Step 16 — LLM metadata extraction, multi-provider via `rig`
-  (ADR-0005).
-- Step 15 — live ScreenCaptureKit audio + Soniox STT + parallel mode
-  summarizers (ADR-0006, ADR-0007).
-- Step 18 — mnemo memory integration: streaming push, summary at stop,
-  recall at start, per-mode prior-context toggle (ADR-0008).
-
-Step 17 (dynamic mode catalog) was deferred indefinitely — see
-[ADR-0007](adr/0007-summarizer-architecture.md) for why.
-
-**Future directions** (not currently scheduled): meeting-specific
-mnemo namespace (`/meetings/{actorId}/{meetingId}/`) when mnemo's
-strategy layer can support it; multi-meeting browse / recap UI;
-calendar integration.
+- **Auth0 as the IdP.** Mac uses the Auth0 native flow with
+  Authorization Code + PKCE; tokens stored in Keychain. PWA uses the
+  Auth0 SPA flow; tokens persisted via `bridge.setLocalStorage` with
+  `localStorage` fallback.
+- **JWT validation.** Every WS / REST request carries the JWT.
+  `auth.rs` validates against Auth0's JWKS, caching keys by `kid` with
+  a refetch-on-miss cooldown to resist forged-`kid` flooding.
+- **Per-user state shard.** `ServerState` holds a `HashMap<UserId,
+  UserState>`. Each user's `UserState` has its own
+  `rolling_transcript`, items per mode, devices, recalled context,
+  and in-flight cancellation tokens.
+- **Per-user broadcast.** Events go through a shared bus wrapped in a
+  `UserEvent { user_id, event }` envelope. Clients only see events
+  for their own `user_id`.
+- **Cross-user isolation.** STT, audio frames, summarizers, and
+  persistence are all keyed on `user_id` end-to-end. Cross-user
+  contamination is structurally prevented (the `state` API never
+  exposes a "global" mutator).
+- **Bypass for dev / CI.** `MEETING_COMPANION_AUTH_DISABLED=1`
+  substitutes a synthetic user so the local dev path runs without
+  cloud auth.
 
 ---
 
