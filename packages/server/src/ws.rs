@@ -102,6 +102,12 @@ pub struct ServerHandle {
     /// Mirror channel for artifact uploads (`POST /artifacts`).
     /// Subscribed by the artifact-summary worker.
     pub artifact_created_tx: broadcast::Sender<crate::api::ArtifactCreated>,
+    /// Kick the agent loop into firing immediately for a specific
+    /// user. Sent by API handlers when something happens that the
+    /// agent should react to without waiting for the next
+    /// transcript-driven trigger (today: artifact attach to a
+    /// running meeting). Subscribed by the agent task.
+    pub agent_kick_tx: broadcast::Sender<crate::summarizer::agent::AgentKick>,
 }
 
 impl ServerHandle {
@@ -201,6 +207,7 @@ pub async fn run_server_with_listener(
     crate::persistence::spawn_task(state.clone(), &events_tx);
     let (moment_created_tx, _) = broadcast::channel::<crate::api::MomentCreated>(64);
     let (artifact_created_tx, _) = broadcast::channel::<crate::api::ArtifactCreated>(64);
+    let (agent_kick_tx, _) = broadcast::channel::<crate::summarizer::agent::AgentKick>(32);
     let handle = ServerHandle {
         state,
         events_tx,
@@ -214,6 +221,7 @@ pub async fn run_server_with_listener(
         db,
         moment_created_tx,
         artifact_created_tx,
+        agent_kick_tx,
     };
 
     // Async LLM worker that fills in moment summaries. Subscribes
@@ -337,6 +345,7 @@ fn make_app_router(handle: ServerHandle) -> Router {
         auth: handle.auth.clone(),
         moment_created_tx: handle.moment_created_tx.clone(),
         artifact_created_tx: handle.artifact_created_tx.clone(),
+        agent_kick_tx: handle.agent_kick_tx.clone(),
     };
     let api_router = crate::api::make_router(api_state);
     let ws_router = Router::new()
@@ -1195,6 +1204,7 @@ async fn spawn_live_pipeline(handle: ServerHandle, user_id: String, cancel: Canc
             Arc::clone(&handle.state),
             handle.db.clone(),
             chunk_tx.subscribe(),
+            handle.agent_kick_tx.subscribe(),
             handle.events_tx.clone(),
             user_id.clone(),
             Arc::clone(&handle.llm),

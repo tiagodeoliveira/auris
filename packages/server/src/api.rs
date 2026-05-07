@@ -107,6 +107,10 @@ pub struct ApiState {
     /// `POST /artifacts` publishes here; the async summary worker
     /// subscribes.
     pub artifact_created_tx: broadcast::Sender<ArtifactCreated>,
+    /// Kick the agent loop for a specific user. Sent on artifact
+    /// attach so the agent fires immediately and picks up the new
+    /// artifact in its next working-context build.
+    pub agent_kick_tx: broadcast::Sender<crate::summarizer::agent::AgentKick>,
 }
 
 /// Build the axum Router with all endpoints wired up. CORS is
@@ -670,6 +674,16 @@ async fn attach_artifact(
     crate::db::attach_artifact_to_meeting(&state.db, &meeting_id, &body.artifact_id)
         .await
         .map_err(|e| ApiError::Db(downcast_db(e)))?;
+    // Kick the agent so it sees the new artifact on its next fire
+    // immediately, rather than waiting for the next transcript
+    // trigger. Closed-channel send is silent (test routers without
+    // a worker still serve attaches).
+    let _ = state
+        .agent_kick_tx
+        .send(crate::summarizer::agent::AgentKick {
+            user_id: user_id.clone(),
+            reason: crate::summarizer::agent::AgentKickReason::ArtifactAttached,
+        });
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -808,6 +822,7 @@ mod tests {
     async fn router_with_dev_user(pool: PgPool) -> (Router, String) {
         let (moment_created_tx, _) = broadcast::channel::<MomentCreated>(8);
         let (artifact_created_tx, _) = broadcast::channel::<ArtifactCreated>(8);
+        let (agent_kick_tx, _) = broadcast::channel::<crate::summarizer::agent::AgentKick>(8);
         let dev_user = crate::db::upsert_user_by_auth0_sub(
             &pool,
             crate::ws::DEV_AUTH0_SUB,
@@ -821,6 +836,7 @@ mod tests {
             auth: Arc::new(crate::ws::AuthMode::Disabled),
             moment_created_tx,
             artifact_created_tx,
+            agent_kick_tx,
         });
         (router, dev_user.id)
     }

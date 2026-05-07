@@ -58,6 +58,14 @@ const AGENT_TRIGGER_TOKENS_DEFAULT: usize = 200;
 const AGENT_TRIGGER_SILENCE_MS_DEFAULT: u64 = 4000;
 const AGENT_TRIGGER_MAX_MS_DEFAULT: u64 = 30_000;
 
+/// Sentence-count trigger. The token threshold favors multi-speaker
+/// chatter (lots of small chunks); a single-speaker monologue can
+/// arrive as one ~30-second chunk and not hit the silence boundary
+/// for a while. Counting sentences across the buffer (split by
+/// `.!?`) gives a substance-based trigger that fires the same way
+/// for "1 chunk, 5 sentences" and "5 chunks, 5 sentences".
+const AGENT_TRIGGER_SENTENCES_DEFAULT: usize = 4;
+
 /// Tail-window cap on transcript chunks the agent sees verbatim.
 /// PLAN.md §3.5 starts at N=80 (~5-10 minutes of speech). Older
 /// chunks are dropped when the window exceeds this — v1 has no
@@ -702,6 +710,7 @@ pub fn spawn_meeting_agent(
     state: Arc<Mutex<ServerState>>,
     db: sqlx::PgPool,
     transcript_rx: broadcast::Receiver<TranscriptChunk>,
+    kick_rx: broadcast::Receiver<AgentKick>,
     events_tx: broadcast::Sender<UserEvent>,
     user_id: String,
     llm: Arc<LlmClient>,
@@ -710,11 +719,13 @@ pub fn spawn_meeting_agent(
     let token_threshold = env_usize("AGENT_TRIGGER_TOKENS", AGENT_TRIGGER_TOKENS_DEFAULT);
     let silence_ms = env_u64("AGENT_TRIGGER_SILENCE_MS", AGENT_TRIGGER_SILENCE_MS_DEFAULT);
     let max_ms = env_u64("AGENT_TRIGGER_MAX_MS", AGENT_TRIGGER_MAX_MS_DEFAULT);
+    let sentence_threshold = env_usize("AGENT_TRIGGER_SENTENCES", AGENT_TRIGGER_SENTENCES_DEFAULT);
 
     tokio::spawn(async move {
         info!(
             user_id = %user_id,
             token_threshold,
+            sentence_threshold,
             silence_ms,
             max_ms,
             "agent loop started",
@@ -725,6 +736,7 @@ pub fn spawn_meeting_agent(
         let mut last_fire_at = Instant::now();
         let mut last_chunk_at: Option<Instant> = None;
         let mut transcript_rx = transcript_rx;
+        let mut kick_rx = kick_rx;
         // 500 ms tick covers silence + hard-cap checks; chunks that
         // arrive between ticks are still picked up immediately on
         // the recv() arm via the token-threshold path.
@@ -743,12 +755,20 @@ pub fn spawn_meeting_agent(
                             if chunk.user_id != user_id { continue; }
                             buffer.push(chunk);
                             last_chunk_at = Some(Instant::now());
-                            // Token-threshold check immediately after buffer push.
+                            // Token + sentence threshold check after each
+                            // chunk push. Token covers "lots of text";
+                            // sentence covers "many complete thoughts" —
+                            // the latter fires similarly for monologues
+                            // and multi-speaker exchanges.
                             let approx_tokens: usize = buffer
                                 .iter()
                                 .map(|c| c.text.len() / CHARS_PER_TOKEN)
                                 .sum();
-                            if approx_tokens >= token_threshold {
+                            let sentences: usize = buffer
+                                .iter()
+                                .map(|c| count_sentences(&c.text))
+                                .sum();
+                            if approx_tokens >= token_threshold || sentences >= sentence_threshold {
                                 fire(&state, &db, &events_tx, &user_id, &llm, &mut buffer, &mut tail_window).await;
                                 last_fire_at = Instant::now();
                                 last_chunk_at = None;
@@ -760,6 +780,36 @@ pub fn spawn_meeting_agent(
                         Err(broadcast::error::RecvError::Closed) => {
                             info!(user_id = %user_id, "agent loop transcript channel closed");
                             return;
+                        }
+                    }
+                }
+                kick_result = kick_rx.recv() => {
+                    match kick_result {
+                        Ok(kick) if kick.user_id == user_id => {
+                            // Instant fire on artifact attach (or future
+                            // SystemNotice causes). Skips threshold checks
+                            // entirely so the agent reacts within a turn
+                            // of the user attaching context. The fire
+                            // queries attached_artifacts fresh in
+                            // build_working_context, so the new artifact
+                            // shows up in the same fire that was kicked.
+                            info!(
+                                user_id = %user_id,
+                                reason = ?kick.reason,
+                                "agent loop kicked",
+                            );
+                            fire(&state, &db, &events_tx, &user_id, &llm, &mut buffer, &mut tail_window).await;
+                            last_fire_at = Instant::now();
+                            last_chunk_at = None;
+                        }
+                        Ok(_) => { /* kick for another user — ignore */ }
+                        Err(broadcast::error::RecvError::Lagged(n)) => {
+                            warn!(lagged = n, user_id = %user_id, "agent loop kick channel lagged");
+                        }
+                        Err(broadcast::error::RecvError::Closed) => {
+                            // Kick channel closing isn't fatal; the loop
+                            // still reacts to transcripts and ticks.
+                            warn!(user_id = %user_id, "agent loop kick channel closed");
                         }
                     }
                 }
@@ -1079,7 +1129,34 @@ fn write_items_section(buf: &mut String, mode: &str, items: &[Item]) {
     }
 }
 
+// ─── Kick channel ───────────────────────────────────────────────────────
+
+/// Sent on `ServerHandle.agent_kick_tx` to ask the agent loop to
+/// fire immediately for a specific user. Today there's one trigger
+/// — an artifact was attached — but the type is open-ended so
+/// future SystemNotice-style causes can use the same channel.
+#[derive(Debug, Clone)]
+pub struct AgentKick {
+    pub user_id: String,
+    pub reason: AgentKickReason,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum AgentKickReason {
+    ArtifactAttached,
+}
+
 // ─── Helpers ────────────────────────────────────────────────────────────
+
+/// Count complete sentences in `text` by tallying terminator
+/// punctuation. ASCII `.!?` plus the CJK full-stop we already use
+/// in soniox.rs's terminator detection. Trailing punctuation that
+/// ends the string still counts (so "Hello." is one sentence).
+fn count_sentences(text: &str) -> usize {
+    text.chars()
+        .filter(|c| matches!(c, '.' | '!' | '?' | '。'))
+        .count()
+}
 
 fn env_usize(key: &str, default: usize) -> usize {
     std::env::var(key)
@@ -1198,6 +1275,20 @@ mod tests {
         // The/of/a noise gets stripped so dedup focuses on content.
         let words = significant_words("The cat sat on the mat");
         assert!(words.contains("cat") || !words.contains("the"));
+    }
+
+    #[test]
+    fn count_sentences_handles_multiple_terminators() {
+        assert_eq!(count_sentences("Hello world."), 1);
+        assert_eq!(count_sentences("Hello! How are you?"), 2);
+        assert_eq!(
+            count_sentences("This is a test. With three sentences. And one more."),
+            3
+        );
+        assert_eq!(count_sentences(""), 0);
+        assert_eq!(count_sentences("no punctuation here"), 0);
+        // CJK full-stop counts.
+        assert_eq!(count_sentences("こんにちは。さようなら。"), 2);
     }
 
     #[test]
