@@ -6,6 +6,7 @@ import {
 import type { AppState } from "../types";
 import { activeItems } from "../types";
 import { formatActiveListBody } from "./format-active-list";
+import { formatActiveChatBody } from "./format-active-chat";
 
 const HEADER_ID = 1;
 const BODY_ID = 2;
@@ -78,6 +79,13 @@ function buildHeader(state: AppState): string {
 }
 
 function buildBody(state: AppState): string {
+  // Chat is a flowing thread, not a bullet list — single-line
+  // truncation drops most of an assistant answer. The chat
+  // formatter wraps each turn across multiple lines and pins the
+  // latest exchange to the bottom of the visible window.
+  if (state.currentMode === "chat") {
+    return formatActiveChatBody(activeItems(state), CHARS_PER_LINE, LINES_PER_SCREEN);
+  }
   return formatActiveListBody(
     activeItems(state),
     state.highlightIndex,

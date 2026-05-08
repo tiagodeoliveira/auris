@@ -29,6 +29,14 @@ function handleInput(eventType: number, store: Store, send: SendIntent): void {
 
   switch (eventType) {
     case OsEventTypeList.CLICK_EVENT: {
+      // Chat mode doesn't use the list→detail transition: chat
+      // items are already the full content, and the chat-mode
+      // body wraps them across multiple lines. Click in chat is
+      // a no-op for now (could later be repurposed, e.g. for a
+      // voice-input dictation toggle).
+      if (state.glassesView === "active_list" && state.currentMode === "chat") {
+        return;
+      }
       const next = computeNextGlassesView(state.glassesView, { kind: "ring_click" }, {});
       const patch: Parameters<Store["update"]>[0] = { glassesView: next };
       if (state.glassesView === "active_list" && next === "active_detail") {
