@@ -196,6 +196,45 @@ pub async fn find_active_meetings_per_user(
     Ok(rows)
 }
 
+/// Persist the per-meeting LLM usage rollup + the model that
+/// produced it. Called once at meeting stop, after the in-memory
+/// `LlmUsageTracker` is drained. Storing `provider` + `model_id`
+/// alongside the counts means a future cost-rollup view can apply
+/// the right per-token rates against the right model for each
+/// meeting — even after rates change or models are deprecated.
+pub async fn record_meeting_llm_usage(
+    pool: &PgPool,
+    meeting_id: &str,
+    provider: &str,
+    model_id: &str,
+    calls: u64,
+    input_tokens: u64,
+    output_tokens: u64,
+    cached_input_tokens: u64,
+) -> Result<()> {
+    sqlx::query(
+        r#"UPDATE meetings
+              SET llm_calls               = $1,
+                  llm_input_tokens        = $2,
+                  llm_output_tokens       = $3,
+                  llm_cached_input_tokens = $4,
+                  llm_provider            = $5,
+                  llm_model_id            = $6
+            WHERE id = $7"#,
+    )
+    .bind(calls as i64)
+    .bind(input_tokens as i64)
+    .bind(output_tokens as i64)
+    .bind(cached_input_tokens as i64)
+    .bind(provider)
+    .bind(model_id)
+    .bind(meeting_id)
+    .execute(pool)
+    .await
+    .with_context(|| format!("record_meeting_llm_usage({meeting_id})"))?;
+    Ok(())
+}
+
 /// Mark a meeting as ended at the given timestamp. No-op (silently)
 /// if `meeting_id` doesn't exist or has already been ended.
 pub async fn end_meeting(pool: &PgPool, meeting_id: &str, ended_at: DateTime<Utc>) -> Result<()> {

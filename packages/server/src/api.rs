@@ -200,6 +200,26 @@ struct MeetingDetail {
     /// Transcript items are NOT in this map — they live in the
     /// `transcript` field above, sourced from the JSONL blob.
     items_by_mode: std::collections::HashMap<String, Vec<Item>>,
+    /// LLM usage for this meeting (recorded at stop). All zero +
+    /// `provider`/`model_id` null on meetings that ended before
+    /// the migration, or on meetings that hit some failure path
+    /// that bypassed the rollup persist. Multiply tokens by the
+    /// model's per-token rates to get $.
+    llm_usage: MeetingLlmUsage,
+}
+
+#[derive(Debug, Serialize)]
+struct MeetingLlmUsage {
+    calls: i64,
+    input_tokens: i64,
+    output_tokens: i64,
+    cached_input_tokens: i64,
+    /// "bedrock" / "openai" / "anthropic". `None` for meetings
+    /// from before the migration.
+    provider: Option<String>,
+    /// e.g. "claude-opus-4-7". `None` for meetings from before
+    /// the migration.
+    model_id: Option<String>,
 }
 
 /// Wire shape for a moment. Mirrors `db::MomentRow` minus internal
@@ -257,6 +277,36 @@ async fn get_meeting(
     let Some(row) = row else {
         return Err(ApiError::NotFound);
     };
+    let usage_row: Option<(i64, i64, i64, i64, Option<String>, Option<String>)> = sqlx::query_as(
+        r#"SELECT llm_calls, llm_input_tokens, llm_output_tokens,
+                  llm_cached_input_tokens, llm_provider, llm_model_id
+             FROM meetings WHERE id = $1"#,
+    )
+    .bind(&row.id)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(ApiError::Db)?;
+    let llm_usage = usage_row
+        .map(
+            |(calls, input_tokens, output_tokens, cached_input_tokens, provider, model_id)| {
+                MeetingLlmUsage {
+                    calls,
+                    input_tokens,
+                    output_tokens,
+                    cached_input_tokens,
+                    provider,
+                    model_id,
+                }
+            },
+        )
+        .unwrap_or(MeetingLlmUsage {
+            calls: 0,
+            input_tokens: 0,
+            output_tokens: 0,
+            cached_input_tokens: 0,
+            provider: None,
+            model_id: None,
+        });
     let transcript = read_transcript(&row.id).await;
     let moments = crate::db::list_moments_for_meeting(&state.db, &row.id)
         .await
@@ -290,6 +340,7 @@ async fn get_meeting(
         moments,
         artifacts,
         items_by_mode,
+        llm_usage,
     }))
 }
 

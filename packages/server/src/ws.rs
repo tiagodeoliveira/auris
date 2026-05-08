@@ -940,6 +940,8 @@ async fn dispatch_intent(
         // to dollars by multiplying by the model's per-token rates.
         let usage = handle.llm.take_usage(user_id);
         let billable_input = usage.input_tokens.saturating_sub(usage.cached_input_tokens);
+        let provider = format!("{:?}", handle.llm.provider()).to_lowercase();
+        let model_id = handle.llm.model_id().to_string();
         tracing::info!(
             user_id,
             calls = usage.calls,
@@ -947,8 +949,36 @@ async fn dispatch_intent(
             output_tokens = usage.output_tokens,
             cached_input_tokens = usage.cached_input_tokens,
             billable_input_tokens = billable_input,
+            %provider,
+            %model_id,
             "llm_usage_at_stop"
         );
+        // Persist the rollup to the meetings row so historical cost
+        // can be derived from DB later. `outcome.closed_meeting`
+        // carries the just-closed id when the stop intent
+        // transitioned us out of Active. None means the stop hit an
+        // already-idle state (no-op) — usage logged but not
+        // persisted.
+        if let Some(closed) = outcome.closed_meeting.as_ref() {
+            let pool = handle.db.clone();
+            let meeting_id = closed.id.clone();
+            tokio::spawn(async move {
+                if let Err(e) = crate::db::record_meeting_llm_usage(
+                    &pool,
+                    &meeting_id,
+                    &provider,
+                    &model_id,
+                    usage.calls,
+                    usage.input_tokens,
+                    usage.output_tokens,
+                    usage.cached_input_tokens,
+                )
+                .await
+                {
+                    tracing::warn!(error = ?e, %meeting_id, "record_meeting_llm_usage failed");
+                }
+            });
+        }
     }
 
     // Persistence side-effects. None of these block the broadcast

@@ -245,6 +245,19 @@ impl LlmClient {
         self.provider
     }
 
+    /// The model id currently routed to (e.g. `"claude-opus-4-7"`,
+    /// `"gpt-4o"`, `"us.anthropic.claude-sonnet-4-7-20251015-v1:0"`).
+    /// Persisted alongside the per-meeting usage at stop so future
+    /// cost computations can use the exact per-model rates that
+    /// applied at the time of the meeting.
+    pub fn model_id(&self) -> &str {
+        match &self.backend {
+            LlmBackend::Bedrock { model_id, .. } => model_id,
+            LlmBackend::OpenAI { model_id, .. } => model_id,
+            LlmBackend::Anthropic { model_id, .. } => model_id,
+        }
+    }
+
     /// Drain and return the per-user usage counter. Called by `ws.rs` at
     /// meeting stop to log the per-meeting summary; subsequent records for
     /// the same user start fresh.
