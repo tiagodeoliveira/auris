@@ -71,11 +71,11 @@ export function mountItemsMirror(parent: HTMLElement, store: Store): void {
     // Q+A pairs replace each other on each exchange; no thread.
     if (s.currentMode === "chat") {
       for (const item of items) {
-        const role =
-          ((item.meta as Record<string, unknown> | null | undefined)?.role as string) ??
-          "assistant";
+        const meta = item.meta as Record<string, unknown> | null | undefined;
+        const role = (meta?.role as string) ?? "assistant";
+        const pending = meta?.pending === true;
         const row = document.createElement("article");
-        row.className = `chat-bubble chat-bubble-${role}`;
+        row.className = `chat-bubble chat-bubble-${role}${pending ? " chat-bubble-pending" : ""}`;
         const body = document.createElement("div");
         body.className = "chat-bubble-body";
         body.textContent = item.text;
@@ -137,7 +137,13 @@ export function mountItemsMirror(parent: HTMLElement, store: Store): void {
   render();
   store.subscribe((s) => s.meetingState, render);
   store.subscribe((s) => s.currentMode, render);
-  store.subscribe((s) => s.liveTranscriptInterim, render);
+  // Gate the interim-transcript subscription on the current mode.
+  // Interim text updates several times per second during active
+  // speech; without the gate, every chat / summary / etc. re-render
+  // would `pane.innerHTML = ""` + full rebuild on each interim
+  // packet, flickering the whole pane. The actual interim line is
+  // rendered only in transcript mode anyway.
+  store.subscribe((s) => (s.currentMode === "transcript" ? s.liveTranscriptInterim : ""), render);
   store.subscribe(
     (s) =>
       `${s.itemsByMode[s.currentMode]?.length ?? 0}|${s.itemsByMode[s.currentMode]?.[s.itemsByMode[s.currentMode].length - 1]?.id ?? ""}`,

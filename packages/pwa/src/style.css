@@ -984,6 +984,17 @@ button.cta:disabled {
   white-space: pre-wrap;
   word-break: break-word;
 }
+/* Pending placeholder ("Thinking…") — italic + slow-pulse so the
+   user can tell the agent is still working vs. a real reply. */
+.chat-bubble-pending .chat-bubble-body {
+  font-style: italic;
+  opacity: 0.65;
+  animation: chat-thinking-pulse 1.4s ease-in-out infinite;
+}
+@keyframes chat-thinking-pulse {
+  0%, 100% { opacity: 0.55; }
+  50% { opacity: 0.95; }
+}
 
 /* Chat input — fixed at the bottom of the active-meeting layout
    when chat mode is current. Mounted after items-mirror and

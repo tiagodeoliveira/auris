@@ -575,12 +575,19 @@ final class AppModel {
         case .meetingStateChanged(let state, let meetingId):
             currentMeetingId = meetingId
             if state == "idle" {
-                metadata = [:]
-                extractingMetadata = false
-                audioToBackendPaused = false
-                // Anything we didn't manage to attach (e.g., server
-                // failure during start) is dropped — the user can
-                // re-pick on the next compose.
+                // The meeting stopped — could be us (this Mac sent
+                // StopMeeting), the PWA (other client), or a server
+                // restart. In every case we need to:
+                //   1. Tear down local audio capture so isMeetingActive
+                //      flips false. The overlay's .onChange watches
+                //      that and dismisses the meeting-overlay window
+                //      when it flips during a live/starting session.
+                //   2. Clear per-meeting transient state.
+                // Without (1), pressing Stop on the PWA leaves the Mac
+                // overlay stuck in the live view forever — even local
+                // Stop clicks become no-ops because the server is
+                // already idle.
+                localMeetingTeardown()
                 pendingArtifactAttachments = []
                 currentMeetingAttachedArtifactIds = []
             }
@@ -668,14 +675,41 @@ final class AppModel {
 
     /// Send a user chat message to the agent. Server validates that
     /// a meeting is active/paused; the agent's reply lands as a new
-    /// chat-mode item via the standard `ItemsUpdate` event. No
-    /// optimistic echo — the UI shows the question only after the
-    /// server replies, keeping the displayed state in sync with the
-    /// agent's actual history.
+    /// chat-mode item via the standard `ItemsUpdate` event.
+    ///
+    /// Optimistic echo: the user's question + a "Thinking…"
+    /// placeholder are pushed into chat-mode items immediately, so
+    /// the UI shows the question lock in instead of staring at an
+    /// empty pane for 3-10 s. The server's `ItemsUpdate` overwrites
+    /// the placeholder pair with the real Q+A — items count stays
+    /// at 2; only the IDs and assistant text change.
     func sendChat(_ text: String) async {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         guard webSocket.state == .connected else { return }
+        let userBubble = Item(
+            id: "chat-q-pending-\(UUID().uuidString)",
+            text: trimmed,
+            detail: nil,
+            t: 0,
+            meta: ItemMeta(
+                speaker: nil, role: "user",
+                importance: nil, owner: nil, due: nil,
+                kind: nil, context: nil
+            )
+        )
+        let pendingBubble = Item(
+            id: "chat-a-pending-\(UUID().uuidString)",
+            text: "Thinking…",
+            detail: nil,
+            t: 0,
+            meta: ItemMeta(
+                speaker: nil, role: "assistant-pending",
+                importance: nil, owner: nil, due: nil,
+                kind: nil, context: nil
+            )
+        )
+        itemsByMode["chat"] = [userBubble, pendingBubble]
         do {
             try await webSocket.send(intent: ChatIntent(text: trimmed))
         } catch {

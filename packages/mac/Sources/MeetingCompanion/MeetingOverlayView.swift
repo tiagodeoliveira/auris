@@ -529,11 +529,23 @@ struct MeetingOverlayView: View {
             .tint(MCTheme.blue)
             .disabled(chatBusy || chatDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         }
-        .onChange(of: itemsCountForCurrentMode) { _, _ in
-            // The agent's reply landing as a new chat item flips
-            // chatBusy off — UI re-enables for the next question.
-            chatBusy = false
+        .onChange(of: hasPendingChatBubble) { _, pending in
+            // While a `meta.role == "assistant-pending"` bubble sits
+            // in chat-mode items, we're waiting on the agent. The
+            // server's ItemsUpdate replaces it with a real assistant
+            // bubble (role == "assistant") → flip back to enabled.
+            chatBusy = pending
         }
+    }
+
+    /// True while the optimistic-echo placeholder bubble is the
+    /// trailing item in chat mode. The placeholder's `meta.role` is
+    /// `"assistant-pending"`; the server's reply replaces it with a
+    /// real bubble keyed `"assistant"` (no -pending suffix).
+    private var hasPendingChatBubble: Bool {
+        (model.itemsByMode["chat"] ?? []).contains(where: {
+            $0.meta?.role == "assistant-pending"
+        })
     }
 
     private func submitChat() {
@@ -941,24 +953,26 @@ private struct ItemRow: View {
 
 /// Chat-mode bubble. `meta.role == "user"` right-aligns with the
 /// brand-blue fill; anything else (assistant or omitted) left-aligns
-/// with the panel surface. Only the bubble interior is clipped —
-/// the row itself fills width so alignment works.
+/// with the panel surface. `meta.role == "assistant-pending"` is
+/// the optimistic "Thinking…" placeholder rendered while the
+/// agent's reply is in flight — italic + dim + slow pulse so the
+/// user can tell it's not the real reply yet.
 private struct ChatBubbleRow: View {
     let item: Item
 
-    private var isUser: Bool {
-        // Item.meta is decoded as our `ItemMeta` helper struct. Chat
-        // bubbles encode role into a string field we don't model
-        // statically — fall back to the raw JSON dictionary on the
-        // server's wire shape.
-        guard let role = item.meta?.role, !role.isEmpty else { return false }
-        return role == "user"
+    @State private var pulse = false
+
+    private var role: String {
+        item.meta?.role ?? ""
     }
+    private var isUser: Bool { role == "user" }
+    private var isPending: Bool { role == "assistant-pending" }
 
     var body: some View {
         HStack {
             if isUser { Spacer(minLength: 32) }
             Text(item.text)
+                .italic(isPending)
                 .foregroundStyle(isUser ? Color.white : MCTheme.text)
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
@@ -968,7 +982,17 @@ private struct ChatBubbleRow: View {
                         .strokeBorder(isUser ? Color.clear : MCTheme.border, lineWidth: 1)
                 )
                 .clipShape(RoundedRectangle(cornerRadius: 12))
+                .opacity(isPending ? (pulse ? 0.95 : 0.55) : 1.0)
+                .animation(
+                    isPending
+                        ? .easeInOut(duration: 1.4).repeatForever(autoreverses: true)
+                        : .default,
+                    value: pulse
+                )
                 .frame(maxWidth: .infinity, alignment: isUser ? .trailing : .leading)
+                .onAppear {
+                    if isPending { pulse = true }
+                }
             if !isUser { Spacer(minLength: 32) }
         }
     }
