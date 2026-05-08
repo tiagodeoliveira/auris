@@ -4,9 +4,14 @@
 //! a running 3-5 sentence summary of the meeting transcript so far.
 //! Refreshes on a hybrid trigger:
 //!
-//! - **Token threshold** (`SUMMARY_TRIGGER_TOKENS`, default 500):
-//!   fire when ~this many new transcript tokens have accumulated
-//!   since the last fire. ~3 minutes of speech.
+//! - **Bootstrap threshold** (`SUMMARY_BOOTSTRAP_TOKENS`, default
+//!   100): the *first* fire only. Gets a summary onto the screen
+//!   within ~30 s of the meeting starting so the user has something
+//!   to glance at — without this, they'd wait the full steady-state
+//!   bucket before seeing anything.
+//! - **Steady-state token threshold** (`SUMMARY_TRIGGER_TOKENS`,
+//!   default 500): fire when ~this many new transcript tokens have
+//!   accumulated since the last fire. ~3 minutes of speech.
 //! - **Hard ceiling** (`SUMMARY_TRIGGER_MAX_MS`, default 300_000):
 //!   refresh at least this often as long as the transcript has
 //!   grown at all. Keeps the summary fresh during slow stretches.
@@ -29,8 +34,19 @@ use crate::contract::{Event, Item, UserEvent};
 use crate::llm::LlmClient;
 use crate::state::ServerState;
 
+/// Steady-state refresh: fire when ~this many new transcript
+/// tokens have accumulated since the last fire. ~3 minutes of
+/// speech.
 const SUMMARY_TRIGGER_TOKENS_DEFAULT: usize = 500;
+/// Hard ceiling — refresh at least this often as long as the
+/// transcript has grown since last fire. 5 min.
 const SUMMARY_TRIGGER_MAX_MS_DEFAULT: u64 = 300_000;
+/// First-fire-only threshold: get a summary onto the screen
+/// quickly so the user sees something within the first minute,
+/// not after waiting for a full steady-state token bucket. ~30 s
+/// of speech. After bootstrap, the regular token threshold takes
+/// over.
+const SUMMARY_BOOTSTRAP_TOKENS_DEFAULT: usize = 100;
 const CHARS_PER_TOKEN: usize = 4;
 
 const SYSTEM_PROMPT: &str = "You produce a running summary of a live meeting transcript. \
@@ -60,11 +76,14 @@ pub async fn run_summary_summarizer(
     cancel: CancellationToken,
 ) {
     let token_threshold = env_usize("SUMMARY_TRIGGER_TOKENS", SUMMARY_TRIGGER_TOKENS_DEFAULT);
+    let bootstrap_threshold =
+        env_usize("SUMMARY_BOOTSTRAP_TOKENS", SUMMARY_BOOTSTRAP_TOKENS_DEFAULT);
     let max_ms = env_u64("SUMMARY_TRIGGER_MAX_MS", SUMMARY_TRIGGER_MAX_MS_DEFAULT);
 
     info!(
         user_id = %user_id,
         token_threshold,
+        bootstrap_threshold,
         max_ms,
         "summary loop started",
     );
@@ -97,8 +116,14 @@ pub async fn run_summary_summarizer(
                 let new_tokens = new_chars / CHARS_PER_TOKEN;
                 let aged_with_growth = last_fired_at.elapsed() >= Duration::from_millis(max_ms)
                     && new_chars > 0;
+                // First-fire bootstrap uses the smaller threshold so
+                // the user sees a summary within ~30-60 s of starting
+                // to talk, instead of waiting for a full steady-state
+                // bucket (~3 min). Once we've fired once,
+                // `last_fired_chars > 0` and the bootstrap branch goes
+                // dormant — subsequent fires use `token_threshold`.
                 let bootstrap = last_fired_chars == 0
-                    && transcript.len() >= token_threshold * CHARS_PER_TOKEN;
+                    && transcript.len() >= bootstrap_threshold * CHARS_PER_TOKEN;
 
                 if !(bootstrap || new_tokens >= token_threshold || aged_with_growth) {
                     continue;
