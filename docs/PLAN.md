@@ -196,15 +196,6 @@ Not blocking the next phase, but flagged for later resolution.
   of `sysEvent`. Plan: when the G2 lands, run through highlights /
   chat / detail views and confirm. Tune constants in
   `glasses/layout-active-list.ts` if the device cuts mid-line.
-- **Transcript-to-glasses interim streaming.** Today the glasses
-  transcript view only updates on sentence-commit (a full STT
-  utterance), while PWA + Mac get the live interim text. The
-  `listening-active` view does pipe interim text already; the gap
-  is in the `active_list` transcript-mode view, which subscribes
-  to committed items only. Wire `s.liveTranscriptInterim` through
-  to the active list when `currentMode === "transcript"` and
-  append it as a final dim line below the committed items. Same
-  pattern as `items-mirror`'s `showLive` row.
 - **Rolling-summary compression.** With Opus 4.7's 1M context, a
   meeting can run hours before history exhausts the window. When
   (if) we hit the ceiling: compress the older portion of history
