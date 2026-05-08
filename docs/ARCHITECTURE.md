@@ -74,16 +74,23 @@ Modules:
   dictation mic and the PWA's listening flow both push PCM through
   this; the server owns the Soniox session and broadcasts transcript
   updates back. No provider keys leave the server.
-- `summarizer/` — three pipelines:
+- `summarizer/` — four pipelines:
   - `transcript` (pass-through, no LLM; emits each finalized chunk
     as a transcript-mode item).
   - `agent` (single tool-calling LLM loop per active meeting, with
     stateful `Vec<rig::Message>` conversation history; emits items
     into highlights/actions/open_questions via `push_*` /
-    `replace_highlights` tools, and reads attached artifacts via
-    `fetch_artifact_summary` / `fetch_artifact`). See ADR-0011.
-  - `moment` and `artifact` (one-shot async LLM summaries triggered
-    by user action: marking a moment or uploading an artifact).
+    `replace_highlights` tools, reads attached artifacts via
+    `fetch_artifact_summary` / `fetch_artifact`, and replies to
+    chat questions in chat mode). See ADR-0011.
+  - `summary` (running 3-5 sentence meeting summary, single-item
+    Replace strategy; hybrid trigger — fires on a token threshold
+    OR a 5-min ceiling whichever first).
+  - `moment` and `artifact` (one-shot async LLM summaries
+    triggered by user action: marking a moment or uploading an
+    artifact). The moment worker also kicks the agent on
+    completion so chat questions about a snapped moment have
+    full context.
 - `llm.rs` — `LlmClient` with multi-provider support via `rig`
   (Bedrock / OpenAI / Anthropic). Vision path
   (`extract_with_prompt_and_image`) base64-encodes screenshots and
@@ -233,6 +240,10 @@ ScreenCaptureKit ─┘    timestamp-     finalized +   flushed on        │
                               │
                               ├─▶ Transcript pass-through (no LLM, raw chunks → items)
                               │
+                              ├─▶ Summary loop (single-item Replace; full
+                              │                 transcript every fire,
+                              │                 token-threshold + 5-min ceiling)
+                              │
                               └─▶ Agent loop (one task per active meeting,
                                               stateful Vec<Message> history,
                                               hybrid trigger: tokens / sentences
@@ -244,6 +255,10 @@ ScreenCaptureKit ─┘    timestamp-     finalized +   flushed on        │
                                               │         push_open_question,
                                               │         fetch_artifact_summary,
                                               │         fetch_artifact
+                                              ├─ kick events: artifact attached,
+                                              │               chat message,
+                                              │               moment marked,
+                                              │               moment summarized
                                               ▼
                        items_per_mode  ─▶  Event::ItemsUpdate  ─▶  per-user broadcast bus
                                               │                     │

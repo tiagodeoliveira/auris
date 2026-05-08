@@ -21,7 +21,21 @@ The local-first MVP is shipped and in personal-use rotation:
   summarization, attach to meetings, 3-tier agent retrieval).
 - Single stateful agent loop replacing the three per-mode
   summarizers — see [ADR-0011](adr/0011-agentic-summarizer-loop.md).
-  Default model: Claude Opus 4.7 (1M context).
+  Default model: Claude Opus 4.7 (1M context). Mode catalog now
+  includes:
+  - `transcript` (raw STT chunks, pass-through, no LLM),
+  - `highlights` / `actions` / `open_questions` (agent tool
+    emissions),
+  - `summary` (running 3-5 sentence meeting summary, hybrid
+    token-threshold + 5-min-ceiling refresh),
+  - `chat` (ask the agent questions during a live meeting; Q+A
+    bubble pairs replace each previous exchange — agent's
+    conversation history is the context, no separate UI thread).
+- Moment marks and artifact attaches both inject into the agent's
+  conversation history as `[event]` blocks (immediate ack on
+  creation, follow-up event when the moment-summary worker
+  completes), so chat questions about a just-snapped moment work
+  end-to-end.
 - Container-shaped server (`docker compose up`) — same image for
   local dev and any future production host.
 
@@ -69,8 +83,9 @@ The blockers to running N replicas behind a plain round-robin LB:
   recalled context. Two browser tabs hitting different replicas would
   see different "active meeting" state.
 - **Pipelines run in-process.** `start_meeting` spawns a Soniox WS,
-  four summarizer tasks, an audio source, mnemo pusher/recaller — all
-  on the receiving replica. Other replicas don't know it exists.
+  three summarizer tasks (transcript / agent / summary), an audio
+  source, mnemo pusher/recaller — all on the receiving replica.
+  Other replicas don't know it exists.
 - **`/audio` must hit the same replica as `start_meeting`.** Audio
   routes via an in-memory `audio_sources: HashMap<UserId, Arc<RemoteAudioSource>>`.
   Frames on the wrong replica get dropped.
@@ -179,12 +194,26 @@ Not blocking the next phase, but flagged for later resolution.
   (if) we hit the ceiling: compress the older portion of history
   into a synthetic summary message, keep the most recent N turns
   verbatim. Don't preempt — measure first.
-- **Agent event injection (Option C).** When delete/edit UI for
-  items lands, an `AgentSignal::ItemRemoved` / `ItemEdited` should
-  flow through the existing `agent_kick_tx` channel as an `[event]`
-  block in the next fire's user message — same pattern as
-  `ArtifactAttached` today. Backend hook is the
-  `AgentKickReason` enum in `summarizer/agent.rs`.
+- **Item delete/edit event injection.** The `AgentKickReason` enum
+  already carries `ArtifactAttached`, `ChatMessage`,
+  `MomentMarked`, and `MomentSummarized` — adding
+  `ItemRemoved { mode, item_id, text }` /
+  `ItemEdited { mode, item_id, old, new }` is mechanically the
+  same pattern. Blocked on the user-facing delete/edit UI which
+  doesn't exist yet (no contract intent, no PWA/Mac controls).
+  When that lands, the agent-side wiring is ~20 lines.
+- **Mode persistence to Postgres.** Today every mode's items live
+  only in `UserState`'s in-memory map, so they're lost on server
+  restart (transcript JSONL is the only persisted artifact —
+  highlights, actions, open_questions, summary, chat are all
+  ephemeral per meeting). Persisting them tied to `meeting_id`
+  unlocks a "browse past meeting" view that shows what the agent
+  produced, not just the raw transcript. Schema add: an
+  `items(meeting_id, mode, id, text, meta_json, t_ms,
+created_at)` table. Write on every `ItemsUpdate` broadcast;
+  read on `GET /api/meetings/:id`. Don't persist `chat` mode in
+  v1 (chat is working memory, not artifact) — start with the
+  others.
 - **Prompt caching.** rig 0.36 supports Anthropic prompt caching
   via `anthropic_beta`. The system prompt + early conversation
   history would cache cleanly. Real cost win on long meetings —
