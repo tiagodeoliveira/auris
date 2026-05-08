@@ -300,14 +300,15 @@ private struct MeetingsTab: View {
     }
 }
 
-// One row in the master list. Single line of summary; the description
-// or a fallback as the headline, then time + duration as a caption.
+// One row in the master list. Single line of summary; the LLM-extracted
+// metadata.title (or first line of description, truncated) as the
+// headline, then time + duration as a caption.
 private struct MeetingRow: View {
     let meeting: MeetingSummary
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text(meeting.description?.isEmpty == false ? meeting.description! : "Untitled meeting")
+            Text(pickMeetingTitle(description: meeting.description, metadata: meeting.metadata))
                 .font(.body)
                 .lineLimit(1)
             HStack(spacing: 6) {
@@ -335,20 +336,33 @@ private struct MeetingRow: View {
     }
 }
 
-// Right-pane detail. Description + timing + metadata + moments + transcript.
+// Right-pane detail. Title + timing + description + metadata + moments + transcript.
 private struct MeetingDetailView: View {
     let detail: MeetingDetail
     @Bindable var model: AppModel
 
+    @State private var descriptionExpanded = false
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
-                Text(detail.description?.isEmpty == false ? detail.description! : "Untitled meeting")
+                Text(pickMeetingTitle(description: detail.description, metadata: detail.metadata))
                     .font(.title2)
                     .fontWeight(.semibold)
                     .textSelection(.enabled)
 
                 timingRow
+
+                // Description (freeform context). Distinct from the
+                // headline title and the structured metadata block —
+                // collapsed by default behind a chevron disclosure
+                // so a multi-page paste doesn't dominate the view.
+                if let desc = detail.description?.trimmingCharacters(in: .whitespacesAndNewlines),
+                   !desc.isEmpty,
+                   desc != pickMeetingTitle(description: detail.description, metadata: detail.metadata)
+                {
+                    descriptionBlock(desc)
+                }
 
                 if !detail.metadata.isEmpty {
                     metadataBlock
@@ -557,6 +571,81 @@ private struct MeetingDetailView: View {
             }
         }
     }
+
+    /// Description block — chevron + heading + inline snippet collapsed,
+    /// or the full prose in a max-height scroll box when expanded.
+    /// Mirrors the PWA's `meetings-detail-description` pattern.
+    @ViewBuilder
+    private func descriptionBlock(_ text: String) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Button {
+                descriptionExpanded.toggle()
+            } label: {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(descriptionExpanded ? "▾" : "▸")
+                        .foregroundStyle(.secondary)
+                        .font(.caption)
+                    Text("DESCRIPTION")
+                        .font(.caption)
+                        .fontWeight(.semibold)
+                        .foregroundStyle(.secondary)
+                    if !descriptionExpanded {
+                        Text(snippet(of: text))
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                    }
+                    Spacer(minLength: 0)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            if descriptionExpanded {
+                ScrollView {
+                    Text(text)
+                        .font(.callout)
+                        .foregroundStyle(.primary)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(10)
+                }
+                .frame(maxHeight: 280)
+                .background(Color.secondary.opacity(0.08))
+                .clipShape(RoundedRectangle(cornerRadius: 6))
+            }
+        }
+    }
+
+    private func snippet(of text: String) -> String {
+        let flat = text.replacingOccurrences(of: "\n", with: " ")
+            .trimmingCharacters(in: .whitespaces)
+        if flat.count <= 70 { return flat }
+        return String(flat.prefix(69)) + "…"
+    }
+}
+
+/// Title shown at the top of meeting detail and as the row headline
+/// in the master list. Order of preference:
+///   1. `metadata["title"]` — extracted by the LLM, short and clean.
+///   2. First non-empty line of the description, truncated to 80 chars.
+///   3. "Untitled meeting" fallback.
+///
+/// Previously the description was used directly as the title, which
+/// works fine for one-line descriptions but sprawls across the pane
+/// when the user pastes a multi-page job posting as context.
+func pickMeetingTitle(description: String?, metadata: [String: String]) -> String {
+    if let t = metadata["title"]?.trimmingCharacters(in: .whitespaces), !t.isEmpty {
+        return t
+    }
+    if let d = description?.trimmingCharacters(in: .whitespacesAndNewlines), !d.isEmpty {
+        let firstLine = d.split(separator: "\n").first.map(String.init)?
+            .trimmingCharacters(in: .whitespaces) ?? ""
+        if firstLine.count <= 80 { return firstLine }
+        return String(firstLine.prefix(79)) + "…"
+    }
+    return "Untitled meeting"
 }
 
 /// One row in a per-mode persisted-items block. Mirrors the live

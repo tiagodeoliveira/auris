@@ -1412,6 +1412,54 @@ textarea {
   color: var(--text-muted);
   margin-top: 4px;
 }
+.meetings-detail-description-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  text-align: left;
+  color: inherit;
+  font: inherit;
+  width: 100%;
+  min-width: 0;
+}
+.meetings-detail-description-chevron {
+  font-size: 11px;
+  color: var(--text-muted);
+  width: 12px;
+  flex-shrink: 0;
+}
+.meetings-detail-description-head .meetings-detail-heading {
+  margin-top: 0;
+  flex-shrink: 0;
+}
+.meetings-detail-description-snippet {
+  font-size: 13px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+.meetings-detail-description {
+  font-size: 13px;
+  color: var(--text-light);
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: var(--surface-elev, rgba(0, 0, 0, 0.03));
+  border: 1px solid var(--border-dark);
+  border-radius: 6px;
+  padding: 10px 12px;
+  max-height: 280px;
+  overflow-y: auto;
+}
+.meetings-detail-description-collapsed {
+  display: none;
+}
 .meetings-meta-row {
   display: flex;
   gap: 10px;

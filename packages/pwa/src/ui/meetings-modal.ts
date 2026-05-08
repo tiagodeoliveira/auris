@@ -207,9 +207,15 @@ export function mountMeetingsModal(parent: HTMLElement, store: Store, auth: Auth
     const root = document.createElement("div");
     root.className = "meetings-detail-inner";
 
+    // Title selection: prefer the LLM-extracted `title` metadata
+    // (short and clean — matches what the user sees in the sidebar),
+    // fall back to a truncated description, fall back to a generic
+    // placeholder. Previously the title cell got the *entire*
+    // description, which sprawled across the pane when the user
+    // pasted a multi-page job posting.
     const head = document.createElement("h3");
     head.className = "meetings-detail-title";
-    head.textContent = detail.description?.trim() || "Untitled meeting";
+    head.textContent = pickDetailTitle(detail);
     root.appendChild(head);
 
     // Timing row
@@ -222,6 +228,15 @@ export function mountMeetingsModal(parent: HTMLElement, store: Store, auth: Auth
       timing.appendChild(timingCell("Status", "in progress", "in-progress"));
     }
     root.appendChild(timing);
+
+    // Description (freeform context the user pasted at compose time).
+    // Rendered in a max-height scroll box with a fold/expand toggle
+    // when the content is long — pasting a multi-page job posting
+    // shouldn't blow out the layout.
+    const description = detail.description?.trim();
+    if (description && description !== head.textContent) {
+      root.appendChild(buildDescriptionBlock(description));
+    }
 
     // Metadata
     const metaKeys = Object.keys(detail.metadata).sort();
@@ -660,4 +675,73 @@ function timingCell(label: string, value: string, cls?: "in-progress"): HTMLElem
   valueEl.textContent = value;
   cell.append(labelEl, valueEl);
   return cell;
+}
+
+/// Title shown at the top of the detail view. Order of preference:
+///   1. `metadata.title` — extracted by the LLM, short and clean.
+///   2. First non-empty line of the description, truncated to 80 chars.
+///   3. "Untitled meeting" fallback.
+export function pickDetailTitle(detail: {
+  description?: string | null;
+  metadata: Record<string, string>;
+}): string {
+  const meta = detail.metadata?.title?.trim();
+  if (meta) return meta;
+  const desc = detail.description?.trim();
+  if (desc) {
+    const firstLine =
+      desc
+        .split("\n")
+        .find((l) => l.trim().length > 0)
+        ?.trim() ?? "";
+    if (firstLine.length <= 80) return firstLine;
+    return firstLine.slice(0, 79) + "…";
+  }
+  return "Untitled meeting";
+}
+
+/// Render the freeform description as a one-line snippet by default
+/// with a chevron disclosure (`▸` collapsed / `▾` expanded) that
+/// reveals the full text in a max-height scroll box. Mirrors the
+/// items-mirror chevron pattern so the gesture feels familiar
+/// across the app.
+function buildDescriptionBlock(text: string): HTMLElement {
+  const block = document.createElement("div");
+  block.className = "meetings-detail-block";
+
+  const headRow = document.createElement("button");
+  headRow.type = "button";
+  headRow.className = "meetings-detail-description-head";
+  const chevron = document.createElement("span");
+  chevron.className = "meetings-detail-description-chevron";
+  chevron.textContent = "▸";
+  const headLabel = document.createElement("span");
+  headLabel.className = "meetings-detail-heading";
+  headLabel.textContent = "Description";
+  const snippet = document.createElement("span");
+  snippet.className = "meetings-detail-description-snippet";
+  snippet.textContent = firstSnippet(text);
+  headRow.append(chevron, headLabel, snippet);
+  block.appendChild(headRow);
+
+  const body = document.createElement("div");
+  body.className = "meetings-detail-description meetings-detail-description-collapsed";
+  body.textContent = text;
+  block.appendChild(body);
+
+  headRow.addEventListener("click", () => {
+    const collapsed = body.classList.toggle("meetings-detail-description-collapsed");
+    chevron.textContent = collapsed ? "▸" : "▾";
+    snippet.style.display = collapsed ? "" : "none";
+  });
+  return block;
+}
+
+/// Build the inline snippet shown next to the chevron when the
+/// description is collapsed. Strips newlines and clips to ~70 chars
+/// so it fits on one line in the head row.
+function firstSnippet(text: string): string {
+  const flat = text.replace(/\s+/g, " ").trim();
+  if (flat.length <= 70) return flat;
+  return flat.slice(0, 69) + "…";
 }
