@@ -47,15 +47,36 @@ export function mountItemsMirror(
   // Per-item expand state. Local to this items-mirror instance —
   // not in the store because it's pure UI ephemera (mode-switch
   // doesn't need to preserve which row was expanded). Tracks ids
-  // across all modes; cleared on meeting-state transitions
-  // through a subscriber below.
+  // across all modes.
+  //
+  // Two sets so cross-client auto-expand works without overriding
+  // explicit user collapses:
+  //   - expandedIds:        explicitly opened (by chevron click)
+  //   - manuallyCollapsed:  explicitly closed by the user
+  // An item is rendered expanded iff:
+  //   expandedIds.has(id) || (item.detail && !manuallyCollapsed.has(id))
+  // — so when the OTHER client expands an item (its detail flows in
+  // via item_updated), THIS client auto-opens it on the next render
+  // unless the user has already collapsed it locally.
   const expandedIds = new Set<string>();
+  const manuallyCollapsed = new Set<string>();
+
+  function isEffectivelyExpanded(item: Item): boolean {
+    if (manuallyCollapsed.has(item.id)) return false;
+    if (expandedIds.has(item.id)) return true;
+    return !!item.detail && item.detail.length > 0;
+  }
 
   function toggleExpanded(item: Item) {
-    if (expandedIds.has(item.id)) {
+    if (isEffectivelyExpanded(item)) {
+      // Collapse: remove from explicit-open, mark explicit-collapse
+      // so a subsequent item_updated re-arrival doesn't auto-open
+      // it again.
       expandedIds.delete(item.id);
+      manuallyCollapsed.add(item.id);
     } else {
       expandedIds.add(item.id);
+      manuallyCollapsed.delete(item.id);
       // First expand on an item without detail → ask the agent.
       // The reply arrives via `item_updated` and the renderer
       // swaps the placeholder for the real expansion.
@@ -130,7 +151,7 @@ export function mountItemsMirror(
       // agent to expand any item. First click on an item without
       // detail fires `expand_item`; subsequent clicks toggle the
       // panel locally without re-billing.
-      const expanded = expandedIds.has(item.id);
+      const expanded = isEffectivelyExpanded(item);
       const chevron = document.createElement("button");
       chevron.type = "button";
       chevron.className = "item-chevron";
@@ -198,9 +219,13 @@ export function mountItemsMirror(
   // packet, flickering the whole pane. The actual interim line is
   // rendered only in transcript mode anyway.
   store.subscribe((s) => (s.currentMode === "transcript" ? s.liveTranscriptInterim : ""), render);
-  store.subscribe(
-    (s) =>
-      `${s.itemsByMode[s.currentMode]?.length ?? 0}|${s.itemsByMode[s.currentMode]?.[s.itemsByMode[s.currentMode].length - 1]?.id ?? ""}`,
-    render,
-  );
+  store.subscribe((s) => {
+    const list = s.itemsByMode[s.currentMode] ?? [];
+    // Length + last-id is enough to detect appends. We also OR in
+    // a per-item detail-presence summary so item_updated (which
+    // mutates an existing row's `detail` in place — no length or
+    // id change) still triggers a re-render.
+    const detailSig = list.map((it) => (it.detail ? "1" : "0")).join("");
+    return `${list.length}|${list[list.length - 1]?.id ?? ""}|${detailSig}`;
+  }, render);
 }

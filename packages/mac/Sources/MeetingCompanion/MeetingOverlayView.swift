@@ -27,6 +27,12 @@ struct MeetingOverlayView: View {
     /// what was expanded; cleared when a new meeting begins (the
     /// IDs change anyway, so the set goes stale naturally).
     @State private var expandedItemIds: Set<String> = []
+    /// User explicitly collapsed these — overrides the auto-expand
+    /// path that would otherwise show the panel for any item that
+    /// has a `detail` value. Lets cross-client expand_item still
+    /// auto-open the row on this Mac (when detail flows in from
+    /// the PWA's expand) without overriding a local user collapse.
+    @State private var manuallyCollapsedIds: Set<String> = []
 
     /// Library artifacts selected for attach during this compose
     /// session. Flushed into `AppModel.pendingArtifactAttachments`
@@ -610,7 +616,7 @@ struct MeetingOverlayView: View {
                             ItemRow(
                                 item: item,
                                 mode: model.currentMode,
-                                isExpanded: expandedItemIds.contains(item.id),
+                                isExpanded: isEffectivelyExpanded(item),
                                 onToggle: { toggleExpanded(item.id) }
                             )
                         }
@@ -648,20 +654,37 @@ struct MeetingOverlayView: View {
         }
     }
 
+    /// True when an item's expanded panel should be shown. Three
+    /// inputs decide:
+    ///   1. user explicitly collapsed → false (override auto-expand)
+    ///   2. user explicitly expanded → true
+    ///   3. detail present → true (auto-open, including when the
+    ///      detail flowed in from another client's expand_item)
+    private func isEffectivelyExpanded(_ item: Item) -> Bool {
+        if manuallyCollapsedIds.contains(item.id) { return false }
+        if expandedItemIds.contains(item.id) { return true }
+        if let d = item.detail, !d.isEmpty { return true }
+        return false
+    }
+
     /// Toggle an item's expanded state. Called from `ItemRow` via
     /// the chevron tap. On *expand* (not collapse) for an item
     /// whose `detail` is still nil, fire the `expand_item` intent
     /// so the agent computes the expansion. The reply lands via
     /// `Event::ItemUpdated` and re-renders the row.
     private func toggleExpanded(_ id: String) {
-        if expandedItemIds.contains(id) {
+        let item = (model.itemsByMode[model.currentMode] ?? [])
+            .first(where: { $0.id == id })
+        let currentlyExpanded = item.map { isEffectivelyExpanded($0) } ?? false
+        if currentlyExpanded {
+            // Collapse: explicit-mark so a later detail update
+            // doesn't auto-reopen the panel.
             expandedItemIds.remove(id)
+            manuallyCollapsedIds.insert(id)
         } else {
             expandedItemIds.insert(id)
-            let needsFetch = (model.itemsByMode[model.currentMode] ?? [])
-                .first(where: { $0.id == id })
-                .map { $0.detail == nil || $0.detail?.isEmpty == true }
-                ?? false
+            manuallyCollapsedIds.remove(id)
+            let needsFetch = item.map { $0.detail == nil || $0.detail?.isEmpty == true } ?? false
             if needsFetch {
                 Task { await model.expandItem(id) }
             }
