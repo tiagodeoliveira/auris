@@ -46,7 +46,7 @@ export function mountUI(root: HTMLElement, ctx: UiContext): void {
   // is: input → metadata → source → start. Self-hides outside idle.
   mountComposeStart(root, ctx.store, ctx.actions);
   mountModeTabs(root, ctx.store, ctx.send);
-  mountItemsMirror(root, ctx.store);
+  mountItemsMirror(root, ctx.store, ctx.send);
   mountChatInput(root, ctx.store, ctx.send);
 
   // Sticky bottom action bar (Pause/Stop in active, listening UI when listening).

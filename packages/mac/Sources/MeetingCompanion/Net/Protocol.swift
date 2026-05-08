@@ -191,6 +191,14 @@ struct ChatIntent: Encodable {
     let text: String
 }
 
+/// Ask the agent to expand on a specific item by id. The agent's
+/// text reply lands as the item's `detail` via `Event::ItemUpdated`.
+/// Server kicks the agent through the same channel chat uses.
+struct ExpandItemIntent: Encodable {
+    let type: String = "expand_item"
+    let item_id: String
+}
+
 // MARK: - Events (Server → Mac)
 
 /// Decoded form of incoming frames. Only the events the Mac currently
@@ -226,6 +234,10 @@ enum TypedServerEvent: Sendable {
     /// `UpdateStrategy` — `replace` payloads are the full list,
     /// `append` payloads are deltas.
     case itemsUpdate(mode: String, items: [Item])
+    /// One item updated in-place (used today by `expand_item` to
+    /// land the agent's expansion in `item.detail`). Decoders
+    /// replace the matching item by id in their per-mode list.
+    case itemUpdated(mode: String, item: Item)
     /// Server-authoritative list of artifact IDs attached to the
     /// user's active meeting. Carried whenever attach/detach happens
     /// on EITHER client so the Mac and PWA stay in sync without
@@ -352,6 +364,13 @@ func decodeServerEvent(from text: String) throws -> TypedServerEvent? {
         }
         let w = try decoder.decode(Wrap.self, from: data)
         return .itemsUpdate(mode: w.mode, items: w.items)
+    case "item_updated":
+        struct Wrap: Decodable {
+            let mode: String
+            let item: Item
+        }
+        let w = try decoder.decode(Wrap.self, from: data)
+        return .itemUpdated(mode: w.mode, item: w.item)
     case "artifacts_changed":
         struct Wrap: Decodable { let artifact_ids: [String] }
         let w = try decoder.decode(Wrap.self, from: data)

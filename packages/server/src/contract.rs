@@ -235,6 +235,17 @@ pub enum Event {
         mode: String,
         items: Vec<Item>,
     },
+    /// One item changed in-place (today's only producer is the
+    /// `expand_item` flow — agent writes the LLM expansion into
+    /// the item's `detail` and broadcasts the updated item).
+    /// Clients update by id, replacing the matching item in their
+    /// items_by_mode map. Works uniformly across Replace and
+    /// Append strategies — semantics is "replace this one row,"
+    /// not "append" or "overwrite the whole list."
+    ItemUpdated {
+        mode: String,
+        item: Item,
+    },
     TranscriptInterim {
         text: String,
     },

@@ -399,6 +399,16 @@ export function mountMeetingsModal(parent: HTMLElement, store: Store, auth: Auth
       m.textContent = metaText;
       row.appendChild(m);
     }
+    // Past-meeting detail view: show the persisted expansion when
+    // present. Read-only — the meeting is over, no live expand
+    // available, but the user can still read whatever the agent
+    // produced during the meeting itself.
+    if (item.detail && item.detail.length > 0) {
+      const d = document.createElement("div");
+      d.className = "meetings-item-detail";
+      d.textContent = item.detail;
+      row.appendChild(d);
+    }
     return row;
   }
 

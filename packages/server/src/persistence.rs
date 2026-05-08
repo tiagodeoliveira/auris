@@ -75,8 +75,8 @@ pub fn spawn_items_task(
         info!("items persistence task started");
         loop {
             match rx.recv().await {
-                Ok(envelope) => {
-                    if let Event::ItemsUpdate { mode, items } = &envelope.event {
+                Ok(envelope) => match &envelope.event {
+                    Event::ItemsUpdate { mode, items } => {
                         if mode == "transcript" {
                             // Transcript persists to JSONL via spawn_task above.
                             // Skipping here keeps the items table free of the
@@ -89,7 +89,23 @@ pub fn spawn_items_task(
                             warn!(error = ?e, %mode, "items persistence failed");
                         }
                     }
-                }
+                    Event::ItemUpdated { mode, item } => {
+                        // One-row in-place update — used by the
+                        // expand_item flow to write the agent's
+                        // expansion into the row's `detail` column.
+                        // Skip transcript mode for the same reason
+                        // ItemsUpdate does (transcripts live in JSONL).
+                        if mode == "transcript" {
+                            continue;
+                        }
+                        if let Err(e) =
+                            persist_item_updated(&state, &db, &envelope.user_id, mode, item).await
+                        {
+                            warn!(error = ?e, %mode, "item update persistence failed");
+                        }
+                    }
+                    _ => {}
+                },
                 Err(broadcast::error::RecvError::Closed) => return,
                 Err(broadcast::error::RecvError::Lagged(n)) => {
                     warn!(lagged = n, "items persistence task lagged");
@@ -103,6 +119,28 @@ pub fn spawn_items_task(
 /// to the right write path. Skips when the user has no active
 /// meeting (race with stop_meeting) and when the mode isn't
 /// declared in `available_modes` (defensive — shouldn't happen).
+/// Persist a single-item in-place update. Looks up the user's
+/// active meeting (skips on race with stop) and updates the row's
+/// `detail` column. The full Item is passed for completeness even
+/// though we only update one column today — opens the door to
+/// future per-item edits without changing the persistence shape.
+async fn persist_item_updated(
+    state: &Arc<Mutex<ServerState>>,
+    db: &PgPool,
+    user_id: &str,
+    mode: &str,
+    item: &Item,
+) -> Result<()> {
+    let meeting_id = {
+        let s = state.lock().await;
+        match s.user(user_id).and_then(|u| u.current_meeting_id.clone()) {
+            Some(m) => m,
+            None => return Ok(()),
+        }
+    };
+    crate::db::update_item_detail(db, &meeting_id, mode, &item.id, item.detail.as_deref()).await
+}
+
 async fn persist_items_update(
     state: &Arc<Mutex<ServerState>>,
     db: &PgPool,

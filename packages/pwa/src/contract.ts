@@ -89,6 +89,7 @@ export type Event =
   | { type: "display_tag_changed"; tag?: string }
   | { type: "metadata_changed"; metadata: Record<string, string> }
   | { type: "items_update"; mode: string; items: Item[] }
+  | { type: "item_updated"; mode: string; item: Item }
   | { type: "transcript_interim"; text: string }
   | { type: "status"; status: Status }
   | { type: "error"; code: string; message: string; intent_ref?: string }

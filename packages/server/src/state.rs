@@ -49,15 +49,6 @@ pub fn default_modes() -> Vec<ModeOption> {
 
 pub const DEFAULT_MODE_ID: &str = "transcript";
 
-fn synthesize_detail(text: &str) -> String {
-    format!(
-        "Detail for '{}': lorem ipsum dolor sit amet, consectetur adipiscing elit. \
-         Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. \
-         Ut enim ad minim veniam.",
-        text
-    )
-}
-
 /// Result of applying an intent. `events` are broadcast in order.
 /// `error` is sent only to the originating client (None unless protocol error).
 #[derive(Debug, Default)]
@@ -299,17 +290,18 @@ impl UserState {
                 self.handle_extract_metadata(description, &mut outcome)
             }
             Intent::MarkMoment { t, note } => self.handle_mark_moment(t, note, &mut outcome),
-            Intent::ExpandItem { item_id } => self.handle_expand_item(item_id, &mut outcome),
             Intent::RegisterDevice { .. } => {
                 // Handled in ws.rs because it needs the per-connection
                 // identity (only ws.rs has it). This arm exists so the
                 // match stays exhaustive without us adding a fake outcome.
                 tracing::warn!("RegisterDevice reached apply_intent — should be handled in ws.rs");
             }
-            Intent::Chat { .. } => {
-                // Handled in ws.rs because it dispatches to the agent
+            Intent::Chat { .. } | Intent::ExpandItem { .. } => {
+                // Handled in ws.rs because both dispatch to the agent
                 // task via the kick channel, not via state mutation.
-                tracing::warn!("Chat reached apply_intent — should be handled in ws.rs");
+                tracing::warn!(
+                    "Chat / ExpandItem reached apply_intent — should be handled in ws.rs"
+                );
             }
         }
         self.assert_invariants();
@@ -526,39 +518,31 @@ impl UserState {
         });
     }
 
-    fn handle_expand_item(&mut self, item_id: String, outcome: &mut IntentOutcome) {
-        let mode_id = self.current_mode.clone();
-        let strategy = self
-            .available_modes
-            .iter()
-            .find(|m| m.id == mode_id)
-            .map(|m| m.update_strategy)
-            .expect("invariant: current_mode in available_modes");
+    /// Locate an item by id across all modes. Returns
+    /// `Some((mode_id, text))` on hit, `None` if no mode contains
+    /// an item with that id. Used by the WS layer to build the
+    /// `ExpandItem` agent-kick payload — the agent needs both the
+    /// mode (to render the right prompt: "expand on this {mode}
+    /// item") and the text itself.
+    pub fn find_item_by_id(&self, item_id: &str) -> Option<(String, String)> {
+        for (mode, items) in &self.items_per_mode {
+            if let Some(it) = items.iter().find(|i| i.id == item_id) {
+                return Some((mode.clone(), it.text.clone()));
+            }
+        }
+        None
+    }
 
-        let items = self
-            .items_per_mode
-            .get_mut(&mode_id)
-            .expect("invariant: items_per_mode entry exists");
-        let Some(idx) = items.iter().position(|i| i.id == item_id) else {
-            outcome.error = Some(Event::Error {
-                code: "unknown_item".into(),
-                message: format!("item '{}' not found in current mode", item_id),
-                intent_ref: Some(item_id),
-            });
-            return;
-        };
-
-        let detail = synthesize_detail(&items[idx].text);
-        items[idx].detail = Some(detail);
-
-        let payload = match strategy {
-            UpdateStrategy::Replace => items.clone(),
-            UpdateStrategy::Append => vec![items[idx].clone()],
-        };
-        outcome.events.push(Event::ItemsUpdate {
-            mode: self.current_mode.clone(),
-            items: payload,
-        });
+    /// Set the `detail` field of one item identified by `(mode,
+    /// item_id)`. Returns the updated `Item` (clone) on hit so the
+    /// caller can broadcast `Event::ItemUpdated`. `None` if the
+    /// mode's items list doesn't contain that id (race with stop,
+    /// or stale id from an old meeting).
+    pub fn set_item_detail(&mut self, mode: &str, item_id: &str, detail: &str) -> Option<Item> {
+        let items = self.items_per_mode.get_mut(mode)?;
+        let it = items.iter_mut().find(|i| i.id == item_id)?;
+        it.detail = Some(detail.to_string());
+        Some(it.clone())
     }
 
     /// Append a transcript chunk to the rolling buffer. Silently no-ops
@@ -1243,82 +1227,58 @@ mod tests {
     }
 
     #[test]
-    fn expand_item_append_strategy_returns_single_item() {
+    fn set_item_detail_writes_in_place() {
         let mut s = UserState::new();
         s.apply_intent(Intent::StartMeeting {
             description: None,
             metadata: None,
             audio_source_device_id: None,
-        });
-        s.apply_intent(Intent::SetMode {
-            mode: "transcript".into(),
-        });
-        push_item(&mut s, "transcript", "i1", "first");
-        push_item(&mut s, "transcript", "i2", "second");
-
-        let out = s.apply_intent(Intent::ExpandItem {
-            item_id: "i2".into(),
-        });
-        match &out.events[..] {
-            [Event::ItemsUpdate { mode, items }] => {
-                assert_eq!(mode, "transcript");
-                assert_eq!(items.len(), 1);
-                assert_eq!(items[0].id, "i2");
-                assert!(items[0].detail.is_some());
-            }
-            _ => panic!(),
-        }
-    }
-
-    #[test]
-    fn expand_item_replace_strategy_returns_full_list() {
-        let mut s = UserState::new();
-        s.apply_intent(Intent::StartMeeting {
-            description: None,
-            metadata: None,
-            audio_source_device_id: None,
-        });
-        s.apply_intent(Intent::SetMode {
-            mode: "highlights".into(),
         });
         push_item(&mut s, "highlights", "h1", "first");
         push_item(&mut s, "highlights", "h2", "second");
 
-        let out = s.apply_intent(Intent::ExpandItem {
-            item_id: "h1".into(),
-        });
-        match &out.events[..] {
-            [Event::ItemsUpdate { mode, items }] => {
-                assert_eq!(mode, "highlights");
-                assert_eq!(items.len(), 2);
-                assert!(items[0].detail.is_some());
-                assert!(items[1].detail.is_none());
-            }
-            _ => panic!(),
-        }
+        let updated = s.set_item_detail("highlights", "h2", "an expansion");
+        let updated = updated.expect("hit");
+        assert_eq!(updated.id, "h2");
+        assert_eq!(updated.detail.as_deref(), Some("an expansion"));
+
+        // Other item untouched.
+        let items = s.items_per_mode.get("highlights").unwrap();
+        assert!(items
+            .iter()
+            .find(|i| i.id == "h1")
+            .unwrap()
+            .detail
+            .is_none());
     }
 
     #[test]
-    fn expand_item_unknown_emits_error() {
+    fn set_item_detail_returns_none_for_unknown() {
         let mut s = UserState::new();
         s.apply_intent(Intent::StartMeeting {
             description: None,
             metadata: None,
             audio_source_device_id: None,
         });
-        let out = s.apply_intent(Intent::ExpandItem {
-            item_id: "nope".into(),
+        assert!(s.set_item_detail("highlights", "nope", "x").is_none());
+        assert!(s.set_item_detail("nonexistent_mode", "h1", "x").is_none());
+    }
+
+    #[test]
+    fn find_item_by_id_searches_across_modes() {
+        let mut s = UserState::new();
+        s.apply_intent(Intent::StartMeeting {
+            description: None,
+            metadata: None,
+            audio_source_device_id: None,
         });
-        assert!(out.events.is_empty());
-        match out.error {
-            Some(Event::Error {
-                code, intent_ref, ..
-            }) => {
-                assert_eq!(code, "unknown_item");
-                assert_eq!(intent_ref.as_deref(), Some("nope"));
-            }
-            _ => panic!(),
-        }
+        push_item(&mut s, "highlights", "h1", "found me");
+        push_item(&mut s, "actions", "a1", "do thing");
+
+        let (mode, text) = s.find_item_by_id("a1").expect("hit");
+        assert_eq!(mode, "actions");
+        assert_eq!(text, "do thing");
+        assert!(s.find_item_by_id("nope").is_none());
     }
 
     #[test]

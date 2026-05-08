@@ -802,6 +802,14 @@ async fn fire(
         _ => None,
     };
     let is_chat_fire = chat_user_text.is_some();
+    // Same shape for expand — we need the (mode, item_id) pair to
+    // know where to write the resulting detail back. Capture it
+    // before we move kick_block into the section builder.
+    let expand_target: Option<(String, String)> = match &kick_block {
+        Some(KickBlock::Expand { mode, item_id, .. }) => Some((mode.clone(), item_id.clone())),
+        _ => None,
+    };
+    let is_expand_fire = expand_target.is_some();
 
     // Compose this turn's user message. Sections, in order:
     //   [meeting] header (first fire only)
@@ -924,7 +932,12 @@ async fn fire(
                 // future fires. For chat fires the trailing text IS
                 // the user-visible reply and must stay in history so
                 // future turns see "I told them X" context.
-                if !is_chat_fire {
+                // Both chat AND expand fires want the prose retained
+                // in history (it's the user-visible reply); transcript-
+                // only fires strip it to avoid teaching the model that
+                // chat-style replies are normal.
+                let keep_text = is_chat_fire || is_expand_fire;
+                if !keep_text {
                     while matches!(new_msgs.last(), Some(RigMessage::Assistant { content, .. })
                         if content.iter().all(|c| matches!(c, AssistantContent::Text(_) | AssistantContent::Reasoning(_))))
                     {
@@ -987,6 +1000,36 @@ async fn fire(
                 ));
             }
 
+            // Surface the expand reply. Find the targeted item, set
+            // its `detail`, broadcast the updated item via
+            // `Event::ItemUpdated` so clients can render the
+            // expansion inline. Empty / failed reply: write a
+            // placeholder that signals the round-trip completed but
+            // didn't produce content (better than leaving the UI
+            // stuck on "Loading…").
+            if let Some((target_mode, target_item_id)) = expand_target {
+                let reply = resp.output.trim();
+                let detail_text = if reply.is_empty() {
+                    "(no expansion produced)".to_string()
+                } else {
+                    reply.to_string()
+                };
+                let updated = {
+                    let mut s = state.lock().await;
+                    s.user_mut(user_id)
+                        .set_item_detail(&target_mode, &target_item_id, &detail_text)
+                };
+                if let Some(item) = updated {
+                    let _ = events_tx.send(UserEvent::new(
+                        user_id.to_string(),
+                        Event::ItemUpdated {
+                            mode: target_mode,
+                            item,
+                        },
+                    ));
+                }
+            }
+
             info!(
                 user_id,
                 provider = ?llm.provider(),
@@ -995,6 +1038,7 @@ async fn fire(
                 new_msg_count,
                 stripped_text_turns = filtered,
                 is_chat = is_chat_fire,
+                is_expand = is_expand_fire,
                 prompt_chars,
                 input_tokens = resp.usage.input_tokens,
                 output_tokens = resp.usage.output_tokens,
@@ -1135,7 +1179,17 @@ async fn build_bootstrap_section(
 /// in history (chat needs it; events don't).
 enum KickBlock {
     Event(String),
-    Chat { user_text: String },
+    Chat {
+        user_text: String,
+    },
+    /// User asked the agent to expand on a specific item.
+    /// Captures the mode + item_id so the fire path knows where to
+    /// write back the resulting `detail` once the agent replies.
+    Expand {
+        mode: String,
+        item_id: String,
+        item_text: String,
+    },
 }
 
 impl KickBlock {
@@ -1143,6 +1197,7 @@ impl KickBlock {
         match self {
             KickBlock::Event(_) => "event",
             KickBlock::Chat { .. } => "chat",
+            KickBlock::Expand { .. } => "expand",
         }
     }
 
@@ -1150,6 +1205,16 @@ impl KickBlock {
         match self {
             KickBlock::Event(text) => text.clone(),
             KickBlock::Chat { user_text } => format!("User: {user_text:?}"),
+            KickBlock::Expand {
+                mode, item_text, ..
+            } => format!(
+                "User is asking you to expand on this {mode} item: {item_text:?}. \
+                 Use your conversation history (transcript, attached artifacts, your prior \
+                 tool calls) to give a 2-3 sentence expansion that adds context the bare \
+                 item text doesn't carry — what was happening when this came up, who said \
+                 what, why it matters. Keep it tight; the user is reading this in a small \
+                 inline panel."
+            ),
         }
     }
 }
@@ -1172,6 +1237,15 @@ async fn format_kick_event(db: &sqlx::PgPool, kick: &AgentKick) -> Option<KickBl
         }
         AgentKickReason::ChatMessage { text } => Some(KickBlock::Chat {
             user_text: text.clone(),
+        }),
+        AgentKickReason::ExpandItem {
+            mode,
+            item_id,
+            item_text,
+        } => Some(KickBlock::Expand {
+            mode: mode.clone(),
+            item_id: item_id.clone(),
+            item_text: item_text.clone(),
         }),
         AgentKickReason::MomentMarked { t_ms, note } => {
             let ts = format_ms(*t_ms);
@@ -1242,6 +1316,16 @@ pub enum AgentKickReason {
         moment_id: String,
         t_ms: i64,
         summary: String,
+    },
+    /// User clicked the chevron on an item to ask the agent to
+    /// expand on it. The agent's text reply becomes the item's
+    /// `detail` field, broadcast via `Event::ItemUpdated`. Same
+    /// fire shape as chat — text response captured from
+    /// `resp.output`, trailing-text-strip skipped.
+    ExpandItem {
+        mode: String,
+        item_id: String,
+        item_text: String,
     },
 }
 

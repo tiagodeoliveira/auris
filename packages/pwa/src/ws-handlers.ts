@@ -159,6 +159,19 @@ export function handleServerEvent(event: ServerEvent, store: Store): void {
       // even when the OTHER client (Mac vs PWA) issued the attach.
       store.update({ attachedArtifactIds: event.artifact_ids });
       return;
+    case "item_updated": {
+      // One-row in-place update — used today by the expand_item
+      // flow to land the agent's expansion into the matching
+      // item's `detail`. Replace by id; if the id isn't present in
+      // current items (rare race), drop silently.
+      const cur = store.get().itemsByMode[event.mode] ?? [];
+      const idx = cur.findIndex((it) => it.id === event.item.id);
+      if (idx === -1) return;
+      const next = [...cur];
+      next[idx] = event.item;
+      store.update({ itemsByMode: { ...store.get().itemsByMode, [event.mode]: next } });
+      return;
+    }
     case "items_update": {
       const modeOpt = store.get().availableModes.find((m) => m.id === event.mode);
       if (!modeOpt) return;

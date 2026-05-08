@@ -647,6 +647,18 @@ final class AppModel {
             itemsByMode[mode] = items
         case .itemsUpdate(let mode, let items):
             mergeItems(items, into: mode)
+        case .itemUpdated(let mode, let item):
+            // One-row in-place update. Replace the matching item by
+            // id. Used by the expand_item flow to land the agent's
+            // expansion into the item's `detail` field. If the id
+            // isn't in the current list (rare — meeting end race),
+            // drop silently.
+            if var current = itemsByMode[mode],
+                let idx = current.firstIndex(where: { $0.id == item.id })
+            {
+                current[idx] = item
+                itemsByMode[mode] = current
+            }
         case .artifactsChanged(let ids):
             // Server-authoritative attached set. Replaces whatever
             // we had locally — the user may have attached or
@@ -683,6 +695,19 @@ final class AppModel {
             try await webSocket.send(intent: SetModeIntent(mode: mode))
         } catch {
             print("[AppModel] set_mode send failed: \(error)")
+        }
+    }
+
+    /// Ask the agent to expand on a specific item. Server validates
+    /// that the item id exists, kicks the agent through the same
+    /// channel chat uses; the agent's text reply lands as the
+    /// item's `detail` via `Event::ItemUpdated`.
+    func expandItem(_ itemId: String) async {
+        guard webSocket.state == .connected else { return }
+        do {
+            try await webSocket.send(intent: ExpandItemIntent(item_id: itemId))
+        } catch {
+            print("[AppModel] expand_item send failed: \(error)")
         }
     }
 

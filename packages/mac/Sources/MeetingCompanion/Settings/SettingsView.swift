@@ -616,6 +616,22 @@ private struct DetailItemRow: View {
                     .foregroundStyle(.secondary)
                     .padding(.leading, 70)
             }
+            if let detail = item.detail, !detail.isEmpty {
+                Text(detail)
+                    .font(.callout)
+                    .foregroundStyle(.primary)
+                    .padding(8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color.gray.opacity(0.08))
+                    .overlay(
+                        Rectangle()
+                            .fill(Color.blue)
+                            .frame(width: 2),
+                        alignment: .leading
+                    )
+                    .padding(.leading, 70)
+                    .padding(.top, 4)
+            }
         }
     }
 }

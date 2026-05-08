@@ -957,6 +957,43 @@ button.cta:disabled {
   grid-column: 2;
   margin-top: 4px;
 }
+/* Per-item expand affordance — the chevron sits in the top-right of
+   the row's grid; the detail row spans the second column under the
+   body so it visually attaches to the item text, not the timestamp. */
+.item {
+  position: relative;
+}
+.item-chevron {
+  position: absolute;
+  top: 8px;
+  right: 12px;
+  background: none;
+  border: none;
+  padding: 0 6px;
+  font-family: var(--font-mono);
+  font-size: 14px;
+  color: var(--text-muted);
+  cursor: pointer;
+  user-select: none;
+}
+.item-chevron:hover {
+  color: var(--brand-blue);
+}
+.item-detail {
+  grid-column: 2;
+  margin-top: 6px;
+  padding: 8px 10px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-light);
+  background: var(--surface-elev);
+  border-left: 2px solid var(--brand-blue);
+  border-radius: 0 4px 4px 0;
+}
+.item-detail-pending {
+  font-style: italic;
+  opacity: 0.7;
+}
 
 /* === CHAT MODE — bubble pairs (Q+A), Replace strategy === */
 .chat-bubble {
@@ -1454,6 +1491,17 @@ textarea {
   font-weight: 600;
   letter-spacing: 0.4px;
   color: var(--text-muted);
+}
+.meetings-item-detail {
+  grid-column: 2;
+  margin-top: 5px;
+  padding: 6px 10px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-light);
+  background: var(--surface-elev);
+  border-left: 2px solid var(--brand-blue);
+  border-radius: 0 4px 4px 0;
 }
 
 /* Chat bubbles in the meeting-detail view — same shape as the

@@ -1,7 +1,7 @@
 //! Items pane for the active meeting.
 
 import type { Store } from "../store";
-import type { Item } from "../types";
+import type { Item, Intent } from "../types";
 import { activeItems } from "../types";
 
 function fmtTime(ms: number): string {
@@ -35,10 +35,36 @@ function renderItemMeta(mode: string, item: Item): string {
   return "";
 }
 
-export function mountItemsMirror(parent: HTMLElement, store: Store): void {
+export function mountItemsMirror(
+  parent: HTMLElement,
+  store: Store,
+  send: (i: Intent) => void,
+): void {
   const pane = document.createElement("div");
   pane.className = "items-pane";
   parent.appendChild(pane);
+
+  // Per-item expand state. Local to this items-mirror instance —
+  // not in the store because it's pure UI ephemera (mode-switch
+  // doesn't need to preserve which row was expanded). Tracks ids
+  // across all modes; cleared on meeting-state transitions
+  // through a subscriber below.
+  const expandedIds = new Set<string>();
+
+  function toggleExpanded(item: Item) {
+    if (expandedIds.has(item.id)) {
+      expandedIds.delete(item.id);
+    } else {
+      expandedIds.add(item.id);
+      // First expand on an item without detail → ask the agent.
+      // The reply arrives via `item_updated` and the renderer
+      // swaps the placeholder for the real expansion.
+      if (!item.detail || item.detail.length === 0) {
+        send({ type: "expand_item", item_id: item.id });
+      }
+    }
+    render();
+  }
 
   function render() {
     const s = store.get();
@@ -100,12 +126,40 @@ export function mountItemsMirror(parent: HTMLElement, store: Store): void {
       body.textContent = item.text;
       row.appendChild(body);
 
+      // Chevron toggle — always present so the user can ask the
+      // agent to expand any item. First click on an item without
+      // detail fires `expand_item`; subsequent clicks toggle the
+      // panel locally without re-billing.
+      const expanded = expandedIds.has(item.id);
+      const chevron = document.createElement("button");
+      chevron.type = "button";
+      chevron.className = "item-chevron";
+      chevron.textContent = expanded ? "▾" : "▸";
+      chevron.title = expanded ? "Hide detail" : "Show detail";
+      chevron.addEventListener("click", (e) => {
+        e.stopPropagation();
+        toggleExpanded(item);
+      });
+      row.appendChild(chevron);
+
       const metaText = renderItemMeta(s.currentMode, item);
       if (metaText) {
         const meta = document.createElement("div");
         meta.className = "item-meta label-mono";
         meta.textContent = metaText;
         row.appendChild(meta);
+      }
+
+      if (expanded) {
+        const detailRow = document.createElement("div");
+        detailRow.className = "item-detail";
+        if (item.detail && item.detail.length > 0) {
+          detailRow.textContent = item.detail;
+        } else {
+          detailRow.classList.add("item-detail-pending");
+          detailRow.textContent = "Expanding…";
+        }
+        row.appendChild(detailRow);
       }
 
       pane.appendChild(row);

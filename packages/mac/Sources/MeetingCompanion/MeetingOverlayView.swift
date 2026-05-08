@@ -649,12 +649,22 @@ struct MeetingOverlayView: View {
     }
 
     /// Toggle an item's expanded state. Called from `ItemRow` via
-    /// the chevron tap.
+    /// the chevron tap. On *expand* (not collapse) for an item
+    /// whose `detail` is still nil, fire the `expand_item` intent
+    /// so the agent computes the expansion. The reply lands via
+    /// `Event::ItemUpdated` and re-renders the row.
     private func toggleExpanded(_ id: String) {
         if expandedItemIds.contains(id) {
             expandedItemIds.remove(id)
         } else {
             expandedItemIds.insert(id)
+            let needsFetch = (model.itemsByMode[model.currentMode] ?? [])
+                .first(where: { $0.id == id })
+                .map { $0.detail == nil || $0.detail?.isEmpty == true }
+                ?? false
+            if needsFetch {
+                Task { await model.expandItem(id) }
+            }
         }
     }
 
@@ -931,16 +941,14 @@ private struct ItemRow: View {
                     .foregroundStyle(MCTheme.text)
                     .frame(maxWidth: .infinity, alignment: .leading)
 
-                if item.detail != nil {
-                    Button(action: onToggle) {
-                        Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
-                            .font(.system(size: 10, weight: .semibold))
-                            .foregroundStyle(MCTheme.muted)
-                            .frame(width: 14, height: 14)
-                    }
-                    .buttonStyle(.plain)
-                    .help(isExpanded ? "Hide detail" : "Show detail")
+                Button(action: onToggle) {
+                    Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(MCTheme.muted)
+                        .frame(width: 14, height: 14)
                 }
+                .buttonStyle(.plain)
+                .help(isExpanded ? "Hide detail" : "Show detail")
             }
 
             if !metaText.isEmpty {
@@ -954,12 +962,25 @@ private struct ItemRow: View {
                     .padding(.leading, 70)
             }
 
-            if isExpanded, let detail = item.detail, !detail.isEmpty {
-                Text(detail)
-                    .font(.callout)
-                    .foregroundStyle(MCTheme.muted)
-                    .padding(.leading, 70)
-                    .padding(.top, 1)
+            if isExpanded {
+                if let detail = item.detail, !detail.isEmpty {
+                    Text(detail)
+                        .font(.callout)
+                        .foregroundStyle(MCTheme.muted)
+                        .padding(.leading, 70)
+                        .padding(.top, 1)
+                } else {
+                    // Round-trip in flight (or hadn't been requested
+                    // yet). The toggle handler kicks off the
+                    // expand_item intent the first time the chevron
+                    // is opened on an item without detail.
+                    Text("Expanding…")
+                        .font(.callout)
+                        .italic()
+                        .foregroundStyle(MCTheme.muted)
+                        .padding(.leading, 70)
+                        .padding(.top, 1)
+                }
             }
         }
     }

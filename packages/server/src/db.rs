@@ -684,6 +684,34 @@ pub async fn replace_items_for_meeting_mode(
     Ok(())
 }
 
+/// Update one item's `detail` field in-place. Used by the
+/// expand_item flow when the agent's text expansion is ready —
+/// the row is keyed by (meeting_id, mode, id). No-op (silent) if
+/// the matching row doesn't exist; caller's broadcast already
+/// updated in-memory state, so a missing DB row just means the
+/// detail won't appear in past-meeting view (rare race).
+pub async fn update_item_detail(
+    pool: &PgPool,
+    meeting_id: &str,
+    mode: &str,
+    item_id: &str,
+    detail: Option<&str>,
+) -> Result<()> {
+    sqlx::query(
+        r#"UPDATE items
+              SET detail = $1
+            WHERE id = $2 AND meeting_id = $3 AND mode = $4"#,
+    )
+    .bind(detail)
+    .bind(item_id)
+    .bind(meeting_id)
+    .bind(mode)
+    .execute(pool)
+    .await
+    .with_context(|| format!("update_item_detail({item_id})"))?;
+    Ok(())
+}
+
 /// Read every persisted item for a meeting, grouped by mode and
 /// ordered by `created_at` within each group. Powers the meeting-
 /// detail view's per-mode tabs. Excludes transcript-mode items —

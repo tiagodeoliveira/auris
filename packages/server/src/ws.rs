@@ -865,6 +865,40 @@ async fn dispatch_intent(
         return Ok(());
     }
 
+    // ExpandItem also dispatches to the agent — same pattern as
+    // Chat. Look up the item by id (it may live in any mode), pack
+    // mode + text into the kick payload so the agent's prompt
+    // tells it which mode it's expanding on. The agent's text
+    // reply lands as the item's `detail` via `Event::ItemUpdated`.
+    if let Intent::ExpandItem { item_id } = intent {
+        let lookup = {
+            let s = handle.state.lock().await;
+            s.user(user_id).and_then(|u| u.find_item_by_id(&item_id))
+        };
+        let Some((mode, item_text)) = lookup else {
+            let err = Event::Error {
+                code: "unknown_item".into(),
+                message: format!("item '{item_id}' not found in any mode"),
+                intent_ref: Some(item_id.clone()),
+            };
+            sink.send(Message::Text(serde_json::to_string(&err)?))
+                .await
+                .ok();
+            return Ok(());
+        };
+        let _ = handle
+            .agent_kick_tx
+            .send(crate::summarizer::agent::AgentKick {
+                user_id: user_id.to_string(),
+                reason: crate::summarizer::agent::AgentKickReason::ExpandItem {
+                    mode,
+                    item_id,
+                    item_text,
+                },
+            });
+        return Ok(());
+    }
+
     // RegisterDevice needs the connection_id (only ws.rs knows it),
     // so it's handled here rather than in `apply_intent`.
     if let Intent::RegisterDevice {
