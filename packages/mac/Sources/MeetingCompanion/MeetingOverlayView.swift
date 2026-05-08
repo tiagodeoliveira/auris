@@ -87,7 +87,7 @@ struct MeetingOverlayView: View {
         // bubbles) absorb the extra space gracefully.
         .background {
             RoundedRectangle(cornerRadius: 12)
-                .fill(MCTheme.panel.opacity(0.78))
+                .fill(MCTheme.panel.opacity(model.settings.overlayOpacity))
                 .overlay(
                     RoundedRectangle(cornerRadius: 12)
                         .strokeBorder(MCTheme.border, lineWidth: 1)
@@ -96,6 +96,8 @@ struct MeetingOverlayView: View {
         }
         .foregroundStyle(MCTheme.text)
         .ignoresSafeArea()
+        .preferredColorScheme(model.settings.overlayTheme == .dark ? .dark : .light)
+        .environment(\.overlayOpacity, model.settings.overlayOpacity)
         .background(WindowAccessor { window in
             window.level = .floating
             window.collectionBehavior.insert(.canJoinAllSpaces)
@@ -210,7 +212,7 @@ struct MeetingOverlayView: View {
                                 .foregroundStyle(micTint)
                                 .frame(width: 26, height: 26)
                                 .background(
-                                    Circle().fill(MCTheme.panel.opacity(0.85))
+                                    Circle().fill(MCTheme.panel.opacity(model.settings.overlayOpacity))
                                 )
                                 .overlay(
                                     Circle().strokeBorder(
@@ -426,7 +428,7 @@ struct MeetingOverlayView: View {
 
         }
         .padding(4)
-        .background(MCTheme.panel.opacity(0.82))
+        .background(MCTheme.panel.opacity(model.settings.overlayOpacity))
         .clipShape(Capsule())
         .overlay(Capsule().strokeBorder(MCTheme.border))
         .sheet(isPresented: $showLiveArtifactPicker) {
@@ -830,23 +832,28 @@ private enum OverlayMode: Equatable {
     }
 }
 
+/// Color tokens for the meeting overlay. Each token resolves to a
+/// different RGB pair depending on the active appearance — the
+/// overlay sets `.preferredColorScheme(...)` from `AppSettings.overlayTheme`,
+/// which in turn drives NSColor's dynamicProvider to pick the right
+/// variant on first paint and on every theme switch thereafter.
 private enum MCTheme {
-    static let panel = Color(hex: 0xF7FAFE)
-    static let panelElevated = Color(hex: 0xFFFFFF)
-    static let input = Color(hex: 0xEEF4FA)
-    static let border = Color(hex: 0xD5DEE9)
-    static let text = Color(hex: 0x17212E)
-    static let muted = Color(hex: 0x647386)
-    static let subtle = Color(hex: 0x96A3B4)
-    static let blue = Color(hex: 0x2563EB)
-    static let blueSoft = Color(hex: 0xDBEAFE)
-    static let amber = Color(hex: 0xF2B705)
-    static let amberText = Color(hex: 0x765A00)
-    static let amberSoft = Color(hex: 0xFFF5C7)
-    static let amberBorder = Color(hex: 0xF5D45F)
-    static let danger = Color(hex: 0xE5484D)
-    static let dangerSoft = Color(hex: 0xFFE2E3)
-    static let success = Color(hex: 0x2EA043)
+    static let panel = Color(light: 0xF7FAFE, dark: 0x1B2230)
+    static let panelElevated = Color(light: 0xFFFFFF, dark: 0x232B3A)
+    static let input = Color(light: 0xEEF4FA, dark: 0x1F2735)
+    static let border = Color(light: 0xD5DEE9, dark: 0x39414F)
+    static let text = Color(light: 0x17212E, dark: 0xE6EBF2)
+    static let muted = Color(light: 0x647386, dark: 0x9AA7B8)
+    static let subtle = Color(light: 0x96A3B4, dark: 0x6B7889)
+    static let blue = Color(light: 0x2563EB, dark: 0x3B82F6)
+    static let blueSoft = Color(light: 0xDBEAFE, dark: 0x1E3A8A)
+    static let amber = Color(light: 0xF2B705, dark: 0xFFC533)
+    static let amberText = Color(light: 0x765A00, dark: 0xFFD970)
+    static let amberSoft = Color(light: 0xFFF5C7, dark: 0x3A2A00)
+    static let amberBorder = Color(light: 0xF5D45F, dark: 0x6B5300)
+    static let danger = Color(light: 0xE5484D, dark: 0xFF6369)
+    static let dangerSoft = Color(light: 0xFFE2E3, dark: 0x4A1216)
+    static let success = Color(light: 0x2EA043, dark: 0x4CC665)
 }
 
 private extension Color {
@@ -855,6 +862,49 @@ private extension Color {
         let g = Double((hex >> 8) & 0xff) / 255.0
         let b = Double(hex & 0xff) / 255.0
         self.init(red: r, green: g, blue: b)
+    }
+
+    /// Light/dark adaptive Color backed by an NSColor with a dynamic
+    /// provider — resolves to the right variant per the resolved
+    /// appearance (which `.preferredColorScheme(...)` sets at the
+    /// overlay root). RGB hex shorthand at both ends keeps the
+    /// palette table in `MCTheme` readable.
+    init(light: UInt32, dark: UInt32) {
+        let lightColor = NSColor(srgbHex: light)
+        let darkColor = NSColor(srgbHex: dark)
+        let dynamic = NSColor(name: nil) { appearance in
+            let match = appearance.bestMatch(from: [.aqua, .darkAqua, .vibrantLight, .vibrantDark])
+            switch match {
+            case .darkAqua, .vibrantDark: return darkColor
+            default: return lightColor
+            }
+        }
+        self.init(nsColor: dynamic)
+    }
+}
+
+private extension NSColor {
+    convenience init(srgbHex hex: UInt32) {
+        let r = CGFloat((hex >> 16) & 0xff) / 255.0
+        let g = CGFloat((hex >> 8) & 0xff) / 255.0
+        let b = CGFloat(hex & 0xff) / 255.0
+        self.init(srgbRed: r, green: g, blue: b, alpha: 1)
+    }
+}
+
+/// Per-overlay opacity value, propagated from
+/// `AppSettings.overlayOpacity` via the overlay root and read by any
+/// child that paints an opaque panel-style background. Default is the
+/// pre-configurable baseline (0.78) so views constructed outside the
+/// overlay tree still get a sensible value.
+private struct OverlayOpacityKey: EnvironmentKey {
+    static let defaultValue: Double = 0.78
+}
+
+extension EnvironmentValues {
+    fileprivate var overlayOpacity: Double {
+        get { self[OverlayOpacityKey.self] }
+        set { self[OverlayOpacityKey.self] = newValue }
     }
 }
 
@@ -1017,6 +1067,13 @@ private struct ItemRow: View {
 /// user can tell it's not the real reply yet.
 private struct ChatBubbleRow: View {
     let item: Item
+    /// Mirrors the overlay's panel opacity so the bubble nests into
+    /// the window's translucency rather than punching through with
+    /// its own opaque fill. Applies to both user (blue) and
+    /// assistant (panel) variants — the user's "this is mine"
+    /// emphasis comes from the blue accent, not from being more
+    /// opaque than the surrounding chrome.
+    @Environment(\.overlayOpacity) private var overlayOpacity
 
     @State private var pulse = false
 
@@ -1034,7 +1091,9 @@ private struct ChatBubbleRow: View {
                 .foregroundStyle(isUser ? Color.white : MCTheme.text)
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
-                .background(isUser ? MCTheme.blue : MCTheme.panel.opacity(0.9))
+                .background(
+                    (isUser ? MCTheme.blue : MCTheme.panel).opacity(overlayOpacity)
+                )
                 .overlay(
                     RoundedRectangle(cornerRadius: 12)
                         .strokeBorder(isUser ? Color.clear : MCTheme.border, lineWidth: 1)
@@ -1060,6 +1119,8 @@ private struct MetadataChipEditor: View {
     let metadata: [String: String]
     @Binding var addingMetadata: Bool
     let setMetadata: (String, String?) -> Void
+
+    @Environment(\.overlayOpacity) private var overlayOpacity
 
     @State private var newKey = ""
     @State private var newValue = ""
@@ -1096,7 +1157,7 @@ private struct MetadataChipEditor: View {
                     .font(.caption)
                     .padding(.horizontal, 12)
                     .padding(.vertical, 5)
-                    .background(MCTheme.panelElevated)
+                    .background(MCTheme.panelElevated.opacity(overlayOpacity))
                     .clipShape(Capsule())
                     .overlay(Capsule().strokeBorder(MCTheme.border))
                     .help("Add metadata")
@@ -1159,7 +1220,7 @@ private struct MetadataChipEditor: View {
         .padding(.horizontal, 8)
         .padding(.vertical, 5)
         .fixedSize(horizontal: true, vertical: false)
-        .background(MCTheme.panelElevated)
+        .background(MCTheme.panelElevated.opacity(overlayOpacity))
         .clipShape(Capsule())
         .overlay(Capsule().strokeBorder(MCTheme.blue.opacity(0.35)))
     }
@@ -1189,6 +1250,8 @@ private struct MetadataChip: View {
     let keyName: String
     let value: String
     let setMetadata: (String, String?) -> Void
+
+    @Environment(\.overlayOpacity) private var overlayOpacity
 
     @State private var draftValue: String
     @FocusState private var focused: Bool
@@ -1236,7 +1299,7 @@ private struct MetadataChip: View {
         .padding(.horizontal, 8)
         .padding(.vertical, 5)
         .fixedSize(horizontal: true, vertical: false)
-        .background(MCTheme.panelElevated)
+        .background(MCTheme.panelElevated.opacity(overlayOpacity))
         .clipShape(Capsule())
         .overlay(Capsule().strokeBorder(MCTheme.border))
     }

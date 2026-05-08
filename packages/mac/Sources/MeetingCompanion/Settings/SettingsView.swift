@@ -111,6 +111,34 @@ private struct AccountTab: View {
                 .font(.footnote)
                 .foregroundStyle(.secondary)
             }
+
+            Section {
+                Picker("Theme", selection: $model.settings.overlayTheme) {
+                    ForEach(OverlayTheme.allCases) { theme in
+                        Text(theme.displayName).tag(theme)
+                    }
+                }
+                .pickerStyle(.segmented)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack {
+                        Text("Opacity")
+                        Spacer()
+                        Text("\(Int(model.settings.overlayOpacity * 100))%")
+                            .foregroundStyle(.secondary)
+                            .font(.callout.monospacedDigit())
+                    }
+                    Slider(value: $model.settings.overlayOpacity, in: 0.4 ... 1.0, step: 0.02)
+                }
+            } header: {
+                Text("Overlay")
+            } footer: {
+                Text(
+                    "Theme switches the overlay between light and dark palettes; opacity drives the panel and chat-bubble translucency together so contents nest into the same level of see-through."
+                )
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+            }
         }
         .formStyle(.grouped)
         .scrollContentBackground(.hidden)
