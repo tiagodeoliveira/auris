@@ -73,10 +73,15 @@ struct MeetingOverlayView: View {
         .frame(
             minWidth: mode.minWidth, idealWidth: mode.idealWidth, maxWidth: .infinity,
             minHeight: mode.minHeight, idealHeight: mode.idealHeight, maxHeight: .infinity)
-        .fixedSize(horizontal: false, vertical: true)
+        // .fixedSize(horizontal: false, vertical: true) was here —
+        // it locked the window's vertical extent to the content's
+        // ideal height, preventing the user from resizing taller.
+        // Removing it lets the window grow on the Y axis; the
+        // surrounding ScrollViews (transcript, items list, chat
+        // bubbles) absorb the extra space gracefully.
         .background {
             RoundedRectangle(cornerRadius: 12)
-                .fill(MCTheme.panel.opacity(0.94))
+                .fill(MCTheme.panel.opacity(0.78))
                 .overlay(
                     RoundedRectangle(cornerRadius: 12)
                         .strokeBorder(MCTheme.border, lineWidth: 1)

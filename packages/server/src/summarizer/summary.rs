@@ -1,7 +1,12 @@
 //! Conversation summary mode summarizer.
 //!
-//! A new mode (`summary`) holding a single Replace-strategy item:
-//! a running 3-5 sentence summary of the meeting transcript so far.
+//! A `summary` mode populated as a list of Replace-strategy items:
+//! 4-8 short bullets covering topics, decisions, facts, open
+//! questions, and follow-ups from the meeting so far. Each fire
+//! replaces the whole list (Replace strategy, capped at 10).
+//! Bullets are scannable on the PWA and a future glasses surface;
+//! a heavy narrative paragraph would be illegible on either.
+//!
 //! Refreshes on a hybrid trigger:
 //!
 //! - **Bootstrap threshold** (`SUMMARY_BOOTSTRAP_TOKENS`, default
@@ -49,23 +54,29 @@ const SUMMARY_TRIGGER_MAX_MS_DEFAULT: u64 = 300_000;
 const SUMMARY_BOOTSTRAP_TOKENS_DEFAULT: usize = 100;
 const CHARS_PER_TOKEN: usize = 4;
 
-const SYSTEM_PROMPT: &str = "You produce a running summary of a live meeting transcript. \
-The transcript may contain disfluencies, fillers, and partial sentences from streaming STT.\n\
+const SYSTEM_PROMPT: &str = "You produce a running summary of a live meeting transcript as a list of \
+short, scannable bullets. The transcript may contain disfluencies, fillers, and partial sentences \
+from streaming STT.\n\
 \n\
-Write 3-5 concise sentences covering:\n\
-- What was discussed (the main topics).\n\
-- Key decisions made.\n\
-- Outstanding questions or work yet to be done.\n\
+Output 4-8 bullets (no fewer than 3, never more than 10). Each bullet:\n\
+- One sentence, ≤ 20 words.\n\
+- Stands alone — readable without surrounding context.\n\
+- Captures one of: a topic discussed, a decision made, a stated fact, an outstanding question, \
+  or a follow-up action.\n\
+- No leading dashes, bullets, or markdown — return plain text strings; the UI adds the bullet styling.\n\
 \n\
-Speak in the same language as the transcript. Don't translate. Use neutral past tense \
-(\"the team discussed…\", \"X agreed to…\"). If the transcript is too short or empty, \
-return a single sentence acknowledging that.";
+Order bullets chronologically (earliest first). Speak in the same language as the transcript. \
+Don't translate. Use neutral past tense (\"the team discussed…\", \"X agreed to…\"). If the \
+transcript is too short or empty to support 3 bullets, return a single bullet acknowledging that \
+(e.g., [\"Meeting just started; no substantive content yet.\"]).";
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 pub struct SummaryExtraction {
-    /// 3-5 sentence summary of the meeting so far. Plain prose,
-    /// no bullet points or markdown.
-    pub summary: String,
+    /// Ordered list of summary bullets, oldest first. Each entry
+    /// becomes one Item in the summary mode (Replace strategy, so
+    /// the previous bullets are clobbered each fire). Capped at 10
+    /// by the state layer.
+    pub bullets: Vec<String>,
 }
 
 pub async fn run_summary_summarizer(
@@ -140,22 +151,38 @@ pub async fn run_summary_summarizer(
                     Ok(ext) => {
                         last_fired_chars = transcript.len();
                         last_fired_at = Instant::now();
-                        let summary = ext.summary.trim().to_string();
-                        if summary.is_empty() {
-                            warn!(user_id = %user_id, "summary extraction returned empty; skipping update");
+                        // Trim, drop empties, dedup-by-text. The
+                        // model occasionally emits duplicate or
+                        // whitespace-only bullets; filtering is
+                        // cheaper than asking it to be perfect.
+                        let mut seen = std::collections::HashSet::new();
+                        let bullets: Vec<String> = ext
+                            .bullets
+                            .into_iter()
+                            .map(|b| b.trim().to_string())
+                            .filter(|b| !b.is_empty())
+                            .filter(|b| seen.insert(b.clone()))
+                            .collect();
+                        if bullets.is_empty() {
+                            warn!(user_id = %user_id, "summary extraction returned no usable bullets; skipping update");
                             continue;
                         }
-                        let item = Item {
-                            id: format!("summary-{}", uuid::Uuid::new_v4()),
-                            text: summary.clone(),
-                            detail: None,
-                            t: 0,
-                            meta: None,
-                        };
+                        let bullet_count = bullets.len();
+                        let summary_chars: usize = bullets.iter().map(|b| b.len()).sum();
+                        let new_items: Vec<Item> = bullets
+                            .into_iter()
+                            .map(|text| Item {
+                                id: format!("summary-{}", uuid::Uuid::new_v4()),
+                                text,
+                                detail: None,
+                                t: 0,
+                                meta: None,
+                            })
+                            .collect();
                         let items = {
                             let mut s = state.lock().await;
                             s.user_mut(&user_id)
-                                .replace_items_for_mode("summary", vec![item])
+                                .replace_items_for_mode("summary", new_items)
                         };
                         if !items.is_empty() {
                             let _ = events_tx.send(UserEvent::new(
@@ -169,7 +196,8 @@ pub async fn run_summary_summarizer(
                         info!(
                             user_id = %user_id,
                             transcript_chars = transcript.len(),
-                            summary_chars = summary.len(),
+                            bullet_count,
+                            summary_chars,
                             latency_ms,
                             "summary fire done",
                         );
