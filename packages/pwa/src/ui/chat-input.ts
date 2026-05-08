@@ -51,12 +51,12 @@ export function mountChatInput(parent: HTMLElement, store: Store, send: (i: Inte
     const text = input.value.trim();
     if (!text) return;
     setBusy(true);
-    // Optimistic echo: push the user's question + a "thinking…"
-    // assistant placeholder into chat-mode items immediately, so
-    // the user sees their question lock in instead of staring at
-    // an empty pane for 3-10 s while the agent thinks. The
-    // server's ItemsUpdate eventually overwrites both with the
-    // real Q+A pair via the standard handler.
+    // Optimistic echo: APPEND the user's question + a "thinking…"
+    // assistant placeholder to the existing chat thread (chat is
+    // an Append-strategy mode now, so prior turns stay visible).
+    // The server's ItemsUpdate handler strips items whose id
+    // starts with "chat-*-pending-" before appending the real
+    // Q+A pair, so we don't end up with duplicates.
     const optimisticItems = [
       {
         id: `chat-q-pending-${Date.now()}`,
@@ -71,8 +71,12 @@ export function mountChatInput(parent: HTMLElement, store: Store, send: (i: Inte
         meta: { role: "assistant", pending: true },
       },
     ];
+    const existing = store.get().itemsByMode.chat ?? [];
     store.update({
-      itemsByMode: { ...store.get().itemsByMode, chat: optimisticItems },
+      itemsByMode: {
+        ...store.get().itemsByMode,
+        chat: [...existing, ...optimisticItems],
+      },
     });
     send({ type: "chat", text });
     input.value = "";

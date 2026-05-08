@@ -37,7 +37,12 @@ pub fn default_modes() -> Vec<ModeOption> {
         ModeOption {
             id: "chat".into(),
             label: "Chat".into(),
-            update_strategy: UpdateStrategy::Replace,
+            // Append so the live overlay shows a scrolling thread
+            // and DB persistence keeps every Q+A turn (Replace
+            // would clobber prior turns on each new exchange).
+            // Auto-scroll-to-bottom on the live UI keeps the
+            // request-response feel without dropping history.
+            update_strategy: UpdateStrategy::Append,
         },
     ]
 }

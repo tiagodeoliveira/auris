@@ -162,7 +162,16 @@ export function handleServerEvent(event: ServerEvent, store: Store): void {
     case "items_update": {
       const modeOpt = store.get().availableModes.find((m) => m.id === event.mode);
       if (!modeOpt) return;
-      const current = store.get().itemsByMode[event.mode] ?? [];
+      let current = store.get().itemsByMode[event.mode] ?? [];
+      // Chat-mode special case: drop optimistic-echo placeholders
+      // ("chat-q-pending-…" / "chat-a-pending-…") before appending
+      // the server's real Q+A pair. Without this, the pending
+      // bubbles linger alongside the real ones after every send.
+      if (event.mode === "chat") {
+        current = current.filter(
+          (it) => !it.id.startsWith("chat-q-pending-") && !it.id.startsWith("chat-a-pending-"),
+        );
+      }
       const next = applyItemsUpdate(current, event.items, modeOpt);
       store.update({ itemsByMode: { ...store.get().itemsByMode, [event.mode]: next } });
       return;

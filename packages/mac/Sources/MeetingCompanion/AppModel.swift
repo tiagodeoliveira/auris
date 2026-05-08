@@ -687,15 +687,16 @@ final class AppModel {
     }
 
     /// Send a user chat message to the agent. Server validates that
-    /// a meeting is active/paused; the agent's reply lands as a new
-    /// chat-mode item via the standard `ItemsUpdate` event.
+    /// a meeting is active/paused; the agent's reply lands as new
+    /// chat-mode items via the standard `ItemsUpdate` event.
     ///
-    /// Optimistic echo: the user's question + a "Thinking…"
-    /// placeholder are pushed into chat-mode items immediately, so
-    /// the UI shows the question lock in instead of staring at an
-    /// empty pane for 3-10 s. The server's `ItemsUpdate` overwrites
-    /// the placeholder pair with the real Q+A — items count stays
-    /// at 2; only the IDs and assistant text change.
+    /// Optimistic echo: APPENDS the user's question + a "Thinking…"
+    /// placeholder to the existing chat thread (chat is now an
+    /// Append-strategy mode — prior turns stay visible). The
+    /// server's `ItemsUpdate` is decoded by `mergeItems`, which
+    /// strips items whose id starts with `chat-*-pending-` before
+    /// appending the real Q+A pair so we don't end up with the
+    /// pending bubbles lingering alongside the real ones.
     func sendChat(_ text: String) async {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
@@ -722,7 +723,10 @@ final class AppModel {
                 kind: nil, context: nil
             )
         )
-        itemsByMode["chat"] = [userBubble, pendingBubble]
+        var current = itemsByMode["chat"] ?? []
+        current.append(userBubble)
+        current.append(pendingBubble)
+        itemsByMode["chat"] = current
         do {
             try await webSocket.send(intent: ChatIntent(text: trimmed))
         } catch {
@@ -741,6 +745,13 @@ final class AppModel {
             itemsByMode[mode] = incoming
         case .append:
             var current = itemsByMode[mode] ?? []
+            // Chat-mode special: drop optimistic-echo placeholders
+            // (id prefix `chat-q-pending-` / `chat-a-pending-`)
+            // before appending the server's real Q+A pair so the
+            // pending bubbles don't linger after each send.
+            if mode == "chat" {
+                current.removeAll { $0.id.hasPrefix("chat-q-pending-") || $0.id.hasPrefix("chat-a-pending-") }
+            }
             current.append(contentsOf: incoming)
             // Bound long meetings — same 500-line ceiling that the
             // old `transcriptHistory` had. Replace strategy modes

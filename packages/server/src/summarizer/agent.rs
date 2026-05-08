@@ -963,20 +963,24 @@ async fn fire(
                     t: 0,
                     meta: Some(serde_json::json!({"role": "assistant"})),
                 };
-                let items = {
+                // Append the Q+A pair to chat-mode items. Sent in a
+                // single ItemsUpdate so the client appends both
+                // atomically — `push_item_for_mode` was called twice
+                // because Append returns just the new item per call.
+                let pair = vec![user_item.clone(), assistant_item.clone()];
+                {
                     let mut s = state.lock().await;
-                    s.user_mut(user_id)
-                        .replace_items_for_mode("chat", vec![user_item, assistant_item])
-                };
-                if !items.is_empty() {
-                    let _ = events_tx.send(UserEvent::new(
-                        user_id.to_string(),
-                        Event::ItemsUpdate {
-                            mode: "chat".into(),
-                            items,
-                        },
-                    ));
+                    let user_state = s.user_mut(user_id);
+                    user_state.push_item_for_mode("chat", user_item);
+                    user_state.push_item_for_mode("chat", assistant_item);
                 }
+                let _ = events_tx.send(UserEvent::new(
+                    user_id.to_string(),
+                    Event::ItemsUpdate {
+                        mode: "chat".into(),
+                        items: pair,
+                    },
+                ));
             }
 
             info!(
@@ -998,9 +1002,10 @@ async fn fire(
         Err(e) => {
             llm.record_usage(user_id, prompt_chars, 0);
             // On failure with a chat fire, surface a one-line error
-            // back to the user so they don't see their question
-            // stuck unanswered. Keeps the existing prior chat (if
-            // any) cleared so they know the new question failed.
+            // bubble so the user sees their question + a "retry"
+            // hint instead of a stuck pending placeholder. Same
+            // append shape as the success path — prior chat history
+            // stays in place.
             if let Some(user_text) = chat_user_text {
                 let user_item = Item {
                     id: format!("chat-q-{}", uuid::Uuid::new_v4()),
@@ -1016,20 +1021,20 @@ async fn fire(
                     t: 0,
                     meta: Some(serde_json::json!({"role": "assistant", "error": true})),
                 };
-                let items = {
+                let pair = vec![user_item.clone(), err_item.clone()];
+                {
                     let mut s = state.lock().await;
-                    s.user_mut(user_id)
-                        .replace_items_for_mode("chat", vec![user_item, err_item])
-                };
-                if !items.is_empty() {
-                    let _ = events_tx.send(UserEvent::new(
-                        user_id.to_string(),
-                        Event::ItemsUpdate {
-                            mode: "chat".into(),
-                            items,
-                        },
-                    ));
+                    let user_state = s.user_mut(user_id);
+                    user_state.push_item_for_mode("chat", user_item);
+                    user_state.push_item_for_mode("chat", err_item);
                 }
+                let _ = events_tx.send(UserEvent::new(
+                    user_id.to_string(),
+                    Event::ItemsUpdate {
+                        mode: "chat".into(),
+                        items: pair,
+                    },
+                ));
             }
             warn!(
                 user_id,
