@@ -10,6 +10,7 @@ import { mountKvEditor } from "./kv-editor";
 import { mountModeTabs } from "./mode-tabs";
 import { mountCtaRegion, type CtaActions } from "./cta-region";
 import { mountItemsMirror } from "./items-mirror";
+import { mountChatInput } from "./chat-input";
 import { mountSettingsModal } from "./settings-modal";
 import { mountMeetingsModal } from "./meetings-modal";
 import { mountArtifactsModal } from "./artifacts-modal";
@@ -46,6 +47,7 @@ export function mountUI(root: HTMLElement, ctx: UiContext): void {
   mountComposeStart(root, ctx.store, ctx.actions);
   mountModeTabs(root, ctx.store, ctx.send);
   mountItemsMirror(root, ctx.store);
+  mountChatInput(root, ctx.store, ctx.send);
 
   // Sticky bottom action bar (Pause/Stop in active, listening UI when listening).
   mountCtaRegion(root, ctx.store, ctx.send, ctx.actions, ctx.auth);

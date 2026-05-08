@@ -58,8 +58,31 @@ export function mountItemsMirror(parent: HTMLElement, store: Store): void {
     if (items.length === 0 && !showLive) {
       const empty = document.createElement("div");
       empty.className = "items-empty label-mono";
-      empty.textContent = `─ no ${s.currentMode.replace("_", " ")} yet`;
+      const placeholder =
+        s.currentMode === "chat"
+          ? "─ ask the agent anything"
+          : `─ no ${s.currentMode.replace("_", " ")} yet`;
+      empty.textContent = placeholder;
       pane.appendChild(empty);
+      return;
+    }
+
+    // Chat mode renders bubble-style with role-aware alignment.
+    // Q+A pairs replace each other on each exchange; no thread.
+    if (s.currentMode === "chat") {
+      for (const item of items) {
+        const role =
+          ((item.meta as Record<string, unknown> | null | undefined)?.role as string) ??
+          "assistant";
+        const row = document.createElement("article");
+        row.className = `chat-bubble chat-bubble-${role}`;
+        const body = document.createElement("div");
+        body.className = "chat-bubble-body";
+        body.textContent = item.text;
+        row.appendChild(body);
+        pane.appendChild(row);
+      }
+      pane.scrollTop = pane.scrollHeight;
       return;
     }
 

@@ -72,6 +72,10 @@ struct ItemMeta: Codable, Sendable, Equatable {
     /// prefix in the overlay so multi-speaker meetings stay
     /// readable.
     let speaker: String?
+    /// Role on chat-mode items: `"user"` for the question bubble,
+    /// `"assistant"` for the agent's reply. Drives bubble
+    /// alignment + tint in the overlay.
+    let role: String?
 }
 
 /// One row inside a mode's items list. `meta` is decoded
@@ -161,6 +165,14 @@ struct MarkMomentIntent: Encodable {
         self.t = t
         self.note = note
     }
+}
+
+/// User-typed question to the agent during an active meeting. The
+/// server validates active/paused state, kicks the agent, and the
+/// resulting Q+A pair lands in chat-mode `items_update` events.
+struct ChatIntent: Encodable {
+    let type: String = "chat"
+    let text: String
 }
 
 // MARK: - Events (Server → Mac)

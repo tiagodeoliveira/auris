@@ -34,6 +34,11 @@ pub fn default_modes() -> Vec<ModeOption> {
             label: "Summary".into(),
             update_strategy: UpdateStrategy::Replace,
         },
+        ModeOption {
+            id: "chat".into(),
+            label: "Chat".into(),
+            update_strategy: UpdateStrategy::Replace,
+        },
     ]
 }
 
@@ -295,6 +300,11 @@ impl UserState {
                 // identity (only ws.rs has it). This arm exists so the
                 // match stays exhaustive without us adding a fake outcome.
                 tracing::warn!("RegisterDevice reached apply_intent — should be handled in ws.rs");
+            }
+            Intent::Chat { .. } => {
+                // Handled in ws.rs because it dispatches to the agent
+                // task via the kick channel, not via state mutation.
+                tracing::warn!("Chat reached apply_intent — should be handled in ws.rs");
             }
         }
         self.assert_invariants();
@@ -910,12 +920,13 @@ mod tests {
     #[test]
     fn new_has_default_modes() {
         let s = UserState::new();
-        assert_eq!(s.available_modes.len(), 5);
+        assert_eq!(s.available_modes.len(), 6);
         assert_eq!(s.available_modes[0].id, "highlights");
         assert_eq!(s.available_modes[1].id, "transcript");
         assert_eq!(s.available_modes[2].id, "actions");
         assert_eq!(s.available_modes[3].id, "open_questions");
         assert_eq!(s.available_modes[4].id, "summary");
+        assert_eq!(s.available_modes[5].id, "chat");
     }
 
     #[test]
@@ -956,7 +967,7 @@ mod tests {
                     meeting_id.is_none(),
                     "idle snapshot should not carry a meeting_id"
                 );
-                assert_eq!(available_modes.len(), 5);
+                assert_eq!(available_modes.len(), 6);
                 assert_eq!(mode, "transcript");
                 assert!(display_tag.is_none());
                 assert!(metadata.is_empty());

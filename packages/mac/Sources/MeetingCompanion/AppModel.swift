@@ -660,6 +660,23 @@ final class AppModel {
         }
     }
 
+    /// Send a user chat message to the agent. Server validates that
+    /// a meeting is active/paused; the agent's reply lands as a new
+    /// chat-mode item via the standard `ItemsUpdate` event. No
+    /// optimistic echo — the UI shows the question only after the
+    /// server replies, keeping the displayed state in sync with the
+    /// agent's actual history.
+    func sendChat(_ text: String) async {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        guard webSocket.state == .connected else { return }
+        do {
+            try await webSocket.send(intent: ChatIntent(text: trimmed))
+        } catch {
+            print("[AppModel] chat send failed: \(error)")
+        }
+    }
+
     /// Merge an `items_update` payload into the buffer for `mode`,
     /// honoring the mode's declared `UpdateStrategy`. Falls back to
     /// `append` if the mode isn't in `availableModes` (defensive —

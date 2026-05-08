@@ -79,17 +79,27 @@ const SYSTEM_PROMPT: &str = "You are an agent inside a real-time meeting note-ta
 Your job: emit structured items via tool calls when transcript chunks contain something noteworthy.\n\
 \n\
 OUTPUT FORMAT — READ THIS FIRST\n\
-- Tool calls are your ONLY form of output that matters. Either emit one or more tool calls, or end \
-your turn with empty/no text.\n\
-- DO NOT respond with conversational text. NEVER say things like \"I'll keep listening\", \
-\"Noted, I'll watch for…\", \"Thanks for attaching that\", \"I see\", \"Understood\", \"Let me know if…\". \
-These responses pollute the conversation history and bias future turns toward chatting instead of recording.\n\
-- The correct response when there's nothing to record is an empty turn. The user is not reading your text; \
-they are reading the items your tools produce.\n\
+There are TWO modes for your reply, decided by what's in the user message:\n\
+\n\
+A. NORMAL MODE — when the user message contains [transcript] / [event] blocks but NO [chat] block:\n\
+- Tool calls are your ONLY useful output. Either emit one or more tool calls, or end your turn with empty text.\n\
+- DO NOT respond with conversational text. NEVER say \"I'll keep listening\", \"Noted, I'll watch for…\", \
+\"Thanks for attaching that\", \"I see\", \"Understood\", \"Let me know if…\".\n\
+- Empty turn is the correct response when there's nothing to record.\n\
+\n\
+B. CHAT MODE — when the user message contains a [chat] block:\n\
+- Reply with text. Your text response IS the answer the user sees in the chat panel — be direct, \
+informative, and as concise as the question warrants. No \"Let me check…\" preamble.\n\
+- Tool calls are still allowed and encouraged when the chat asks you to record something \
+(\"capture this as an action,\" \"add a highlight,\" etc.). Emit the tool call AND a brief text \
+confirmation in the same turn.\n\
+- Use your conversation history (transcript + past tool calls + any attached artifacts) to ground \
+the answer. If the user asks about something you don't have, say so honestly in one sentence.\n\
 \n\
 HOW THE CONVERSATION WORKS\n\
 - Each user turn delivers one or more of: a [meeting] header (first turn only, with title/description), \
-[event] blocks (e.g., \"User just attached artifact …\"), and a [transcript] block (new speech since the last turn).\n\
+[event] blocks (e.g., \"User just attached artifact …\"), [chat] blocks (a user question/instruction), \
+and a [transcript] block (new speech since the last turn).\n\
 - Your past tool calls are visible in this conversation history. They are your memory of what's already \
 been recorded — there is no separate \"existing items\" list.\n\
 \n\
@@ -721,10 +731,10 @@ pub fn spawn_meeting_agent(
                     match kick_result {
                         Ok(kick) if kick.user_id == user_id => {
                             info!(user_id = %user_id, reason = ?kick.reason, "agent loop kicked");
-                            let event_text = format_kick_event(&db, &kick).await;
+                            let kick_block = format_kick_event(&db, &kick).await;
                             fire(
                                 &state, &db, &events_tx, &user_id, &llm,
-                                &mut buffer, &mut history, &mut bootstrapped, event_text,
+                                &mut buffer, &mut history, &mut bootstrapped, kick_block,
                             ).await;
                             last_fire_at = Instant::now();
                             last_chunk_at = None;
@@ -760,9 +770,9 @@ pub fn spawn_meeting_agent(
 }
 
 /// One agent invocation. Builds the next user-turn message from
-/// (optional) bootstrap + (optional) event + new transcript chunks,
-/// fires the agent through rig with the existing `history` as
-/// chat context, and appends rig's returned `Vec<Message>` (the
+/// (optional) bootstrap + (optional) kick block + new transcript
+/// chunks, fires the agent through rig with the existing `history`
+/// as chat context, and appends rig's returned `Vec<Message>` (the
 /// new user/assistant/tool-result turns produced by this fire) back
 /// onto `history` so the next fire sees them.
 #[allow(clippy::too_many_arguments)]
@@ -775,17 +785,27 @@ async fn fire(
     buffer: &mut Vec<TranscriptChunk>,
     history: &mut Vec<rig::completion::Message>,
     bootstrapped: &mut bool,
-    kick_event: Option<String>,
+    kick_block: Option<KickBlock>,
 ) {
     let new_chunks: Vec<TranscriptChunk> = std::mem::take(buffer);
-    if new_chunks.is_empty() && kick_event.is_none() && *bootstrapped {
+    if new_chunks.is_empty() && kick_block.is_none() && *bootstrapped {
         return;
     }
     let new_chunks_count = new_chunks.len();
 
+    // Capture chat context up-front. We need the user_text for the
+    // chat-mode item even if the fire fails or returns empty text;
+    // and we use the boolean to gate trailing-text-strip and to
+    // capture the agent's response as the chat reply.
+    let chat_user_text: Option<String> = match &kick_block {
+        Some(KickBlock::Chat { user_text }) => Some(user_text.clone()),
+        _ => None,
+    };
+    let is_chat_fire = chat_user_text.is_some();
+
     // Compose this turn's user message. Sections, in order:
     //   [meeting] header (first fire only)
-    //   [event] block (artifact attach, etc. — when set)
+    //   [event] / [chat] block (kick payload — when set)
     //   [transcript] block (new chunks since last fire — when present)
     //
     // Each fire sends only the delta. The agent's tool-call history
@@ -796,8 +816,8 @@ async fn fire(
             sections.push(boot);
         }
     }
-    if let Some(event) = kick_event {
-        sections.push(format!("[event]\n{event}"));
+    if let Some(block) = &kick_block {
+        sections.push(format!("[{}]\n{}", block.label(), block.body()));
     }
     if !new_chunks.is_empty() {
         sections.push(format!("[transcript]\n{}", format_chunks(&new_chunks)));
@@ -892,25 +912,73 @@ async fn fire(
             let raw_msg_count = resp.messages.as_ref().map(|m| m.len()).unwrap_or(0);
             let mut filtered = 0usize;
             if let Some(mut new_msgs) = resp.messages {
-                // Strip trailing text-only assistant turns. rig's
-                // `extended_details` returns every message produced
-                // this fire including the model's final prose
-                // ("noted, I'll keep listening", etc.). Letting that
-                // text into history teaches the agent its own
-                // pattern is "respond conversationally" — once it
-                // sees a chat-style precedent, subsequent fires
-                // emit prose instead of tool calls. Filtering keeps
-                // history a pure tool-call timeline.
-                while matches!(new_msgs.last(), Some(RigMessage::Assistant { content, .. })
-                    if content.iter().all(|c| matches!(c, AssistantContent::Text(_) | AssistantContent::Reasoning(_))))
-                {
-                    new_msgs.pop();
-                    filtered += 1;
+                // Strip trailing text-only assistant turns — UNLESS
+                // this is a chat fire. For transcript-only fires,
+                // letting the model's final prose into history
+                // ("noted, I'll keep listening") teaches it that
+                // chat-style replies are the precedent and pollutes
+                // future fires. For chat fires the trailing text IS
+                // the user-visible reply and must stay in history so
+                // future turns see "I told them X" context.
+                if !is_chat_fire {
+                    while matches!(new_msgs.last(), Some(RigMessage::Assistant { content, .. })
+                        if content.iter().all(|c| matches!(c, AssistantContent::Text(_) | AssistantContent::Reasoning(_))))
+                    {
+                        new_msgs.pop();
+                        filtered += 1;
+                    }
                 }
                 history.extend(new_msgs);
             }
             let new_msg_count = raw_msg_count.saturating_sub(filtered);
             *bootstrapped = true;
+
+            // Surface the chat reply. The user's question + the
+            // agent's text response replace the chat-mode items
+            // atomically — UI sees the Q+A pair appear together.
+            // If the agent returned empty text (e.g., it only emitted
+            // tool calls), we still render the user's question with
+            // a placeholder so the UI doesn't show a stale prior
+            // reply; tool calls themselves are reflected in their
+            // respective modes (highlights / actions / open_questions)
+            // — chat mode doesn't echo them.
+            if let Some(user_text) = chat_user_text {
+                let reply = resp.output.trim();
+                let assistant_text = if reply.is_empty() {
+                    "(recorded — see other modes)".to_string()
+                } else {
+                    reply.to_string()
+                };
+                let user_item = Item {
+                    id: format!("chat-q-{}", uuid::Uuid::new_v4()),
+                    text: user_text,
+                    detail: None,
+                    t: 0,
+                    meta: Some(serde_json::json!({"role": "user"})),
+                };
+                let assistant_item = Item {
+                    id: format!("chat-a-{}", uuid::Uuid::new_v4()),
+                    text: assistant_text,
+                    detail: None,
+                    t: 0,
+                    meta: Some(serde_json::json!({"role": "assistant"})),
+                };
+                let items = {
+                    let mut s = state.lock().await;
+                    s.user_mut(user_id)
+                        .replace_items_for_mode("chat", vec![user_item, assistant_item])
+                };
+                if !items.is_empty() {
+                    let _ = events_tx.send(UserEvent::new(
+                        user_id.to_string(),
+                        Event::ItemsUpdate {
+                            mode: "chat".into(),
+                            items,
+                        },
+                    ));
+                }
+            }
+
             info!(
                 user_id,
                 provider = ?llm.provider(),
@@ -918,6 +986,7 @@ async fn fire(
                 history_len = history.len(),
                 new_msg_count,
                 stripped_text_turns = filtered,
+                is_chat = is_chat_fire,
                 prompt_chars,
                 input_tokens = resp.usage.input_tokens,
                 output_tokens = resp.usage.output_tokens,
@@ -928,6 +997,40 @@ async fn fire(
         }
         Err(e) => {
             llm.record_usage(user_id, prompt_chars, 0);
+            // On failure with a chat fire, surface a one-line error
+            // back to the user so they don't see their question
+            // stuck unanswered. Keeps the existing prior chat (if
+            // any) cleared so they know the new question failed.
+            if let Some(user_text) = chat_user_text {
+                let user_item = Item {
+                    id: format!("chat-q-{}", uuid::Uuid::new_v4()),
+                    text: user_text,
+                    detail: None,
+                    t: 0,
+                    meta: Some(serde_json::json!({"role": "user"})),
+                };
+                let err_item = Item {
+                    id: format!("chat-a-{}", uuid::Uuid::new_v4()),
+                    text: "(chat failed — please retry)".to_string(),
+                    detail: None,
+                    t: 0,
+                    meta: Some(serde_json::json!({"role": "assistant", "error": true})),
+                };
+                let items = {
+                    let mut s = state.lock().await;
+                    s.user_mut(user_id)
+                        .replace_items_for_mode("chat", vec![user_item, err_item])
+                };
+                if !items.is_empty() {
+                    let _ = events_tx.send(UserEvent::new(
+                        user_id.to_string(),
+                        Event::ItemsUpdate {
+                            mode: "chat".into(),
+                            items,
+                        },
+                    ));
+                }
+            }
             warn!(
                 user_id,
                 provider = ?llm.provider(),
@@ -1010,28 +1113,80 @@ async fn build_bootstrap_section(
     }
 }
 
-/// Format a kick into the body of an [event] block. Loads the
-/// referenced artifact so the agent sees its name + short summary
-/// in the same fire it's announced. Returns `None` only if the
-/// kick doesn't translate to a meaningful event (shouldn't happen
-/// today, but the future-proof shape supports it).
-async fn format_kick_event(db: &sqlx::PgPool, kick: &AgentKick) -> Option<String> {
-    match &kick.reason {
-        AgentKickReason::ArtifactAttached { artifact_id } => {
-            match crate::db::get_artifact_for_user(db, &kick.user_id, artifact_id).await {
-                Ok(Some(a)) => {
-                    let summary = a.short_summary.as_deref().unwrap_or("(summary pending)");
-                    Some(format!(
-                        "User just attached artifact: id={} name={} mime={} summary={}",
-                        a.id, a.name, a.mime_type, summary,
-                    ))
-                }
-                _ => Some(format!(
-                    "User just attached artifact: id={artifact_id} (details unavailable)"
-                )),
-            }
+/// One-of body produced from an `AgentKick`. Different kick reasons
+/// produce different prompt-block kinds: `ArtifactAttached` becomes
+/// an `[event]` block (one-way notification, agent doesn't reply);
+/// `ChatMessage` becomes a `[chat]` block (the agent's text response
+/// is captured and surfaced as the assistant-side reply in chat
+/// mode). The fire function dispatches on this to format the right
+/// block label and to decide whether to keep trailing assistant text
+/// in history (chat needs it; events don't).
+enum KickBlock {
+    Event(String),
+    Chat { user_text: String },
+}
+
+impl KickBlock {
+    fn label(&self) -> &'static str {
+        match self {
+            KickBlock::Event(_) => "event",
+            KickBlock::Chat { .. } => "chat",
         }
     }
+
+    fn body(&self) -> String {
+        match self {
+            KickBlock::Event(text) => text.clone(),
+            KickBlock::Chat { user_text } => format!("User: {user_text:?}"),
+        }
+    }
+}
+
+async fn format_kick_event(db: &sqlx::PgPool, kick: &AgentKick) -> Option<KickBlock> {
+    match &kick.reason {
+        AgentKickReason::ArtifactAttached { artifact_id } => {
+            let body = match crate::db::get_artifact_for_user(db, &kick.user_id, artifact_id).await
+            {
+                Ok(Some(a)) => {
+                    let summary = a.short_summary.as_deref().unwrap_or("(summary pending)");
+                    format!(
+                        "User just attached artifact: id={} name={} mime={} summary={}",
+                        a.id, a.name, a.mime_type, summary,
+                    )
+                }
+                _ => format!("User just attached artifact: id={artifact_id} (details unavailable)"),
+            };
+            Some(KickBlock::Event(body))
+        }
+        AgentKickReason::ChatMessage { text } => Some(KickBlock::Chat {
+            user_text: text.clone(),
+        }),
+        AgentKickReason::MomentMarked { t_ms, note } => {
+            let ts = format_ms(*t_ms);
+            let body = match note.as_deref().filter(|s| !s.trim().is_empty()) {
+                Some(n) => format!("User marked a moment at {ts} with note: {n:?}. The moment summary will arrive as a follow-up event once the worker finishes (~15-22 s)."),
+                None => format!("User marked a moment at {ts}. The moment summary will arrive as a follow-up event once the worker finishes (~15-22 s)."),
+            };
+            Some(KickBlock::Event(body))
+        }
+        AgentKickReason::MomentSummarized {
+            moment_id,
+            t_ms,
+            summary,
+        } => {
+            let ts = format_ms(*t_ms);
+            Some(KickBlock::Event(format!(
+                "Moment at {ts} summarized (id={moment_id}): {summary}"
+            )))
+        }
+    }
+}
+
+fn format_ms(t_ms: i64) -> String {
+    let total_secs = (t_ms.max(0) / 1000) as u64;
+    let mm = total_secs / 60;
+    let ss = total_secs % 60;
+    format!("{mm:02}:{ss:02}")
 }
 
 // ─── Kick channel ───────────────────────────────────────────────────────
@@ -1053,6 +1208,29 @@ pub enum AgentKickReason {
     /// task loads the artifact by id to render its name + summary
     /// into the [event] block on the next fire.
     ArtifactAttached { artifact_id: String },
+    /// User sent a chat message. The agent's text response becomes
+    /// the assistant-side reply, rendered alongside the user's
+    /// question in chat mode (Replace strategy, single Q+A pair).
+    /// Tool calls are still allowed during a chat fire — if the
+    /// user asks "record this as an action," the agent emits the
+    /// tool call AND the text reply.
+    ChatMessage { text: String },
+    /// User just bookmarked a moment. Sent immediately on creation
+    /// so the agent knows about it before the (15-22 s) summary
+    /// worker finishes; lets users chat about a moment they just
+    /// snapped without a stale "I don't know what you mean" reply.
+    /// The richer summary lands as a separate `MomentSummarized`
+    /// event when the worker completes.
+    MomentMarked { t_ms: i64, note: Option<String> },
+    /// Moment summary worker finished. Carries the summary text the
+    /// LLM produced (transcript window ± screenshot synthesis) so
+    /// the agent has detailed context for any later question about
+    /// what was happening at that moment.
+    MomentSummarized {
+        moment_id: String,
+        t_ms: i64,
+        summary: String,
+    },
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────

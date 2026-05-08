@@ -822,6 +822,46 @@ async fn dispatch_intent(
 
     tracing::info!(intent = ?intent, "intent received");
 
+    // Chat dispatches to the agent task via the kick channel; it
+    // doesn't mutate state directly. Validation: meeting must be
+    // active or paused (chat is per-meeting only in v1).
+    if let Intent::Chat { text } = intent {
+        let trimmed = text.trim().to_string();
+        if trimmed.is_empty() {
+            return Ok(());
+        }
+        let active = {
+            let s = handle.state.lock().await;
+            s.user(user_id)
+                .map(|u| {
+                    matches!(
+                        u.snapshot_meeting_state(),
+                        crate::contract::MeetingState::Active
+                            | crate::contract::MeetingState::Paused
+                    )
+                })
+                .unwrap_or(false)
+        };
+        if !active {
+            let err = Event::Error {
+                code: "no_active_meeting".into(),
+                message: "Chat is only available during an active meeting".into(),
+                intent_ref: None,
+            };
+            sink.send(Message::Text(serde_json::to_string(&err)?))
+                .await
+                .ok();
+            return Ok(());
+        }
+        let _ = handle
+            .agent_kick_tx
+            .send(crate::summarizer::agent::AgentKick {
+                user_id: user_id.to_string(),
+                reason: crate::summarizer::agent::AgentKickReason::ChatMessage { text: trimmed },
+            });
+        return Ok(());
+    }
+
     // RegisterDevice needs the connection_id (only ws.rs knows it),
     // so it's handled here rather than in `apply_intent`.
     if let Intent::RegisterDevice {
@@ -963,6 +1003,21 @@ async fn dispatch_intent(
                     t_ms: req.t as i64,
                     user_id: user_id.to_string(),
                 });
+                // Tell the agent immediately. The summary worker
+                // takes 15-22 s end-to-end (grace + LLM + DB write),
+                // so without this kick the agent wouldn't know the
+                // moment exists if the user chats about it right
+                // after snapping. The summary lands as a follow-up
+                // event when ready.
+                let _ = handle
+                    .agent_kick_tx
+                    .send(crate::summarizer::agent::AgentKick {
+                        user_id: user_id.to_string(),
+                        reason: crate::summarizer::agent::AgentKickReason::MomentMarked {
+                            t_ms: req.t as i64,
+                            note: req.note.clone(),
+                        },
+                    });
                 // Delegate screenshot capture to the audio-source
                 // device if it has `screen_capture`. We don't try
                 // arbitrary other devices: the audio source is the

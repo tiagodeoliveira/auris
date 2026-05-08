@@ -58,7 +58,8 @@ export type Intent =
   | { type: "extract_metadata"; description: string }
   | { type: "register_device"; hostname: string; capabilities: Capability[] }
   | { type: "mark_moment"; t: number; note?: string }
-  | { type: "expand_item"; item_id: string };
+  | { type: "expand_item"; item_id: string }
+  | { type: "chat"; text: string };
 
 export type Event =
   | {

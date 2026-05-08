@@ -958,6 +958,76 @@ button.cta:disabled {
   margin-top: 4px;
 }
 
+/* === CHAT MODE — bubble pairs (Q+A), Replace strategy === */
+.chat-bubble {
+  max-width: 80%;
+  padding: 10px 14px;
+  margin: 6px 16px;
+  border-radius: 14px;
+  line-height: 1.5;
+  animation: items-fade 0.18s ease-out;
+}
+.chat-bubble-user {
+  margin-left: auto;
+  background: var(--brand-blue);
+  color: #fff;
+  border-bottom-right-radius: 4px;
+}
+.chat-bubble-assistant {
+  margin-right: auto;
+  background: var(--surface-elev);
+  color: var(--text-light);
+  border: 1px solid var(--border-dark);
+  border-bottom-left-radius: 4px;
+}
+.chat-bubble-body {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* Chat input — fixed at the bottom of the active-meeting layout
+   when chat mode is current. Mounted after items-mirror and
+   self-hides for other modes via inline display:none. */
+.chat-input {
+  display: flex;
+  gap: 8px;
+  padding: 10px 16px;
+  border-top: 1px solid var(--border-dark);
+  background: var(--surface-elev);
+}
+.chat-input-text {
+  flex: 1;
+  padding: 8px 12px;
+  border: 1px solid var(--border-dark);
+  border-radius: 6px;
+  font-family: inherit;
+  font-size: 14px;
+  background: var(--surface);
+  color: var(--text-light);
+}
+.chat-input-text:focus {
+  outline: none;
+  border-color: var(--brand-blue);
+}
+.chat-input-send {
+  padding: 8px 16px;
+  border: none;
+  border-radius: 6px;
+  background: var(--brand-blue);
+  color: #fff;
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.chat-input-send:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.chat-input-busy .chat-input-text {
+  opacity: 0.7;
+}
+
 /* === KV EDITOR === */
 .kv-editor {
   padding: 12px 24px;

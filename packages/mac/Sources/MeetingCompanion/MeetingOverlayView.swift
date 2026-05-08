@@ -40,6 +40,12 @@ struct MeetingOverlayView: View {
     /// compose-time picker which stages into selectedArtifacts.
     @State private var showLiveArtifactPicker = false
 
+    /// Chat input state. `chatDraft` mirrors the text-field; `chatBusy`
+    /// disables submit while the agent's reply is in flight (cleared
+    /// when chat-mode items grow, indicating the round-trip landed).
+    @State private var chatDraft: String = ""
+    @State private var chatBusy: Bool = false
+
     init(model: AppModel) {
         self.model = model
         _mode = State(initialValue: model.isMeetingActive ? .live : .compose)
@@ -407,9 +413,97 @@ struct MeetingOverlayView: View {
     private var modeColumn: some View {
         VStack(alignment: .leading, spacing: 6) {
             modeTabs
-            itemsList
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            if model.currentMode == "chat" {
+                chatPanel
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                itemsList
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
         }
+    }
+
+    /// Chat tab's bubble list + input row. Q+A pairs from chat-mode
+    /// items render as right-aligned (user) / left-aligned (assistant)
+    /// bubbles. Replace strategy means a new exchange clobbers the
+    /// previous pair.
+    private var chatPanel: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            chatBubbles
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            chatInputRow
+        }
+    }
+
+    private var chatBubbles: some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                VStack(alignment: .leading, spacing: 8) {
+                    let items = model.itemsByMode["chat"] ?? []
+                    if items.isEmpty {
+                        Text("Ask the agent anything.")
+                            .foregroundStyle(MCTheme.muted)
+                            .padding(.top, 8)
+                    } else {
+                        ForEach(items) { item in
+                            ChatBubbleRow(item: item)
+                                .id(item.id)
+                        }
+                    }
+                    Color.clear.frame(height: 1).id("chatEnd")
+                }
+                .frame(maxWidth: .infinity, alignment: .topLeading)
+                .padding(.trailing, 8)
+            }
+            .scrollIndicators(.hidden)
+            .onChange(of: itemsCountForCurrentMode) { _, _ in
+                withAnimation(.linear(duration: 0.1)) {
+                    proxy.scrollTo("chatEnd", anchor: .bottom)
+                }
+            }
+        }
+    }
+
+    private var chatInputRow: some View {
+        HStack(spacing: 8) {
+            TextField("Ask the agent…", text: $chatDraft)
+                .textFieldStyle(.plain)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(MCTheme.input)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6)
+                        .strokeBorder(MCTheme.border)
+                )
+                .clipShape(RoundedRectangle(cornerRadius: 6))
+                .disabled(chatBusy)
+                .onSubmit { submitChat() }
+
+            Button {
+                submitChat()
+            } label: {
+                Text("Send")
+                    .font(.system(size: 12, weight: .semibold))
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(MCTheme.blue)
+            .disabled(chatBusy || chatDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        }
+        .onChange(of: itemsCountForCurrentMode) { _, _ in
+            // The agent's reply landing as a new chat item flips
+            // chatBusy off — UI re-enables for the next question.
+            chatBusy = false
+        }
+    }
+
+    private func submitChat() {
+        let text = chatDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty, !chatBusy else { return }
+        chatBusy = true
+        chatDraft = ""
+        Task { await model.sendChat(text) }
     }
 
     private var modeTabs: some View {
@@ -508,6 +602,7 @@ struct MeetingOverlayView: View {
         case "actions": return "ACTIONS"
         case "open_questions": return "QUESTIONS"
         case "summary": return "SUMMARY"
+        case "chat": return "CHAT"
         default: return mode.label.uppercased()
         }
     }
@@ -755,6 +850,41 @@ private struct ItemRow: View {
                     .padding(.leading, 8)
                     .padding(.top, 1)
             }
+        }
+    }
+}
+
+/// Chat-mode bubble. `meta.role == "user"` right-aligns with the
+/// brand-blue fill; anything else (assistant or omitted) left-aligns
+/// with the panel surface. Only the bubble interior is clipped —
+/// the row itself fills width so alignment works.
+private struct ChatBubbleRow: View {
+    let item: Item
+
+    private var isUser: Bool {
+        // Item.meta is decoded as our `ItemMeta` helper struct. Chat
+        // bubbles encode role into a string field we don't model
+        // statically — fall back to the raw JSON dictionary on the
+        // server's wire shape.
+        guard let role = item.meta?.role, !role.isEmpty else { return false }
+        return role == "user"
+    }
+
+    var body: some View {
+        HStack {
+            if isUser { Spacer(minLength: 32) }
+            Text(item.text)
+                .foregroundStyle(isUser ? Color.white : MCTheme.text)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(isUser ? MCTheme.blue : MCTheme.panel.opacity(0.9))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12)
+                        .strokeBorder(isUser ? Color.clear : MCTheme.border, lineWidth: 1)
+                )
+                .clipShape(RoundedRectangle(cornerRadius: 12))
+                .frame(maxWidth: .infinity, alignment: isUser ? .trailing : .leading)
+            if !isUser { Spacer(minLength: 32) }
         }
     }
 }

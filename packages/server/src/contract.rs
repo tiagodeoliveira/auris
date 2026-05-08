@@ -145,6 +145,15 @@ pub enum Intent {
     ExpandItem {
         item_id: String,
     },
+    /// Chat with the agent during an active meeting. The user's
+    /// question is rendered as the user-side bubble in chat mode
+    /// (Replace strategy, single Q+A pair); the agent's reply
+    /// becomes the assistant-side bubble. Allowed only when a
+    /// meeting is active or paused — chat is per-meeting only,
+    /// no persistence across meetings in v1.
+    Chat {
+        text: String,
+    },
 }
 
 /// Internal envelope: `Event` + the local `users.id` of the user

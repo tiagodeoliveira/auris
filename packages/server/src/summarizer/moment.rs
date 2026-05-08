@@ -68,6 +68,7 @@ pub fn spawn_worker(handle: ServerHandle) {
     let mut rx = handle.moment_created_tx.subscribe();
     let llm = handle.llm.clone();
     let db = handle.db.clone();
+    let agent_kick_tx = handle.agent_kick_tx.clone();
     tokio::spawn(async move {
         info!("moment summary worker started");
         loop {
@@ -79,8 +80,9 @@ pub fn spawn_worker(handle: ServerHandle) {
                     // unbounded fan-out isn't a concern.
                     let db = db.clone();
                     let llm = llm.clone();
+                    let agent_kick_tx = agent_kick_tx.clone();
                     tokio::spawn(async move {
-                        if let Err(e) = process_one(&db, &llm, &req).await {
+                        if let Err(e) = process_one(&db, &llm, &agent_kick_tx, &req).await {
                             warn!(error = ?e, moment_id = %req.moment_id, "moment summary failed");
                             let _ = crate::db::update_moment_summary(
                                 &db,
@@ -104,6 +106,7 @@ pub fn spawn_worker(handle: ServerHandle) {
 async fn process_one(
     db: &sqlx::PgPool,
     llm: &Arc<LlmClient>,
+    agent_kick_tx: &tokio::sync::broadcast::Sender<crate::summarizer::agent::AgentKick>,
     req: &MomentCreated,
 ) -> anyhow::Result<()> {
     if std::env::var("MEETING_COMPANION_LLM_DISABLED").is_ok() {
@@ -205,9 +208,23 @@ async fn process_one(
         }
     };
 
-    crate::db::update_moment_summary(db, &req.moment_id, Some(extraction.summary.trim()), "done")
-        .await?;
+    let summary_trimmed = extraction.summary.trim().to_string();
+    crate::db::update_moment_summary(db, &req.moment_id, Some(&summary_trimmed), "done").await?;
     info!(meeting_id = %req.meeting_id, moment_id = %req.moment_id, "moment summary done");
+
+    // Tell the agent the rich summary is now available. Earlier the
+    // WS handler kicked with `MomentMarked` (timestamp + optional
+    // note) so the agent knew the moment existed; this richer event
+    // lets the agent answer "what was that?" with content from the
+    // transcript window + screenshot synthesis.
+    let _ = agent_kick_tx.send(crate::summarizer::agent::AgentKick {
+        user_id: req.user_id.clone(),
+        reason: crate::summarizer::agent::AgentKickReason::MomentSummarized {
+            moment_id: req.moment_id.clone(),
+            t_ms: req.t_ms,
+            summary: summary_trimmed,
+        },
+    });
     Ok(())
 }
 
