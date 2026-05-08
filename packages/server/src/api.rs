@@ -111,6 +111,12 @@ pub struct ApiState {
     /// attach so the agent fires immediately and picks up the new
     /// artifact in its next working-context build.
     pub agent_kick_tx: broadcast::Sender<crate::summarizer::agent::AgentKick>,
+    /// Broadcast bus for per-user wire events. API handlers that
+    /// mutate cross-client visible state (e.g. attach/detach
+    /// artifacts) emit `Event::ArtifactsChanged` here so PWA + Mac
+    /// stay in sync without polling. Sender is held in
+    /// `ServerHandle`; this is the cloned view for API handlers.
+    pub events_tx: broadcast::Sender<crate::contract::UserEvent>,
 }
 
 /// Build the axum Router with all endpoints wired up. CORS is
@@ -686,7 +692,30 @@ async fn attach_artifact(
                 artifact_id: body.artifact_id.clone(),
             },
         });
+    broadcast_artifacts_changed(&state, &meeting_id, &user_id).await;
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Read the current attached-artifact set from DB and broadcast it
+/// to all WS clients of `user_id` as `Event::ArtifactsChanged`.
+/// Called from attach + detach handlers so Mac and PWA stay in
+/// sync without either polling or trusting their own local mirror.
+/// DB miss is logged and dropped — the broadcast was best-effort
+/// anyway, and the next snapshot path will eventually carry the
+/// truth.
+async fn broadcast_artifacts_changed(state: &ApiState, meeting_id: &str, user_id: &str) {
+    let attached = match crate::db::list_artifacts_for_meeting(&state.db, meeting_id).await {
+        Ok(rows) => rows,
+        Err(e) => {
+            tracing::warn!(error = ?e, meeting_id, "broadcast_artifacts_changed: list failed");
+            return;
+        }
+    };
+    let artifact_ids: Vec<String> = attached.into_iter().map(|a| a.id).collect();
+    let _ = state.events_tx.send(crate::contract::UserEvent::new(
+        user_id.to_string(),
+        crate::contract::Event::ArtifactsChanged { artifact_ids },
+    ));
 }
 
 async fn detach_artifact(
@@ -711,6 +740,7 @@ async fn detach_artifact(
     crate::db::detach_artifact_from_meeting(&state.db, &meeting_id, &artifact_id)
         .await
         .map_err(|e| ApiError::Db(downcast_db(e)))?;
+    broadcast_artifacts_changed(&state, &meeting_id, &user_id).await;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -825,6 +855,7 @@ mod tests {
         let (moment_created_tx, _) = broadcast::channel::<MomentCreated>(8);
         let (artifact_created_tx, _) = broadcast::channel::<ArtifactCreated>(8);
         let (agent_kick_tx, _) = broadcast::channel::<crate::summarizer::agent::AgentKick>(8);
+        let (events_tx, _) = broadcast::channel::<crate::contract::UserEvent>(8);
         let dev_user = crate::db::upsert_user_by_auth0_sub(
             &pool,
             crate::ws::DEV_AUTH0_SUB,
@@ -839,6 +870,7 @@ mod tests {
             moment_created_tx,
             artifact_created_tx,
             agent_kick_tx,
+            events_tx,
         });
         (router, dev_user.id)
     }

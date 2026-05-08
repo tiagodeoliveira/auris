@@ -266,6 +266,14 @@ pub enum Event {
         #[serde(skip_serializing_if = "Option::is_none", default)]
         device_id: Option<String>,
     },
+    /// Broadcast whenever the attached-artifact set for the user's
+    /// active meeting changes (attach or detach). Carries the full
+    /// current set of artifact IDs so clients overwrite their local
+    /// mirror — no diff/incremental logic needed. Mac and PWA both
+    /// pre-check rows in their attach picker against this set.
+    ArtifactsChanged {
+        artifact_ids: Vec<String>,
+    },
     /// Sent after a WS-initiated `mark_moment` lands, asking the
     /// recipient to capture a screenshot and upload it via
     /// `POST /meetings/:id/moments/:moment_id/screenshot`. The

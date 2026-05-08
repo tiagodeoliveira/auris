@@ -210,6 +210,12 @@ enum TypedServerEvent: Sendable {
     /// `UpdateStrategy` — `replace` payloads are the full list,
     /// `append` payloads are deltas.
     case itemsUpdate(mode: String, items: [Item])
+    /// Server-authoritative list of artifact IDs attached to the
+    /// user's active meeting. Carried whenever attach/detach happens
+    /// on EITHER client so the Mac and PWA stay in sync without
+    /// polling. The overlay's mid-meeting picker pre-checks rows
+    /// against this set.
+    case artifactsChanged(artifactIds: [String])
     case error(code: String, message: String)
     case unknown(type: String)
 }
@@ -330,6 +336,10 @@ func decodeServerEvent(from text: String) throws -> TypedServerEvent? {
         }
         let w = try decoder.decode(Wrap.self, from: data)
         return .itemsUpdate(mode: w.mode, items: w.items)
+    case "artifacts_changed":
+        struct Wrap: Decodable { let artifact_ids: [String] }
+        let w = try decoder.decode(Wrap.self, from: data)
+        return .artifactsChanged(artifactIds: w.artifact_ids)
     case "error":
         struct Wrap: Decodable {
             let code: String

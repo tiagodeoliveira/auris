@@ -627,6 +627,12 @@ final class AppModel {
             itemsByMode[mode] = items
         case .itemsUpdate(let mode, let items):
             mergeItems(items, into: mode)
+        case .artifactsChanged(let ids):
+            // Server-authoritative attached set. Replaces whatever
+            // we had locally — the user may have attached or
+            // detached on the OTHER client (PWA), and the overlay's
+            // attach picker pre-checks rows against this.
+            currentMeetingAttachedArtifactIds = Set(ids)
         case .error(let code, let message):
             if extractingMetadata { extractingMetadata = false }
             print("[AppModel] server error \(code): \(message)")

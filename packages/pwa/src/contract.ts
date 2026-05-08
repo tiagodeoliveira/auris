@@ -91,7 +91,8 @@ export type Event =
   | { type: "items_update"; mode: string; items: Item[] }
   | { type: "transcript_interim"; text: string }
   | { type: "status"; status: Status }
-  | { type: "error"; code: string; message: string; intent_ref?: string };
+  | { type: "error"; code: string; message: string; intent_ref?: string }
+  | { type: "artifacts_changed"; artifact_ids: string[] };
 
 export type ErrorCode =
   | "bad_json"

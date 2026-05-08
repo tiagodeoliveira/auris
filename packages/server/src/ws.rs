@@ -346,6 +346,7 @@ fn make_app_router(handle: ServerHandle) -> Router {
         moment_created_tx: handle.moment_created_tx.clone(),
         artifact_created_tx: handle.artifact_created_tx.clone(),
         agent_kick_tx: handle.agent_kick_tx.clone(),
+        events_tx: handle.events_tx.clone(),
     };
     let api_router = crate::api::make_router(api_state);
     let ws_router = Router::new()

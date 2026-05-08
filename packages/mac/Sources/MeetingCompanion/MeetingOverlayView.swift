@@ -46,6 +46,13 @@ struct MeetingOverlayView: View {
     @State private var chatDraft: String = ""
     @State private var chatBusy: Bool = false
 
+    /// Programmatic focus for the chat input. `.accessory` activation
+    /// policy means the overlay window doesn't auto-become key on
+    /// click; without setting `isChatFocused = true` (and activating
+    /// the app) when the chat tab opens, keystrokes have nowhere to
+    /// land and the field appears dead.
+    @FocusState private var isChatFocused: Bool
+
     init(model: AppModel) {
         self.model = model
         _mode = State(initialValue: model.isMeetingActive ? .live : .compose)
@@ -433,6 +440,23 @@ struct MeetingOverlayView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             chatInputRow
         }
+        .onAppear { focusChatInput() }
+        .onChange(of: model.currentMode) { _, newMode in
+            if newMode == "chat" { focusChatInput() }
+        }
+    }
+
+    /// Bring the menu-bar app to the foreground so the overlay window
+    /// becomes a key window, then move SwiftUI focus into the chat
+    /// input. Without the activate-the-app step, `.accessory` apps
+    /// don't accept keystrokes even when a TextField has logical
+    /// focus. Run on a tiny delay so the focus assignment happens
+    /// after SwiftUI finishes rendering the chat panel.
+    private func focusChatInput() {
+        NSApp.activate(ignoringOtherApps: true)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+            isChatFocused = true
+        }
     }
 
     private var chatBubbles: some View {
@@ -468,12 +492,13 @@ struct MeetingOverlayView: View {
         HStack(spacing: 8) {
             TextField("Ask the agent…", text: $chatDraft)
                 .textFieldStyle(.plain)
+                .focused($isChatFocused)
                 .padding(.horizontal, 10)
                 .padding(.vertical, 6)
                 .background(MCTheme.input)
                 .overlay(
                     RoundedRectangle(cornerRadius: 6)
-                        .strokeBorder(MCTheme.border)
+                        .strokeBorder(isChatFocused ? MCTheme.blue : MCTheme.border)
                 )
                 .clipShape(RoundedRectangle(cornerRadius: 6))
                 .disabled(chatBusy)

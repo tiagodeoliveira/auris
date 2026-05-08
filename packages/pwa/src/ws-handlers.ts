@@ -152,6 +152,13 @@ export function handleServerEvent(event: ServerEvent, store: Store): void {
     case "audio_source_device_changed":
       store.update({ audioSourceDeviceId: event.device_id ?? null });
       return;
+    case "artifacts_changed":
+      // Server's authoritative attached-set for the active meeting.
+      // Overwrite the local mirror — clients pre-check rows in the
+      // attach picker against this. Stays in sync without polling
+      // even when the OTHER client (Mac vs PWA) issued the attach.
+      store.update({ attachedArtifactIds: event.artifact_ids });
+      return;
     case "items_update": {
       const modeOpt = store.get().availableModes.find((m) => m.id === event.mode);
       if (!modeOpt) return;
