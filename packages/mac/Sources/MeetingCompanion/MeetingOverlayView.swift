@@ -97,10 +97,18 @@ struct MeetingOverlayView: View {
             window.backgroundColor = .clear
             window.hasShadow = true
             window.isMovableByWindowBackground = true
-            // Borderless matters here: hiddenTitleBar still reserves
-            // titlebar real estate on some macOS window configurations,
-            // which lets desktop wallpaper show through as a blue strip.
-            window.styleMask = [.borderless, .resizable, .fullSizeContentView]
+            // Keep `.titled` in the style mask — borderless windows
+            // return `canBecomeKey == false` by default, which means
+            // SwiftUI TextField inside the overlay silently refuses
+            // keystrokes (e.g., the chat input). Hide the titlebar
+            // cosmetically via `titleVisibility` + transparent
+            // titlebar instead. The blue-wallpaper-strip issue
+            // mentioned previously was solved by `isOpaque = false`
+            // + transparent titlebar — the title area no longer
+            // shows desktop through it.
+            window.styleMask = [.titled, .resizable, .fullSizeContentView]
+            window.titleVisibility = .hidden
+            window.titlebarAppearsTransparent = true
             window.standardWindowButton(.closeButton)?.isHidden = true
             window.standardWindowButton(.miniaturizeButton)?.isHidden = true
             window.standardWindowButton(.zoomButton)?.isHidden = true

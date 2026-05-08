@@ -796,6 +796,7 @@ async fn dispatch_intent(
         "register_device",
         "mark_moment",
         "expand_item",
+        "chat",
     ];
     let Some(ty) = ty else {
         send_protocol_error(sink, "unknown_intent", "missing 'type' field", None).await?;
