@@ -359,6 +359,11 @@ private struct MeetingDetailView: View {
                     artifactsBlock(artifacts)
                 }
 
+                if let usage = detail.llmUsage, usage.calls > 0 {
+                    Divider()
+                    llmUsageBlock(usage)
+                }
+
                 if let moments = detail.moments, !moments.isEmpty {
                     Divider()
                     momentsBlock(moments)
@@ -392,6 +397,44 @@ private struct MeetingDetailView: View {
                 MomentCard(moment: moment, meetingId: detail.id, model: model)
             }
         }
+    }
+
+    @ViewBuilder
+    private func llmUsageBlock(_ usage: MeetingLlmUsage) -> some View {
+        Text("LLM usage").font(.headline)
+        let billable = max(0, usage.inputTokens - usage.cachedInputTokens)
+        VStack(alignment: .leading, spacing: 4) {
+            llmUsageRow("calls", String(usage.calls))
+            llmUsageRow("input tokens", formatTokens(usage.inputTokens))
+            llmUsageRow("billable input", formatTokens(billable))
+            llmUsageRow("cached input", formatTokens(usage.cachedInputTokens))
+            llmUsageRow("output tokens", formatTokens(usage.outputTokens))
+            if let model = usage.modelId {
+                llmUsageRow("model", model)
+            }
+            if let provider = usage.provider {
+                llmUsageRow("provider", provider)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func llmUsageRow(_ label: String, _ value: String) -> some View {
+        HStack {
+            Text(label)
+                .font(.system(size: 11, design: .monospaced))
+                .foregroundStyle(.secondary)
+                .frame(width: 110, alignment: .leading)
+            Text(value).font(.callout)
+        }
+    }
+
+    private func formatTokens(_ n: Int64) -> String {
+        // Light-touch grouping so big numbers don't blur into a wall.
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .decimal
+        formatter.groupingSeparator = ","
+        return formatter.string(from: NSNumber(value: n)) ?? String(n)
     }
 
     /// Fixed render order matching the live overlay's tab order so

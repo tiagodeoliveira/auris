@@ -30,6 +30,23 @@ export interface MeetingDetail extends MeetingSummary {
    * open_questions / summary / chat). Older server builds (before
    * 0003_items.sql) omit the field; treat absent as empty. */
   items_by_mode?: Record<string, Item[]>;
+  /** LLM usage rollup persisted at meeting stop. All zero +
+   * provider/model_id null on meetings ended before
+   * 0004_meeting_llm_usage.sql, or that hit a failure path
+   * bypassing the rollup. Multiply tokens by per-model rates
+   * to compute $. Older server builds omit the field. */
+  llm_usage?: MeetingLlmUsage;
+}
+
+export interface MeetingLlmUsage {
+  calls: number;
+  input_tokens: number;
+  output_tokens: number;
+  cached_input_tokens: number;
+  /** "bedrock" / "openai" / "anthropic". Null for pre-migration meetings. */
+  provider: string | null;
+  /** e.g. "claude-opus-4-7". Null for pre-migration meetings. */
+  model_id: string | null;
 }
 
 export interface Moment {

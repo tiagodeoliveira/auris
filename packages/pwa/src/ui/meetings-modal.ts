@@ -261,6 +261,46 @@ export function mountMeetingsModal(parent: HTMLElement, store: Store, auth: Auth
       root.appendChild(mBlock);
     }
 
+    // LLM usage rollup. Renders directly under metadata so it's
+    // immediately visible; collapses to nothing when no usage was
+    // recorded (pre-migration meetings or zero-call meetings).
+    const usage = detail.llm_usage;
+    if (usage && usage.calls > 0) {
+      const block = document.createElement("div");
+      block.className = "meetings-detail-block";
+      const heading = document.createElement("div");
+      heading.className = "meetings-detail-heading";
+      heading.textContent = "LLM usage";
+      block.appendChild(heading);
+      const billable = Math.max(0, usage.input_tokens - usage.cached_input_tokens);
+      const rows: Array<[string, string]> = [
+        ["calls", String(usage.calls)],
+        ["input tokens", usage.input_tokens.toLocaleString()],
+        ["billable input", billable.toLocaleString()],
+        ["cached input", usage.cached_input_tokens.toLocaleString()],
+        ["output tokens", usage.output_tokens.toLocaleString()],
+      ];
+      if (usage.model_id) {
+        rows.push(["model", usage.model_id]);
+      }
+      if (usage.provider) {
+        rows.push(["provider", usage.provider]);
+      }
+      for (const [k, v] of rows) {
+        const row = document.createElement("div");
+        row.className = "meetings-meta-row";
+        const key = document.createElement("span");
+        key.className = "meetings-meta-key";
+        key.textContent = k;
+        const val = document.createElement("span");
+        val.className = "meetings-meta-val";
+        val.textContent = v;
+        row.append(key, val);
+        block.appendChild(row);
+      }
+      root.appendChild(block);
+    }
+
     // Per-mode persisted items (highlights / actions /
     // open_questions / summary / chat). Render in a fixed order
     // matching the live overlay's tab order so the meeting-detail

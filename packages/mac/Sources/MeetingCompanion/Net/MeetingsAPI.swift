@@ -49,12 +49,36 @@ struct MeetingDetail: Decodable, Identifiable, Sendable {
     /// 0003_items.sql migration) omit the field; absent → empty
     /// dictionary on render.
     let itemsByMode: [String: [Item]]?
+    /// LLM usage rollup (recorded at meeting stop). Older server
+    /// builds (pre 0004_meeting_llm_usage.sql) omit the field; on
+    /// renders, missing → "no usage recorded".
+    let llmUsage: MeetingLlmUsage?
 
     enum CodingKeys: String, CodingKey {
         case id, description, metadata, transcript, moments, artifacts
         case startedAt = "started_at"
         case endedAt = "ended_at"
         case itemsByMode = "items_by_mode"
+        case llmUsage = "llm_usage"
+    }
+}
+
+struct MeetingLlmUsage: Codable, Sendable, Equatable {
+    let calls: Int64
+    let inputTokens: Int64
+    let outputTokens: Int64
+    let cachedInputTokens: Int64
+    /// "bedrock" / "openai" / "anthropic". `nil` for pre-migration meetings.
+    let provider: String?
+    /// e.g. "claude-opus-4-7". `nil` for pre-migration meetings.
+    let modelId: String?
+
+    enum CodingKeys: String, CodingKey {
+        case calls, provider
+        case inputTokens = "input_tokens"
+        case outputTokens = "output_tokens"
+        case cachedInputTokens = "cached_input_tokens"
+        case modelId = "model_id"
     }
 }
 
