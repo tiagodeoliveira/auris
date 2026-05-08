@@ -583,6 +583,7 @@ struct MeetingOverlayView: View {
                         ForEach(items) { item in
                             ItemRow(
                                 item: item,
+                                mode: model.currentMode,
                                 isExpanded: expandedItemIds.contains(item.id),
                                 onToggle: { toggleExpanded(item.id) }
                             )
@@ -836,34 +837,69 @@ private struct IconCircleButtonStyle: ButtonStyle {
     }
 }
 
-/// One line of a mode's items list. Decorates the raw `text` with
-/// a speaker chip (when `meta.speaker` is present) and a disclosure
-/// chevron (when `detail` is present), expanding inline to show
-/// `detail` when the chevron is clicked.
+/// One line of a mode's items list. Mirrors the PWA's items-mirror
+/// row structure:
 ///
-/// Text remains selectable via the surrounding `.textSelection`
-/// modifier; only the chevron handles the toggle gesture, so it
-/// doesn't fight with copy-paste.
+///   `[mm:ss]  ▸  item text`
+///   `         META · CHIP · WORDS`
+///
+/// Timestamp pill on the left in mono dim, blue triangle bullet,
+/// then the body text, then a per-mode meta chip beneath it
+/// (KIND · CONTEXT for questions, OWNER · DUE for actions,
+/// IMPORTANCE for highlights, SPEAKER for transcript). Disclosure
+/// chevron appears only when `detail` is present.
 private struct ItemRow: View {
     let item: Item
+    let mode: String
     let isExpanded: Bool
     let onToggle: () -> Void
 
+    private var timestampLabel: String {
+        let total = max(0, Int(item.t / 1000))
+        let mm = total / 60
+        let ss = total % 60
+        return String(format: "[%02d:%02d]", mm, ss)
+    }
+
+    /// Per-mode meta chip text. Returns empty string when there's
+    /// nothing meaningful to render so the row collapses to one line.
+    private var metaText: String {
+        guard let meta = item.meta else { return "" }
+        switch mode {
+        case "actions":
+            let owner = meta.owner.flatMap { s in s.isEmpty ? nil : "OWNER · \(s)" } ?? ""
+            let due = meta.due.flatMap { s in s.isEmpty ? nil : "DUE · \(s)" } ?? ""
+            return [owner, due].filter { !$0.isEmpty }.joined(separator: " · ")
+        case "highlights":
+            return meta.importance.flatMap { s in
+                s.isEmpty ? nil : "IMPORTANCE · \(s)"
+            } ?? ""
+        case "open_questions":
+            let kind = meta.kind.flatMap { s in s.isEmpty ? nil : s.uppercased() } ?? ""
+            let ctx = meta.context.flatMap { s in s.isEmpty ? nil : s } ?? ""
+            switch (kind.isEmpty, ctx.isEmpty) {
+            case (true, true): return ""
+            case (false, true): return kind
+            case (true, false): return ctx
+            case (false, false): return "\(kind) · \(ctx)"
+            }
+        case "transcript":
+            return meta.speaker.flatMap { s in s.isEmpty ? nil : "SPEAKER · \(s)" } ?? ""
+        default:
+            return ""
+        }
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
-            HStack(alignment: .firstTextBaseline, spacing: 6) {
-                if let speaker = item.meta?.speaker, !speaker.isEmpty {
-                    Text(speaker)
-                        .font(.system(size: 10, weight: .semibold))
-                        .tracking(0.3)
-                        .foregroundStyle(MCTheme.muted)
-                        .padding(.horizontal, 5)
-                        .padding(.vertical, 1)
-                        .background {
-                            RoundedRectangle(cornerRadius: 3)
-                                .fill(MCTheme.input)
-                        }
-                }
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(timestampLabel)
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(MCTheme.muted)
+
+                Text("▸")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(MCTheme.blue)
 
                 Text(item.text)
                     .foregroundStyle(MCTheme.text)
@@ -881,11 +917,22 @@ private struct ItemRow: View {
                 }
             }
 
+            if !metaText.isEmpty {
+                // Indent under the body text — line up with the
+                // triangle's right edge so the meta visually attaches
+                // to the bullet text rather than the timestamp.
+                Text(metaText)
+                    .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                    .tracking(0.4)
+                    .foregroundStyle(MCTheme.muted)
+                    .padding(.leading, 70)
+            }
+
             if isExpanded, let detail = item.detail, !detail.isEmpty {
                 Text(detail)
                     .font(.callout)
                     .foregroundStyle(MCTheme.muted)
-                    .padding(.leading, 8)
+                    .padding(.leading, 70)
                     .padding(.top, 1)
             }
         }

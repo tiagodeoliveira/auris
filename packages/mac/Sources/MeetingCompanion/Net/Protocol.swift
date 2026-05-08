@@ -76,6 +76,22 @@ struct ItemMeta: Codable, Sendable, Equatable {
     /// `"assistant"` for the agent's reply. Drives bubble
     /// alignment + tint in the overlay.
     let role: String?
+    /// Importance label on highlights-mode items ("high" / "medium" /
+    /// "low"). Rendered as the meta chip beneath the item text.
+    let importance: String?
+    /// Owner on actions-mode items — whoever was named or
+    /// self-referenced as responsible.
+    let owner: String?
+    /// Stated deadline on actions-mode items. Free-form ("Friday",
+    /// "next week", "by EOM").
+    let due: String?
+    /// Kind label on open_questions-mode items ("factual",
+    /// "decision", "follow-up", etc.). Server may emit any short
+    /// string; the overlay just uppercases it.
+    let kind: String?
+    /// Optional context blurb on open_questions-mode items —
+    /// extra detail rendered in the meta chip after KIND.
+    let context: String?
 }
 
 /// One row inside a mode's items list. `meta` is decoded
