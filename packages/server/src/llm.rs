@@ -124,16 +124,22 @@ impl Clone for LlmBackend {
 // ─── Usage tracker ───────────────────────────────────────────────────────────
 
 /// Per-meeting LLM usage snapshot. `calls` counts each successful
-/// `extract_with_prompt[_and_image]` invocation; `prompt_chars` and
-/// `response_chars` sum the input and (typed-result-as-JSON) output
-/// sizes. Chars, not tokens — translation to tokens depends on the
-/// provider's tokenizer; for personal-use trend spotting, a ~4:1
-/// chars-to-tokens estimate is good enough.
+/// LLM round-trip; the three token fields come straight from each
+/// provider's reported usage (via rig's `Usage` type) so the
+/// numbers translate cleanly to actual cost on the provider's
+/// pricing page — no chars-to-tokens approximation.
+///
+/// `cached_input_tokens` is the subset of `input_tokens` that
+/// hit the provider's prompt cache (Anthropic's prompt-caching
+/// beta, OpenAI's auto-cache). Useful to track separately
+/// because it's billed at a fraction of the regular input rate
+/// (~10% on Anthropic).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct LlmUsage {
     pub calls: u64,
-    pub prompt_chars: u64,
-    pub response_chars: u64,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cached_input_tokens: u64,
 }
 
 /// Per-user accumulator for `LlmUsage`. Lives on `LlmClient` so any
@@ -146,12 +152,19 @@ pub struct LlmUsageTracker {
 }
 
 impl LlmUsageTracker {
-    pub fn record(&self, user_id: &str, prompt_chars: u64, response_chars: u64) {
+    pub fn record(
+        &self,
+        user_id: &str,
+        input_tokens: u64,
+        output_tokens: u64,
+        cached_input_tokens: u64,
+    ) {
         let mut map = self.inner.lock().expect("usage tracker mutex poisoned");
         let entry = map.entry(user_id.to_string()).or_default();
         entry.calls += 1;
-        entry.prompt_chars += prompt_chars;
-        entry.response_chars += response_chars;
+        entry.input_tokens += input_tokens;
+        entry.output_tokens += output_tokens;
+        entry.cached_input_tokens += cached_input_tokens;
     }
 
     pub fn take(&self, user_id: &str) -> LlmUsage {
@@ -243,11 +256,17 @@ impl LlmClient {
     /// extract methods do this internally per-call; the agent path
     /// (rig's `agent.prompt(...)`) bypasses those methods, so the
     /// agent module calls this directly to keep the
-    /// `llm_usage_at_stop` summary accurate. `response_chars` is an
-    /// estimate when the underlying API doesn't surface usage
-    /// metadata uniformly.
-    pub fn record_usage(&self, user_id: &str, prompt_chars: u64, response_chars: u64) {
-        self.usage.record(user_id, prompt_chars, response_chars);
+    /// `llm_usage_at_stop` summary accurate. Tokens come from rig's
+    /// `Usage` so the numbers match what the provider charges.
+    pub fn record_usage(
+        &self,
+        user_id: &str,
+        input_tokens: u64,
+        output_tokens: u64,
+        cached_input_tokens: u64,
+    ) {
+        self.usage
+            .record(user_id, input_tokens, output_tokens, cached_input_tokens);
     }
 
     /// Construct a `LlmClient` from environment variables.
@@ -410,43 +429,46 @@ impl LlmClient {
                     .extractor::<T>(model_id.as_str())
                     .preamble(system_prompt)
                     .build()
-                    .extract(user_input)
+                    .extract_with_usage(user_input)
                     .await
                     .map_err(|e| ExtractionError::Extract(e.to_string())),
                 LlmBackend::OpenAI { client, model_id } => client
                     .extractor::<T>(model_id.as_str())
                     .preamble(system_prompt)
                     .build()
-                    .extract(user_input)
+                    .extract_with_usage(user_input)
                     .await
                     .map_err(|e| ExtractionError::Extract(e.to_string())),
                 LlmBackend::Anthropic { client, model_id } => client
                     .extractor::<T>(model_id.as_str())
                     .preamble(system_prompt)
                     .build()
-                    .extract(user_input)
+                    .extract_with_usage(user_input)
                     .await
                     .map_err(|e| ExtractionError::Extract(e.to_string())),
             }
         };
-        let typed = tokio::time::timeout(EXTRACTION_TIMEOUT, extractor_call)
+        let resp = tokio::time::timeout(EXTRACTION_TIMEOUT, extractor_call)
             .await
             .map_err(|_| ExtractionError::Timeout(EXTRACTION_TIMEOUT))??;
-        let prompt_chars = (system_prompt.len() + user_input.len()) as u64;
-        let response_chars = serde_json::to_string(&typed)
-            .map(|s| s.len() as u64)
-            .unwrap_or(0);
-        self.usage.record(user_id, prompt_chars, response_chars);
+        let usage = resp.usage;
+        self.usage.record(
+            user_id,
+            usage.input_tokens,
+            usage.output_tokens,
+            usage.cached_input_tokens,
+        );
         info!(
             user_id,
             provider = ?self.provider,
             call = "extract_with_prompt",
-            prompt_chars,
-            response_chars,
+            input_tokens = usage.input_tokens,
+            output_tokens = usage.output_tokens,
+            cached_input_tokens = usage.cached_input_tokens,
             latency_ms = started.elapsed().as_millis() as u64,
             "llm_call"
         );
-        Ok(typed)
+        Ok(resp.data)
     }
 
     /// Same shape as `extract_with_prompt`, but also attaches an image
@@ -498,21 +520,21 @@ impl LlmClient {
                     .extractor::<T>(model_id.as_str())
                     .preamble(system_prompt)
                     .build()
-                    .extract(message.clone())
+                    .extract_with_usage(message.clone())
                     .await
                     .map_err(|e| ExtractionError::Extract(e.to_string())),
                 LlmBackend::OpenAI { client, model_id } => client
                     .extractor::<T>(model_id.as_str())
                     .preamble(system_prompt)
                     .build()
-                    .extract(message.clone())
+                    .extract_with_usage(message.clone())
                     .await
                     .map_err(|e| ExtractionError::Extract(e.to_string())),
                 LlmBackend::Anthropic { client, model_id } => client
                     .extractor::<T>(model_id.as_str())
                     .preamble(system_prompt)
                     .build()
-                    .extract(message.clone())
+                    .extract_with_usage(message.clone())
                     .await
                     .map_err(|e| ExtractionError::Extract(e.to_string())),
             }
@@ -523,26 +545,28 @@ impl LlmClient {
         // gives headroom for slow paths without freezing the worker
         // permanently if the API hangs.
         const VISION_TIMEOUT: Duration = Duration::from_secs(30);
-        let typed = tokio::time::timeout(VISION_TIMEOUT, extractor_call)
+        let resp = tokio::time::timeout(VISION_TIMEOUT, extractor_call)
             .await
             .map_err(|_| ExtractionError::Timeout(VISION_TIMEOUT))??;
-        // Image bytes counted as `prompt_chars` since they ride along the
-        // request — base64-encoded length, same surface the provider sees.
-        let prompt_chars = (system_prompt.len() + user_input.len()) as u64 + image_chars;
-        let response_chars = serde_json::to_string(&typed)
-            .map(|s| s.len() as u64)
-            .unwrap_or(0);
-        self.usage.record(user_id, prompt_chars, response_chars);
+        let usage = resp.usage;
+        self.usage.record(
+            user_id,
+            usage.input_tokens,
+            usage.output_tokens,
+            usage.cached_input_tokens,
+        );
         info!(
             user_id,
             provider = ?self.provider,
             call = "extract_with_prompt_and_image",
-            prompt_chars,
-            response_chars,
+            input_tokens = usage.input_tokens,
+            output_tokens = usage.output_tokens,
+            cached_input_tokens = usage.cached_input_tokens,
+            image_bytes_b64 = image_chars,
             latency_ms = started.elapsed().as_millis() as u64,
             "llm_call"
         );
-        Ok(typed)
+        Ok(resp.data)
     }
 
     /// Same shape as `extract_with_prompt`, but also attaches a PDF
@@ -594,21 +618,21 @@ impl LlmClient {
                     .extractor::<T>(model_id.as_str())
                     .preamble(system_prompt)
                     .build()
-                    .extract(message.clone())
+                    .extract_with_usage(message.clone())
                     .await
                     .map_err(|e| ExtractionError::Extract(e.to_string())),
                 LlmBackend::OpenAI { client, model_id } => client
                     .extractor::<T>(model_id.as_str())
                     .preamble(system_prompt)
                     .build()
-                    .extract(message.clone())
+                    .extract_with_usage(message.clone())
                     .await
                     .map_err(|e| ExtractionError::Extract(e.to_string())),
                 LlmBackend::Anthropic { client, model_id } => client
                     .extractor::<T>(model_id.as_str())
                     .preamble(system_prompt)
                     .build()
-                    .extract(message.clone())
+                    .extract_with_usage(message.clone())
                     .await
                     .map_err(|e| ExtractionError::Extract(e.to_string())),
             }
@@ -617,24 +641,28 @@ impl LlmClient {
         // routinely need 30-60s. Cap at 90s so a hung API doesn't
         // freeze the worker forever.
         const PDF_TIMEOUT: Duration = Duration::from_secs(90);
-        let typed = tokio::time::timeout(PDF_TIMEOUT, extractor_call)
+        let resp = tokio::time::timeout(PDF_TIMEOUT, extractor_call)
             .await
             .map_err(|_| ExtractionError::Timeout(PDF_TIMEOUT))??;
-        let prompt_chars = (system_prompt.len() + user_input.len()) as u64 + doc_chars;
-        let response_chars = serde_json::to_string(&typed)
-            .map(|s| s.len() as u64)
-            .unwrap_or(0);
-        self.usage.record(user_id, prompt_chars, response_chars);
+        let usage = resp.usage;
+        self.usage.record(
+            user_id,
+            usage.input_tokens,
+            usage.output_tokens,
+            usage.cached_input_tokens,
+        );
         info!(
             user_id,
             provider = ?self.provider,
             call = "extract_with_prompt_and_document_pdf",
-            prompt_chars,
-            response_chars,
+            input_tokens = usage.input_tokens,
+            output_tokens = usage.output_tokens,
+            cached_input_tokens = usage.cached_input_tokens,
+            doc_bytes_b64 = doc_chars,
             latency_ms = started.elapsed().as_millis() as u64,
             "llm_call"
         );
-        Ok(typed)
+        Ok(resp.data)
     }
 }
 
@@ -745,51 +773,54 @@ mod tests {
         let t = LlmUsageTracker::default();
         let u = t.take("user-1");
         assert_eq!(u.calls, 0);
-        assert_eq!(u.prompt_chars, 0);
-        assert_eq!(u.response_chars, 0);
+        assert_eq!(u.input_tokens, 0);
+        assert_eq!(u.output_tokens, 0);
+        assert_eq!(u.cached_input_tokens, 0);
     }
 
     #[test]
     fn usage_tracker_record_creates_entry() {
         let t = LlmUsageTracker::default();
-        t.record("user-1", 100, 20);
+        t.record("user-1", 100, 20, 5);
         let u = t.take("user-1");
         assert_eq!(u.calls, 1);
-        assert_eq!(u.prompt_chars, 100);
-        assert_eq!(u.response_chars, 20);
+        assert_eq!(u.input_tokens, 100);
+        assert_eq!(u.output_tokens, 20);
+        assert_eq!(u.cached_input_tokens, 5);
     }
 
     #[test]
     fn usage_tracker_accumulates_across_calls() {
         let t = LlmUsageTracker::default();
-        t.record("user-1", 100, 20);
-        t.record("user-1", 50, 10);
+        t.record("user-1", 100, 20, 5);
+        t.record("user-1", 50, 10, 0);
         let u = t.take("user-1");
         assert_eq!(u.calls, 2);
-        assert_eq!(u.prompt_chars, 150);
-        assert_eq!(u.response_chars, 30);
+        assert_eq!(u.input_tokens, 150);
+        assert_eq!(u.output_tokens, 30);
+        assert_eq!(u.cached_input_tokens, 5);
     }
 
     #[test]
     fn usage_tracker_take_clears_user_state() {
         let t = LlmUsageTracker::default();
-        t.record("user-1", 100, 20);
+        t.record("user-1", 100, 20, 0);
         let _ = t.take("user-1");
         let u2 = t.take("user-1");
         assert_eq!(u2.calls, 0);
-        assert_eq!(u2.prompt_chars, 0);
+        assert_eq!(u2.input_tokens, 0);
     }
 
     #[test]
     fn usage_tracker_isolates_users() {
         let t = LlmUsageTracker::default();
-        t.record("user-1", 100, 20);
-        t.record("user-2", 50, 10);
+        t.record("user-1", 100, 20, 0);
+        t.record("user-2", 50, 10, 0);
         let u1 = t.take("user-1");
         assert_eq!(u1.calls, 1);
-        assert_eq!(u1.prompt_chars, 100);
+        assert_eq!(u1.input_tokens, 100);
         let u2 = t.take("user-2");
         assert_eq!(u2.calls, 1);
-        assert_eq!(u2.prompt_chars, 50);
+        assert_eq!(u2.input_tokens, 50);
     }
 }

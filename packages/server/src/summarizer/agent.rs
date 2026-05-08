@@ -907,8 +907,12 @@ async fn fire(
     let prompt_chars = (SYSTEM_PROMPT.len() + user_message.len()) as u64;
     match result {
         Ok(resp) => {
-            let response_chars = resp.output.len() as u64;
-            llm.record_usage(user_id, prompt_chars, response_chars);
+            llm.record_usage(
+                user_id,
+                resp.usage.input_tokens,
+                resp.usage.output_tokens,
+                resp.usage.cached_input_tokens,
+            );
             let raw_msg_count = resp.messages.as_ref().map(|m| m.len()).unwrap_or(0);
             let mut filtered = 0usize;
             if let Some(mut new_msgs) = resp.messages {
@@ -1000,7 +1004,10 @@ async fn fire(
             );
         }
         Err(e) => {
-            llm.record_usage(user_id, prompt_chars, 0);
+            // On failure rig doesn't surface usage — log zeros so
+            // the call still increments the counter and the rest of
+            // the meeting's tally stays accurate.
+            llm.record_usage(user_id, 0, 0, 0);
             // On failure with a chat fire, surface a one-line error
             // bubble so the user sees their question + a "retry"
             // hint instead of a stuck pending placeholder. Same

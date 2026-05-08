@@ -935,15 +935,18 @@ async fn dispatch_intent(
         // in the now-empty idle metadata as if from a fresh request.
         handle.cancel_extraction_for(user_id);
         // Per-meeting LLM usage summary. Drains the per-user counter so
-        // the next meeting starts fresh. Char counts (not tokens) — see
-        // `LlmUsage` for the rationale. Tracked across summarizers, the
-        // moment worker, and (eventually) the agent loop.
+        // the next meeting starts fresh. Token counts come straight
+        // from each provider's usage (via rig's `Usage`) — translate
+        // to dollars by multiplying by the model's per-token rates.
         let usage = handle.llm.take_usage(user_id);
+        let billable_input = usage.input_tokens.saturating_sub(usage.cached_input_tokens);
         tracing::info!(
             user_id,
             calls = usage.calls,
-            prompt_chars = usage.prompt_chars,
-            response_chars = usage.response_chars,
+            input_tokens = usage.input_tokens,
+            output_tokens = usage.output_tokens,
+            cached_input_tokens = usage.cached_input_tokens,
+            billable_input_tokens = billable_input,
             "llm_usage_at_stop"
         );
     }
