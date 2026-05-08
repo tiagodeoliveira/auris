@@ -166,7 +166,7 @@ export function mountMeetingsModal(parent: HTMLElement, store: Store, auth: Auth
 
       const headline = document.createElement("div");
       headline.className = "meetings-row-title";
-      headline.textContent = m.description?.trim() || "Untitled meeting";
+      headline.textContent = pickDetailTitle(m);
 
       const sub = document.createElement("div");
       sub.className = "meetings-row-sub";
