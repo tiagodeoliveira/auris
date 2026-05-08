@@ -36,6 +36,29 @@ The local-first MVP is shipped and in personal-use rotation:
   creation, follow-up event when the moment-summary worker
   completes), so chat questions about a just-snapped moment work
   end-to-end.
+- The user's freeform meeting description seeds the agent on
+  first fire as a dedicated `[context]` block, alongside the
+  structured `[meeting]` (LLM-extracted metadata) and `[attached
+artifacts]` blocks — relationships, intent, and expected outcomes
+  the user typed at compose time inform what the agent treats as
+  noteworthy without polluting the metadata table.
+- Anthropic / Bedrock prompt caching enabled on the agent loop. The
+  system prompt and accumulated history reuse from cache on every
+  fire after the first within the 5-minute TTL window; cache reads
+  surface as `cached_input_tokens` in the per-meeting usage rollup.
+- Per-meeting LLM usage tracked end-to-end (input / output / cached
+  / model id) and persisted to the `meetings` row, surfaced in both
+  the PWA and Mac detail views.
+- `expand_item` end-to-end via the agent — clicking an item on any
+  client (PWA chevron, glasses ring-tap, Mac chevron) routes a
+  prompt-block kick that produces a 2-3 sentence expansion, with
+  cross-surface auto-expand once the detail flows back via
+  `item_updated`.
+- Even Realities G2 glasses are a first-class display + control
+  surface alongside PWA and Mac: chat-mode flowing-thread layout,
+  list/detail click-to-expand (via simulator-shaped `sysEvent`
+  click routing), denser 80×6 character layout calibrated against
+  the device's fixed-font firmware.
 - Container-shaped server (`docker compose up`) — same image for
   local dev and any future production host.
 
@@ -164,31 +187,24 @@ Not blocking the next phase, but flagged for later resolution.
 
 ### 4.1 Quality / completeness
 
-- **`expand_item` returns lorem ipsum.** `state.rs::synthesize_detail`
-  returns a hardcoded "Detail for X: lorem ipsum dolor sit amet…"
-  placeholder. The intent is plumbed end-to-end (PWA dispatches,
-  server processes, item rebroadcasts with `detail` populated) — only
-  the body is missing. Real implementation: an LLM call against the
-  underlying transcript chunks (or whatever produced the item),
-  prompted to expand on it in 2-3 sentences. Each summarizer mode
-  knows what context was used to produce its items, so the right
-  context is reachable; it's just not piped to a "detail" path yet.
-- **Items-mirror DOM diffing.** `pwa/src/ui/items-mirror.ts` does
-  `pane.innerHTML = ""` and rebuilds every row on every store
-  change. The CSS `animation: items-fade` rule on `.item` was
-  dropped because the full rebuild made it flicker on every update.
-  Right fix: diff against existing DOM keyed by `item.id`, append
-  only new rows, leave existing ones in place. That lets the fade
-  return cleanly (only new items animate in). Small project — a
-  100-line patch in `items-mirror.ts` plus restoring the CSS rule.
-- **Agent prompt cost tracking.** Per-fire `agent fire done` lines
-  log `input_tokens` / `output_tokens` / `cached_input_tokens` from
-  rig's `PromptResponse.usage`, but `LlmClient::record_usage` still
-  accumulates char counts (the older API shape). Wire the actual
-  token numbers through to the per-user counter so
-  `llm_usage_at_stop` reflects real Opus 4.7 spend, not a 4-char-
-  per-token approximation. Small change in `llm.rs` + the agent
-  fire site.
+- **Glasses real-device verification (post-G2 hardware).** The 80×6
+  character layout, `paddingLength: 4` body container, and
+  `sysEvent`-shaped click routing in `gesture-router.ts` were all
+  calibrated against the EvenHub simulator. Real device may differ:
+  font width per char might fit fewer than 80 chars per line; clicks
+  on real glasses might fire `textEvent` (focused-container) instead
+  of `sysEvent`. Plan: when the G2 lands, run through highlights /
+  chat / detail views and confirm. Tune constants in
+  `glasses/layout-active-list.ts` if the device cuts mid-line.
+- **Transcript-to-glasses interim streaming.** Today the glasses
+  transcript view only updates on sentence-commit (a full STT
+  utterance), while PWA + Mac get the live interim text. The
+  `listening-active` view does pipe interim text already; the gap
+  is in the `active_list` transcript-mode view, which subscribes
+  to committed items only. Wire `s.liveTranscriptInterim` through
+  to the active list when `currentMode === "transcript"` and
+  append it as a final dim line below the committed items. Same
+  pattern as `items-mirror`'s `showLive` row.
 - **Rolling-summary compression.** With Opus 4.7's 1M context, a
   meeting can run hours before history exhausts the window. When
   (if) we hit the ceiling: compress the older portion of history
@@ -202,22 +218,12 @@ Not blocking the next phase, but flagged for later resolution.
   same pattern. Blocked on the user-facing delete/edit UI which
   doesn't exist yet (no contract intent, no PWA/Mac controls).
   When that lands, the agent-side wiring is ~20 lines.
-- **Mode persistence to Postgres.** Today every mode's items live
-  only in `UserState`'s in-memory map, so they're lost on server
-  restart (transcript JSONL is the only persisted artifact —
-  highlights, actions, open_questions, summary, chat are all
-  ephemeral per meeting). Persisting them tied to `meeting_id`
-  unlocks a "browse past meeting" view that shows what the agent
-  produced, not just the raw transcript. Schema add: an
-  `items(meeting_id, mode, id, text, meta_json, t_ms,
-created_at)` table. Write on every `ItemsUpdate` broadcast;
-  read on `GET /api/meetings/:id`. Don't persist `chat` mode in
-  v1 (chat is working memory, not artifact) — start with the
-  others.
-- **Prompt caching.** rig 0.36 supports Anthropic prompt caching
-  via `anthropic_beta`. The system prompt + early conversation
-  history would cache cleanly. Real cost win on long meetings —
-  revisit after a few weeks of usage data.
+- **Glasses bullet truncation.** Cosmetic — items in
+  `format-active-list.ts` truncate mid-word with `…` when they
+  exceed `CHARS_PER_LINE`. A word-boundary truncate would read
+  more naturally on the device. Deferred until a clear example of
+  ugly truncation surfaces in real-device usage; current behavior
+  is fine for the simulator's content set.
 
 ### 4.2 Cross-cutting
 
