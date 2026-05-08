@@ -937,6 +937,7 @@ button.cta:disabled {
   column-gap: 12px;
   padding: 10px 16px;
   border-bottom: 1px solid var(--border-dark);
+  animation: items-fade 0.18s ease-out;
 }
 .item-time {
   font-family: var(--font-mono);

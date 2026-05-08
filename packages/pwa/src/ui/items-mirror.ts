@@ -1,4 +1,11 @@
 //! Items pane for the active meeting.
+//!
+//! The render loop diffs against existing DOM keyed by `item.id`
+//! rather than rebuilding `pane.innerHTML` on every store change.
+//! That preserves node identity for unchanged rows — which lets the
+//! `items-fade` CSS animation play once on append (the desired
+//! behavior) rather than restarting on every interim-transcript tick
+//! (which is why the animation was disabled previously).
 
 import type { Store } from "../store";
 import type { Item, Intent } from "../types";
@@ -61,6 +68,20 @@ export function mountItemsMirror(
   const expandedIds = new Set<string>();
   const manuallyCollapsed = new Set<string>();
 
+  // Diffing state — the single source of truth for what's currently
+  // mounted in `pane`. Keyed by item.id; preserved across renders
+  // unless the row's visible signature changes (text / detail /
+  // expanded-state / meta).
+  const rowNodes = new Map<string, HTMLElement>();
+  let emptyRow: HTMLElement | null = null;
+  let liveRow: HTMLElement | null = null;
+  // Sentinels that force a full rebuild — switching mode or the
+  // active/paused boundary changes the render path entirely
+  // (chat-bubble vs .item, or hidden-pane vs visible-pane), and
+  // diffing across those transitions isn't worth the complexity.
+  let lastMode: string | null = null;
+  let lastMeetingState: string | null = null;
+
   function isEffectivelyExpanded(item: Item): boolean {
     if (manuallyCollapsed.has(item.id)) return false;
     if (expandedIds.has(item.id)) return true;
@@ -69,17 +90,11 @@ export function mountItemsMirror(
 
   function toggleExpanded(item: Item) {
     if (isEffectivelyExpanded(item)) {
-      // Collapse: remove from explicit-open, mark explicit-collapse
-      // so a subsequent item_updated re-arrival doesn't auto-open
-      // it again.
       expandedIds.delete(item.id);
       manuallyCollapsed.add(item.id);
     } else {
       expandedIds.add(item.id);
       manuallyCollapsed.delete(item.id);
-      // First expand on an item without detail → ask the agent.
-      // The reply arrives via `item_updated` and the renderer
-      // swaps the placeholder for the real expansion.
       if (!item.detail || item.detail.length === 0) {
         send({ type: "expand_item", item_id: item.id });
       }
@@ -87,124 +102,217 @@ export function mountItemsMirror(
     render();
   }
 
+  function rowSignature(mode: string, item: Item, expanded: boolean): string {
+    const meta = item.meta as Record<string, unknown> | null | undefined;
+    return [
+      item.text,
+      item.detail ?? "",
+      expanded ? "1" : "0",
+      String(item.t),
+      meta ? JSON.stringify(meta) : "",
+      mode,
+    ].join("");
+  }
+
+  function chatBubbleSignature(item: Item): string {
+    const meta = item.meta as Record<string, unknown> | null | undefined;
+    const role = (meta?.role as string) ?? "assistant";
+    const pending = meta?.pending === true;
+    return [item.text, role, pending ? "1" : "0"].join("");
+  }
+
+  function buildItemRow(mode: string, item: Item): HTMLElement {
+    const row = document.createElement("article");
+    row.className = "item";
+
+    const time = document.createElement("div");
+    time.className = "item-time";
+    time.textContent = `[${fmtTime(item.t)}]`;
+    row.appendChild(time);
+
+    const body = document.createElement("div");
+    body.className = "item-body";
+    body.textContent = item.text;
+    row.appendChild(body);
+
+    const expanded = isEffectivelyExpanded(item);
+    const chevron = document.createElement("button");
+    chevron.type = "button";
+    chevron.className = "item-chevron";
+    chevron.textContent = expanded ? "▾" : "▸";
+    chevron.title = expanded ? "Hide detail" : "Show detail";
+    chevron.addEventListener("click", (e) => {
+      e.stopPropagation();
+      toggleExpanded(item);
+    });
+    row.appendChild(chevron);
+
+    const metaText = renderItemMeta(mode, item);
+    if (metaText) {
+      const meta = document.createElement("div");
+      meta.className = "item-meta label-mono";
+      meta.textContent = metaText;
+      row.appendChild(meta);
+    }
+
+    if (expanded) {
+      const detailRow = document.createElement("div");
+      detailRow.className = "item-detail";
+      if (item.detail && item.detail.length > 0) {
+        detailRow.textContent = item.detail;
+      } else {
+        detailRow.classList.add("item-detail-pending");
+        detailRow.textContent = "Expanding…";
+      }
+      row.appendChild(detailRow);
+    }
+
+    return row;
+  }
+
+  function buildChatBubble(item: Item): HTMLElement {
+    const meta = item.meta as Record<string, unknown> | null | undefined;
+    const role = (meta?.role as string) ?? "assistant";
+    const pending = meta?.pending === true;
+    const row = document.createElement("article");
+    row.className = `chat-bubble chat-bubble-${role}${pending ? " chat-bubble-pending" : ""}`;
+    const body = document.createElement("div");
+    body.className = "chat-bubble-body";
+    body.textContent = item.text;
+    row.appendChild(body);
+    return row;
+  }
+
+  function buildEmptyRow(mode: string): HTMLElement {
+    const empty = document.createElement("div");
+    empty.className = "items-empty label-mono";
+    empty.textContent =
+      mode === "chat" ? "─ ask the agent anything" : `─ no ${mode.replace("_", " ")} yet`;
+    return empty;
+  }
+
+  function buildLiveRow(interim: string): HTMLElement {
+    const live = document.createElement("article");
+    live.className = "item item-live";
+    const liveTime = document.createElement("div");
+    liveTime.className = "item-time";
+    liveTime.textContent = "[ ⋯ ]";
+    live.appendChild(liveTime);
+    const liveBody = document.createElement("div");
+    liveBody.className = "item-body";
+    liveBody.textContent = interim;
+    live.appendChild(liveBody);
+    return live;
+  }
+
+  function clearAll() {
+    pane.innerHTML = "";
+    rowNodes.clear();
+    emptyRow = null;
+    liveRow = null;
+  }
+
   function render() {
     const s = store.get();
     if (s.meetingState !== "active" && s.meetingState !== "paused") {
       pane.style.display = "none";
+      // Don't clear nodes here — when the user re-enters an active
+      // meeting we'll restart from a fresh `lastMeetingState` anyway.
       return;
     }
     pane.style.display = "block";
-    const items = activeItems(s);
-    pane.innerHTML = "";
 
+    if (lastMode !== s.currentMode || lastMeetingState !== s.meetingState) {
+      clearAll();
+      lastMode = s.currentMode;
+      lastMeetingState = s.meetingState;
+    }
+
+    const items = activeItems(s);
     const showLive =
       s.currentMode === "transcript" &&
       s.meetingState === "active" &&
       s.liveTranscriptInterim.trim().length > 0;
 
+    // Empty state — collapse everything to a single placeholder.
     if (items.length === 0 && !showLive) {
-      const empty = document.createElement("div");
-      empty.className = "items-empty label-mono";
-      const placeholder =
-        s.currentMode === "chat"
-          ? "─ ask the agent anything"
-          : `─ no ${s.currentMode.replace("_", " ")} yet`;
-      empty.textContent = placeholder;
-      pane.appendChild(empty);
-      return;
-    }
-
-    // Chat mode renders bubble-style with role-aware alignment.
-    // Q+A pairs replace each other on each exchange; no thread.
-    if (s.currentMode === "chat") {
-      for (const item of items) {
-        const meta = item.meta as Record<string, unknown> | null | undefined;
-        const role = (meta?.role as string) ?? "assistant";
-        const pending = meta?.pending === true;
-        const row = document.createElement("article");
-        row.className = `chat-bubble chat-bubble-${role}${pending ? " chat-bubble-pending" : ""}`;
-        const body = document.createElement("div");
-        body.className = "chat-bubble-body";
-        body.textContent = item.text;
-        row.appendChild(body);
-        pane.appendChild(row);
+      for (const [id, node] of rowNodes) {
+        node.remove();
+        rowNodes.delete(id);
       }
-      pane.scrollTop = pane.scrollHeight;
+      if (liveRow) {
+        liveRow.remove();
+        liveRow = null;
+      }
+      if (!emptyRow) {
+        emptyRow = buildEmptyRow(s.currentMode);
+        pane.appendChild(emptyRow);
+      }
       return;
+    } else if (emptyRow) {
+      emptyRow.remove();
+      emptyRow = null;
     }
 
+    // Drop orphaned rows (id no longer in the items list).
+    const desiredIds = new Set(items.map((i) => i.id));
+    for (const [id, node] of rowNodes) {
+      if (!desiredIds.has(id)) {
+        node.remove();
+        rowNodes.delete(id);
+      }
+    }
+
+    // Insert / update / reposition rows in the desired order.
+    const isChat = s.currentMode === "chat";
+    let prevNode: HTMLElement | null = null;
     for (const item of items) {
-      const row = document.createElement("article");
-      row.className = "item";
+      const sig = isChat
+        ? chatBubbleSignature(item)
+        : rowSignature(s.currentMode, item, isEffectivelyExpanded(item));
+      let node = rowNodes.get(item.id);
 
-      const time = document.createElement("div");
-      time.className = "item-time";
-      time.textContent = `[${fmtTime(item.t)}]`;
-      row.appendChild(time);
-
-      const body = document.createElement("div");
-      body.className = "item-body";
-      body.textContent = item.text;
-      row.appendChild(body);
-
-      // Chevron toggle — always present so the user can ask the
-      // agent to expand any item. First click on an item without
-      // detail fires `expand_item`; subsequent clicks toggle the
-      // panel locally without re-billing.
-      const expanded = isEffectivelyExpanded(item);
-      const chevron = document.createElement("button");
-      chevron.type = "button";
-      chevron.className = "item-chevron";
-      chevron.textContent = expanded ? "▾" : "▸";
-      chevron.title = expanded ? "Hide detail" : "Show detail";
-      chevron.addEventListener("click", (e) => {
-        e.stopPropagation();
-        toggleExpanded(item);
-      });
-      row.appendChild(chevron);
-
-      const metaText = renderItemMeta(s.currentMode, item);
-      if (metaText) {
-        const meta = document.createElement("div");
-        meta.className = "item-meta label-mono";
-        meta.textContent = metaText;
-        row.appendChild(meta);
-      }
-
-      if (expanded) {
-        const detailRow = document.createElement("div");
-        detailRow.className = "item-detail";
-        if (item.detail && item.detail.length > 0) {
-          detailRow.textContent = item.detail;
-        } else {
-          detailRow.classList.add("item-detail-pending");
-          detailRow.textContent = "Expanding…";
+      if (!node || node.dataset.sig !== sig) {
+        const fresh = isChat ? buildChatBubble(item) : buildItemRow(s.currentMode, item);
+        fresh.dataset.sig = sig;
+        if (node) {
+          node.replaceWith(fresh);
         }
-        row.appendChild(detailRow);
+        rowNodes.set(item.id, fresh);
+        node = fresh;
       }
 
-      pane.appendChild(row);
+      // Ensure correct position. Only reposition when off — calling
+      // .after() / .prepend() on a node already in place would still
+      // move it (remove + re-insert), restarting CSS animations.
+      if (node.parentNode !== pane || node.previousElementSibling !== prevNode) {
+        if (prevNode) prevNode.after(node);
+        else pane.prepend(node);
+      }
+      prevNode = node;
     }
 
-    // "Live" row showing the in-flight transcript before sentence-end
-    // promotes it to a real Item. Only visible in transcript mode while
-    // the meeting is actively capturing audio.
+    // Live transcript row (singleton) goes last.
     if (showLive) {
-      const live = document.createElement("article");
-      live.className = "item item-live";
-      const liveTime = document.createElement("div");
-      liveTime.className = "item-time";
-      liveTime.textContent = "[ ⋯ ]";
-      live.appendChild(liveTime);
-      const liveBody = document.createElement("div");
-      liveBody.className = "item-body";
-      liveBody.textContent = s.liveTranscriptInterim;
-      live.appendChild(liveBody);
-      pane.appendChild(live);
+      if (!liveRow) {
+        liveRow = buildLiveRow(s.liveTranscriptInterim);
+        if (prevNode) prevNode.after(liveRow);
+        else pane.prepend(liveRow);
+      } else {
+        const liveBody = liveRow.querySelector<HTMLElement>(".item-body");
+        if (liveBody) liveBody.textContent = s.liveTranscriptInterim;
+        if (liveRow.previousElementSibling !== prevNode || liveRow.parentNode !== pane) {
+          if (prevNode) prevNode.after(liveRow);
+          else pane.prepend(liveRow);
+        }
+      }
+    } else if (liveRow) {
+      liveRow.remove();
+      liveRow = null;
     }
 
-    // Auto-scroll to bottom for transcript mode (live append).
-    if (s.currentMode === "transcript") {
+    // Auto-scroll to bottom for live-append modes.
+    if (s.currentMode === "transcript" || isChat) {
       pane.scrollTop = pane.scrollHeight;
     }
   }
@@ -215,9 +323,7 @@ export function mountItemsMirror(
   // Gate the interim-transcript subscription on the current mode.
   // Interim text updates several times per second during active
   // speech; without the gate, every chat / summary / etc. re-render
-  // would `pane.innerHTML = ""` + full rebuild on each interim
-  // packet, flickering the whole pane. The actual interim line is
-  // rendered only in transcript mode anyway.
+  // would touch the pane on each interim packet.
   store.subscribe((s) => (s.currentMode === "transcript" ? s.liveTranscriptInterim : ""), render);
   store.subscribe((s) => {
     const list = s.itemsByMode[s.currentMode] ?? [];
