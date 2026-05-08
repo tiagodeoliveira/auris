@@ -1420,6 +1420,71 @@ textarea {
   text-align: left;
 }
 
+/* Meeting-detail per-mode item rows. Mirrors the live overlay
+   items-mirror layout: timestamp pill + body + meta chip. */
+.meetings-item-row {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  column-gap: 12px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border-dark);
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--text-light);
+}
+.meetings-item-row:last-child {
+  border-bottom: none;
+}
+.meetings-item-time {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-muted);
+  padding-top: 2px;
+}
+.meetings-item-body::before {
+  content: "▸ ";
+  color: var(--brand-blue);
+  margin-right: 4px;
+}
+.meetings-item-meta {
+  grid-column: 2;
+  margin-top: 3px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.4px;
+  color: var(--text-muted);
+}
+
+/* Chat bubbles in the meeting-detail view — same shape as the
+   live overlay's bubbles but slightly tighter for the master/
+   detail context. */
+.meetings-chat-bubble {
+  max-width: 80%;
+  padding: 8px 12px;
+  margin: 4px 0;
+  border-radius: 12px;
+  line-height: 1.45;
+  font-size: 14px;
+}
+.meetings-chat-bubble-user {
+  margin-left: auto;
+  background: var(--brand-blue);
+  color: #fff;
+  border-bottom-right-radius: 3px;
+}
+.meetings-chat-bubble-assistant {
+  margin-right: auto;
+  background: var(--surface-elev);
+  color: var(--text-light);
+  border: 1px solid var(--border-dark);
+  border-bottom-left-radius: 3px;
+}
+.meetings-chat-bubble-body {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 /* Moment cards inside the meeting detail. Thumbnail on the left,
    timestamp + note + summary stacked on the right. */
 .meetings-moment-card {

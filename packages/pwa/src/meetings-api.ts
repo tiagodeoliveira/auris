@@ -25,6 +25,11 @@ export interface MeetingDetail extends MeetingSummary {
    * server builds (before the moments-API commit) omit the field;
    * the optional shape keeps clients forward-compat. */
   moments?: Moment[];
+  /** Persisted items per non-transcript mode, populated by the
+   * items-persistence task. Keyed by mode id (highlights / actions /
+   * open_questions / summary / chat). Older server builds (before
+   * 0003_items.sql) omit the field; treat absent as empty. */
+  items_by_mode?: Record<string, Item[]>;
 }
 
 export interface Moment {

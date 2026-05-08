@@ -7,6 +7,7 @@
 
 import type { Store } from "../store";
 import type { AuthBundle } from "../auth";
+import type { Item } from "../types";
 import {
   MeetingsApi,
   MeetingsApiError,
@@ -260,6 +261,34 @@ export function mountMeetingsModal(parent: HTMLElement, store: Store, auth: Auth
       root.appendChild(mBlock);
     }
 
+    // Per-mode persisted items (highlights / actions /
+    // open_questions / summary / chat). Render in a fixed order
+    // matching the live overlay's tab order so the meeting-detail
+    // view feels familiar. Mode is omitted entirely when there
+    // are no items for it.
+    const items_by_mode = detail.items_by_mode ?? {};
+    const MODE_ORDER: Array<{ id: string; label: string }> = [
+      { id: "highlights", label: "Highlights" },
+      { id: "actions", label: "Actions" },
+      { id: "open_questions", label: "Open questions" },
+      { id: "summary", label: "Summary" },
+      { id: "chat", label: "Chat" },
+    ];
+    for (const { id, label } of MODE_ORDER) {
+      const items = items_by_mode[id] ?? [];
+      if (items.length === 0) continue;
+      const block = document.createElement("div");
+      block.className = "meetings-detail-block";
+      const heading = document.createElement("div");
+      heading.className = "meetings-detail-heading";
+      heading.textContent = label;
+      block.appendChild(heading);
+      for (const item of items) {
+        block.appendChild(buildItemRow(id, item));
+      }
+      root.appendChild(block);
+    }
+
     // Transcript
     const tBlock = document.createElement("div");
     tBlock.className = "meetings-detail-block";
@@ -294,6 +323,68 @@ export function mountMeetingsModal(parent: HTMLElement, store: Store, auth: Auth
     root.appendChild(tBlock);
 
     return root;
+  }
+
+  /** Build one persisted-item row. Mirrors the live overlay's
+   * items-mirror layout (timestamp pill + bullet + body + per-mode
+   * meta chip) so the meeting-detail view feels familiar. Chat
+   * items render as bubble pairs instead — matches the live chat
+   * surface. */
+  function buildItemRow(mode: string, item: Item): HTMLElement {
+    const meta = item.meta as Record<string, unknown> | null | undefined;
+    if (mode === "chat") {
+      const role = (meta?.role as string) ?? "assistant";
+      const wrap = document.createElement("div");
+      wrap.className = `meetings-chat-bubble meetings-chat-bubble-${role}`;
+      const body = document.createElement("div");
+      body.className = "meetings-chat-bubble-body";
+      body.textContent = item.text;
+      wrap.appendChild(body);
+      return wrap;
+    }
+    const row = document.createElement("article");
+    row.className = "meetings-item-row";
+    const time = document.createElement("div");
+    time.className = "meetings-item-time";
+    time.textContent = `[${formatItemTime(item.t)}]`;
+    row.appendChild(time);
+    const body = document.createElement("div");
+    body.className = "meetings-item-body";
+    body.textContent = item.text;
+    row.appendChild(body);
+    const metaText = formatItemMeta(mode, meta);
+    if (metaText) {
+      const m = document.createElement("div");
+      m.className = "meetings-item-meta";
+      m.textContent = metaText;
+      row.appendChild(m);
+    }
+    return row;
+  }
+
+  function formatItemTime(t: number): string {
+    const total = Math.max(0, Math.floor(t / 1000));
+    const m = String(Math.floor(total / 60)).padStart(2, "0");
+    const s = String(total % 60).padStart(2, "0");
+    return `${m}:${s}`;
+  }
+
+  function formatItemMeta(mode: string, meta: Record<string, unknown> | null | undefined): string {
+    if (!meta) return "";
+    if (mode === "actions") {
+      const owner = meta.owner ? `OWNER · ${meta.owner}` : "";
+      const due = meta.due ? `DUE · ${meta.due}` : "";
+      return [owner, due].filter(Boolean).join(" · ");
+    }
+    if (mode === "highlights") {
+      return meta.importance ? `IMPORTANCE · ${meta.importance}` : "";
+    }
+    if (mode === "open_questions") {
+      const kind = (meta.kind as string)?.toUpperCase() ?? "";
+      const ctx = meta.context ? ` · ${meta.context}` : "";
+      return kind ? `${kind}${ctx}` : "";
+    }
+    return "";
   }
 
   /** Build a single moment card. Lives inside the modal closure so

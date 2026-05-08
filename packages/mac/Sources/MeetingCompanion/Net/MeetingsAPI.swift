@@ -44,11 +44,17 @@ struct MeetingDetail: Decodable, Identifiable, Sendable {
     /// optional-decode rule as `moments` for forward compatibility
     /// with older server builds.
     let artifacts: [Artifact]?
+    /// Items persisted per non-transcript mode (highlights / actions
+    /// / open_questions / summary / chat). Older server builds (pre
+    /// 0003_items.sql migration) omit the field; absent → empty
+    /// dictionary on render.
+    let itemsByMode: [String: [Item]]?
 
     enum CodingKeys: String, CodingKey {
         case id, description, metadata, transcript, moments, artifacts
         case startedAt = "started_at"
         case endedAt = "ended_at"
+        case itemsByMode = "items_by_mode"
     }
 }
 

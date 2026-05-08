@@ -364,6 +364,14 @@ private struct MeetingDetailView: View {
                     momentsBlock(moments)
                 }
 
+                let itemsByMode = detail.itemsByMode ?? [:]
+                ForEach(MeetingDetailView.modeOrder, id: \.id) { mode in
+                    if let items = itemsByMode[mode.id], !items.isEmpty {
+                        Divider()
+                        modeItemsBlock(label: mode.label, mode: mode.id, items: items)
+                    }
+                }
+
                 Divider()
 
                 transcriptBlock
@@ -382,6 +390,33 @@ private struct MeetingDetailView: View {
         VStack(alignment: .leading, spacing: 10) {
             ForEach(moments) { moment in
                 MomentCard(moment: moment, meetingId: detail.id, model: model)
+            }
+        }
+    }
+
+    /// Fixed render order matching the live overlay's tab order so
+    /// the meeting-detail view feels familiar. Modes with no items
+    /// for this meeting are skipped entirely.
+    fileprivate static let modeOrder: [(id: String, label: String)] = [
+        ("highlights", "Highlights"),
+        ("actions", "Actions"),
+        ("open_questions", "Open questions"),
+        ("summary", "Summary"),
+        ("chat", "Chat"),
+    ]
+
+    @ViewBuilder
+    private func modeItemsBlock(label: String, mode: String, items: [Item]) -> some View {
+        Text(label).font(.headline)
+        VStack(alignment: .leading, spacing: 6) {
+            if mode == "chat" {
+                ForEach(items) { item in
+                    DetailChatBubbleRow(item: item)
+                }
+            } else {
+                ForEach(items) { item in
+                    DetailItemRow(item: item, mode: mode)
+                }
             }
         }
     }
@@ -477,6 +512,96 @@ private struct MeetingDetailView: View {
                     TranscriptRow(item: item)
                 }
             }
+        }
+    }
+}
+
+/// One row in a per-mode persisted-items block. Mirrors the live
+/// overlay's ItemRow layout so the meeting-detail view feels
+/// familiar: timestamp pill + blue triangle bullet + body text +
+/// optional mode-specific meta chip beneath.
+private struct DetailItemRow: View {
+    let item: Item
+    let mode: String
+
+    private var timestampLabel: String {
+        let total = max(0, Int(item.t / 1000))
+        return String(format: "[%02d:%02d]", total / 60, total % 60)
+    }
+
+    private var metaText: String {
+        guard let meta = item.meta else { return "" }
+        switch mode {
+        case "actions":
+            let owner = meta.owner.flatMap { s in s.isEmpty ? nil : "OWNER · \(s)" } ?? ""
+            let due = meta.due.flatMap { s in s.isEmpty ? nil : "DUE · \(s)" } ?? ""
+            return [owner, due].filter { !$0.isEmpty }.joined(separator: " · ")
+        case "highlights":
+            return meta.importance.flatMap { s in
+                s.isEmpty ? nil : "IMPORTANCE · \(s)"
+            } ?? ""
+        case "open_questions":
+            let kind = meta.kind.flatMap { s in s.isEmpty ? nil : s.uppercased() } ?? ""
+            let ctx = meta.context.flatMap { s in s.isEmpty ? nil : s } ?? ""
+            switch (kind.isEmpty, ctx.isEmpty) {
+            case (true, true): return ""
+            case (false, true): return kind
+            case (true, false): return ctx
+            case (false, false): return "\(kind) · \(ctx)"
+            }
+        default:
+            return ""
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(timestampLabel)
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                Text("▸")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(.blue)
+                Text(item.text)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            if !metaText.isEmpty {
+                Text(metaText)
+                    .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                    .tracking(0.4)
+                    .foregroundStyle(.secondary)
+                    .padding(.leading, 70)
+            }
+        }
+    }
+}
+
+/// Chat bubble in the meeting-detail view. `meta.role == "user"`
+/// right-aligns blue; anything else left-aligns surface. No pending
+/// state here — by the time a meeting is in history, every chat
+/// turn has already been answered (or stored as a placeholder
+/// failure bubble).
+private struct DetailChatBubbleRow: View {
+    let item: Item
+
+    private var isUser: Bool { item.meta?.role == "user" }
+
+    var body: some View {
+        HStack {
+            if isUser { Spacer(minLength: 32) }
+            Text(item.text)
+                .foregroundStyle(isUser ? Color.white : Color.primary)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 7)
+                .background(isUser ? Color.blue : Color.gray.opacity(0.12))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 11)
+                        .strokeBorder(isUser ? Color.clear : Color.gray.opacity(0.3), lineWidth: 1)
+                )
+                .clipShape(RoundedRectangle(cornerRadius: 11))
+                .frame(maxWidth: .infinity, alignment: isUser ? .trailing : .leading)
+            if !isUser { Spacer(minLength: 32) }
         }
     }
 }
