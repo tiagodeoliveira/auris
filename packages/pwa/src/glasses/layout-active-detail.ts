@@ -31,7 +31,7 @@ export function buildActiveDetailLayout(state: AppState) {
     width: 576,
     height: 256,
     borderWidth: 0,
-    paddingLength: 8,
+    paddingLength: 4,
     containerID: BODY_ID,
     containerName: BODY_NAME,
     content: buildBody(item),

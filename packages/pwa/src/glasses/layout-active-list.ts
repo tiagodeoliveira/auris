@@ -13,8 +13,12 @@ const BODY_ID = 2;
 const HEADER_NAME = "header";
 const BODY_NAME = "body";
 
-export const LINES_PER_SCREEN = 5; // Phase 0 placeholder; recalibrate Phase 1
-export const CHARS_PER_LINE = 60;
+// Calibrated against the G2 simulator + device firmware. The SDK
+// doesn't expose a font-size API, so these values describe what the
+// fixed-font display actually fits — bump them and screenshot to
+// re-measure if the firmware font ever changes.
+export const LINES_PER_SCREEN = 6;
+export const CHARS_PER_LINE = 80;
 
 export function buildActiveListLayout(state: AppState) {
   const header = new TextContainerProperty({
@@ -36,7 +40,7 @@ export function buildActiveListLayout(state: AppState) {
     width: 576,
     height: 256,
     borderWidth: 0,
-    paddingLength: 8,
+    paddingLength: 4,
     containerID: BODY_ID,
     containerName: BODY_NAME,
     content: buildBody(state),
