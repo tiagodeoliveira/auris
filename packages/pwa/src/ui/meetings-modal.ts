@@ -287,12 +287,16 @@ export function mountMeetingsModal(parent: HTMLElement, store: Store, auth: Auth
       heading.className = "meetings-detail-heading";
       heading.textContent = "LLM usage";
       block.appendChild(heading);
-      const billable = Math.max(0, usage.input_tokens - usage.cached_input_tokens);
+      // `input_tokens` and `cached_input_tokens` are disjoint buckets
+      // in rig 0.36's Anthropic mapping (input = fresh-billable,
+      // cached = cache-read at 0.10× rate). Older builds subtracted
+      // them assuming `input` included cached reads, which produced
+      // "billable = 0" once prompt caching kicked in. Show them as
+      // separate counts and let the labels say what each is.
       const rows: Array<[string, string]> = [
         ["calls", String(usage.calls)],
-        ["input tokens", usage.input_tokens.toLocaleString()],
-        ["billable input", billable.toLocaleString()],
-        ["cached input", usage.cached_input_tokens.toLocaleString()],
+        ["input (billable)", usage.input_tokens.toLocaleString()],
+        ["cached read (0.10×)", usage.cached_input_tokens.toLocaleString()],
         ["output tokens", usage.output_tokens.toLocaleString()],
       ];
       if (usage.model_id) {

@@ -416,12 +416,15 @@ private struct MeetingDetailView: View {
     @ViewBuilder
     private func llmUsageBlock(_ usage: MeetingLlmUsage) -> some View {
         Text("LLM usage").font(.headline)
-        let billable = max(0, usage.inputTokens - usage.cachedInputTokens)
+        // `inputTokens` and `cachedInputTokens` are disjoint buckets
+        // in rig 0.36's Anthropic mapping — input = fresh billable,
+        // cached = cache-read at 0.10× rate. Older builds subtracted
+        // them assuming overlap, which produced "billable = 0" once
+        // prompt caching kicked in. Show as separate counts.
         VStack(alignment: .leading, spacing: 4) {
             llmUsageRow("calls", String(usage.calls))
-            llmUsageRow("input tokens", formatTokens(usage.inputTokens))
-            llmUsageRow("billable input", formatTokens(billable))
-            llmUsageRow("cached input", formatTokens(usage.cachedInputTokens))
+            llmUsageRow("input (billable)", formatTokens(usage.inputTokens))
+            llmUsageRow("cached read (0.10×)", formatTokens(usage.cachedInputTokens))
             llmUsageRow("output tokens", formatTokens(usage.outputTokens))
             if let model = usage.modelId {
                 llmUsageRow("model", model)
