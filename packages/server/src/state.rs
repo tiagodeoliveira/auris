@@ -126,6 +126,13 @@ pub struct UserState {
     pub(crate) current_mode: String,
     pub(crate) items_per_mode: HashMap<String, Vec<Item>>,
     pub(crate) metadata: HashMap<String, String>,
+    /// User-supplied freeform meeting description. Distinct from
+    /// `metadata` — this is the verbatim prose the user typed at
+    /// compose time, kept around so the agent's bootstrap can seed
+    /// the conversation with the user's full framing (relationships,
+    /// intent, expected outcomes) rather than just the LLM-extracted
+    /// structured fields.
+    pub(crate) description: Option<String>,
     pub(crate) meeting_started_at: Option<Instant>,
     pub(crate) rolling_transcript: Vec<TranscriptChunk>,
     /// Memories recalled from mnemo at the start of the current meeting,
@@ -159,6 +166,7 @@ impl UserState {
             current_mode: DEFAULT_MODE_ID.to_string(),
             items_per_mode,
             metadata: HashMap::new(),
+            description: None,
             meeting_started_at: None,
             rolling_transcript: Vec::new(),
             recalled_context: None,
@@ -184,6 +192,7 @@ impl UserState {
         self.meeting_state = MeetingState::Active;
         self.current_meeting_id = Some(r.id.clone());
         self.metadata = r.metadata.clone();
+        self.description = r.description.clone();
         self.meeting_started_at = Some(Instant::now());
         self.current_mode = DEFAULT_MODE_ID.to_string();
         // Replay transcript items into transcript-mode. Other modes
@@ -332,6 +341,15 @@ impl UserState {
         if let Some(m) = metadata {
             self.metadata = m;
         }
+        // Stash the user's freeform description on UserState so the
+        // agent bootstrap can pull it into the `[context]` block.
+        // Empty / whitespace-only descriptions collapse to None so the
+        // bootstrap doesn't emit an empty section.
+        self.description = description
+            .as_ref()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
         self.current_mode = DEFAULT_MODE_ID.to_string();
 
         // Bind the audio source if the caller provided one. We don't
@@ -384,6 +402,7 @@ impl UserState {
         }
         self.meeting_state = MeetingState::Idle;
         self.metadata.clear();
+        self.description = None;
         for v in self.items_per_mode.values_mut() {
             v.clear();
         }
@@ -1008,6 +1027,58 @@ mod tests {
             out.start_extraction_for.as_deref(),
             Some("Q1 budget review")
         );
+    }
+
+    #[test]
+    fn start_meeting_stores_description_in_state() {
+        let mut s = UserState::new();
+        s.apply_intent(Intent::StartMeeting {
+            description: Some("Quarterly review with Acme. Susan + 2 engineers.".into()),
+            metadata: None,
+            audio_source_device_id: None,
+        });
+        assert_eq!(
+            s.description.as_deref(),
+            Some("Quarterly review with Acme. Susan + 2 engineers.")
+        );
+    }
+
+    #[test]
+    fn start_meeting_with_empty_description_stores_none() {
+        let mut s = UserState::new();
+        s.apply_intent(Intent::StartMeeting {
+            description: Some(String::new()),
+            metadata: None,
+            audio_source_device_id: None,
+        });
+        assert!(s.description.is_none());
+    }
+
+    #[test]
+    fn stop_meeting_clears_description() {
+        let mut s = UserState::new();
+        s.apply_intent(Intent::StartMeeting {
+            description: Some("hello".into()),
+            metadata: None,
+            audio_source_device_id: None,
+        });
+        assert!(s.description.is_some());
+        s.apply_intent(Intent::StopMeeting);
+        assert!(s.description.is_none());
+    }
+
+    #[test]
+    fn rehydrate_restores_description_from_recovered_meeting() {
+        let mut s = UserState::new();
+        let recovered = RecoveredMeeting {
+            id: "rec-2".to_string(),
+            description: Some("recovered prose".to_string()),
+            metadata: HashMap::new(),
+            started_at: chrono::Utc::now(),
+            transcript_items: vec![],
+        };
+        s.rehydrate_from_recovered_meeting(&recovered);
+        assert_eq!(s.description.as_deref(), Some("recovered prose"));
     }
 
     #[test]

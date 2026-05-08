@@ -98,7 +98,9 @@ confirmation in the same turn.\n\
 the answer. If the user asks about something you don't have, say so honestly in one sentence.\n\
 \n\
 HOW THE CONVERSATION WORKS\n\
-- Each user turn delivers one or more of: a [meeting] header (first turn only, with title/description), \
+- Each user turn delivers one or more of: a [meeting] block (first turn only, structured key/value \
+metadata such as title, host, type), a [context] block (first turn only, the user's freeform \
+description — relationships, intent, expected outcomes; use it to interpret what's noteworthy), \
 [event] blocks (e.g., \"User just attached artifact …\"), [chat] blocks (a user question/instruction), \
 and a [transcript] block (new speech since the last turn).\n\
 - Your past tool calls are visible in this conversation history. They are your memory of what's already \
@@ -1141,46 +1143,81 @@ async fn build_bootstrap_section(
     db: &sqlx::PgPool,
     user_id: &str,
 ) -> Option<String> {
-    use std::fmt::Write;
-    let (metadata, current_meeting_id) = {
+    let (metadata, current_meeting_id, description) = {
         let s = state.lock().await;
         match s.user(user_id) {
-            Some(u) => (u.metadata.clone(), u.current_meeting_id.clone()),
-            None => (Default::default(), None),
+            Some(u) => (
+                u.metadata.clone(),
+                u.current_meeting_id.clone(),
+                u.description.clone(),
+            ),
+            None => (Default::default(), None, None),
         }
     };
-    let mut out = String::new();
+    let attached = if let Some(mid) = current_meeting_id.as_deref() {
+        crate::db::list_artifacts_for_meeting(db, mid)
+            .await
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    format_bootstrap_section(&metadata, description.as_deref(), &attached)
+}
+
+/// Pure formatter for the agent's first-fire bootstrap message.
+/// Emits up to three sections (in order):
+///   - `[meeting]` — sorted key/value metadata fields.
+///   - `[context]` — the user's freeform meeting description, when
+///     non-empty. Distinct from `[meeting]` because it's prose
+///     framing rather than structured fields, and the agent benefits
+///     from the relationships and intent the user typed verbatim.
+///   - `[attached artifacts]` — id/name/mime/summary one per row.
+///
+/// Returns `None` when every section would be empty (idle state, no
+/// description, no artifacts).
+fn format_bootstrap_section(
+    metadata: &std::collections::HashMap<String, String>,
+    description: Option<&str>,
+    attached: &[crate::db::ArtifactRow],
+) -> Option<String> {
+    use std::fmt::Write;
+    let mut sections: Vec<String> = Vec::new();
+
     if !metadata.is_empty() {
-        out.push_str("[meeting]\n");
+        let mut s = String::from("[meeting]\n");
         let mut keys: Vec<&String> = metadata.keys().collect();
         keys.sort();
         for k in keys {
-            let _ = writeln!(out, "  {k}: {}", metadata[k]);
+            let _ = writeln!(s, "  {k}: {}", metadata[k]);
         }
+        sections.push(s.trim_end().to_string());
     }
-    if let Some(mid) = current_meeting_id.as_deref() {
-        let attached = crate::db::list_artifacts_for_meeting(db, mid)
-            .await
-            .unwrap_or_default();
-        if !attached.is_empty() {
-            if !out.is_empty() {
-                out.push('\n');
-            }
-            out.push_str("[attached artifacts]\n");
-            for a in &attached {
-                let summary = a.short_summary.as_deref().unwrap_or("(summary pending)");
-                let _ = writeln!(
-                    out,
-                    "  id={} name={} mime={} summary={}",
-                    a.id, a.name, a.mime_type, summary,
-                );
-            }
+
+    if let Some(desc) = description.map(str::trim).filter(|s| !s.is_empty()) {
+        let mut s = String::from("[context]\n");
+        for line in desc.lines() {
+            let _ = writeln!(s, "  {line}");
         }
+        sections.push(s.trim_end().to_string());
     }
-    if out.is_empty() {
+
+    if !attached.is_empty() {
+        let mut s = String::from("[attached artifacts]\n");
+        for a in attached {
+            let summary = a.short_summary.as_deref().unwrap_or("(summary pending)");
+            let _ = writeln!(
+                s,
+                "  id={} name={} mime={} summary={}",
+                a.id, a.name, a.mime_type, summary,
+            );
+        }
+        sections.push(s.trim_end().to_string());
+    }
+
+    if sections.is_empty() {
         None
     } else {
-        Some(out.trim_end().to_string())
+        Some(sections.join("\n\n"))
     }
 }
 
@@ -1410,5 +1447,91 @@ mod tests {
         assert!(out.contains("[01:15] world"));
         // No leading "[Speaker " on the second line — speaker was None.
         assert_eq!(out.matches("[Speaker").count(), 1);
+    }
+
+    use std::collections::HashMap;
+
+    fn artifact(id: &str, name: &str, summary: Option<&str>) -> crate::db::ArtifactRow {
+        crate::db::ArtifactRow {
+            id: id.into(),
+            user_id: "u".into(),
+            name: name.into(),
+            mime_type: "text/plain".into(),
+            asset_path: format!("/blobs/{id}"),
+            short_summary: summary.map(Into::into),
+            long_summary: None,
+            summary_status: "ready".into(),
+            size_bytes: 100,
+            created_at: chrono::Utc::now(),
+        }
+    }
+
+    #[test]
+    fn format_bootstrap_section_returns_none_when_all_empty() {
+        let metadata = HashMap::new();
+        assert!(format_bootstrap_section(&metadata, None, &[]).is_none());
+    }
+
+    #[test]
+    fn format_bootstrap_section_emits_meeting_block_for_metadata() {
+        let mut metadata = HashMap::new();
+        metadata.insert("project".into(), "helix".into());
+        metadata.insert("host".into(), "Susan".into());
+        let out = format_bootstrap_section(&metadata, None, &[]).unwrap();
+        assert!(out.contains("[meeting]"), "got: {out}");
+        assert!(out.contains("host: Susan"));
+        assert!(out.contains("project: helix"));
+        // Sorted by key: host < project alphabetically.
+        let host_pos = out.find("host:").unwrap();
+        let project_pos = out.find("project:").unwrap();
+        assert!(host_pos < project_pos);
+    }
+
+    #[test]
+    fn format_bootstrap_section_emits_context_block_when_description_present() {
+        let metadata = HashMap::new();
+        let out = format_bootstrap_section(
+            &metadata,
+            Some("Quarterly review with Acme. Susan + 2 engineers."),
+            &[],
+        )
+        .unwrap();
+        assert!(out.contains("[context]"), "got: {out}");
+        assert!(out.contains("Quarterly review with Acme. Susan + 2 engineers."));
+    }
+
+    #[test]
+    fn format_bootstrap_section_omits_context_when_description_none() {
+        let mut metadata = HashMap::new();
+        metadata.insert("project".into(), "helix".into());
+        let out = format_bootstrap_section(&metadata, None, &[]).unwrap();
+        assert!(!out.contains("[context]"));
+    }
+
+    #[test]
+    fn format_bootstrap_section_orders_meeting_then_context_then_artifacts() {
+        let mut metadata = HashMap::new();
+        metadata.insert("host".into(), "Susan".into());
+        let attached = vec![artifact("a1", "spec.pdf", Some("Q3 plan"))];
+        let out =
+            format_bootstrap_section(&metadata, Some("Discussion of Q3 incident."), &attached)
+                .unwrap();
+        let meeting_pos = out.find("[meeting]").unwrap();
+        let context_pos = out.find("[context]").unwrap();
+        let artifacts_pos = out.find("[attached artifacts]").unwrap();
+        assert!(meeting_pos < context_pos, "got: {out}");
+        assert!(context_pos < artifacts_pos, "got: {out}");
+    }
+
+    #[test]
+    fn format_bootstrap_section_indents_multiline_description() {
+        let metadata = HashMap::new();
+        let out =
+            format_bootstrap_section(&metadata, Some("first line\nsecond line"), &[]).unwrap();
+        // Each prose line should be indented to match the block's
+        // visual style — the agent reads the block by looking for
+        // `[context]` and the indented body underneath.
+        assert!(out.contains("  first line"));
+        assert!(out.contains("  second line"));
     }
 }
