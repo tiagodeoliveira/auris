@@ -69,6 +69,7 @@ pub fn spawn_worker(handle: ServerHandle) {
     let llm = handle.llm.clone();
     let db = handle.db.clone();
     let agent_kick_tx = handle.agent_kick_tx.clone();
+    let events_tx = handle.events_tx.clone();
     tokio::spawn(async move {
         info!("moment summary worker started");
         loop {
@@ -81,8 +82,11 @@ pub fn spawn_worker(handle: ServerHandle) {
                     let db = db.clone();
                     let llm = llm.clone();
                     let agent_kick_tx = agent_kick_tx.clone();
+                    let events_tx = events_tx.clone();
                     tokio::spawn(async move {
-                        if let Err(e) = process_one(&db, &llm, &agent_kick_tx, &req).await {
+                        if let Err(e) =
+                            process_one(&db, &llm, &agent_kick_tx, &events_tx, &req).await
+                        {
                             warn!(error = ?e, moment_id = %req.moment_id, "moment summary failed");
                             let _ = crate::db::update_moment_summary(
                                 &db,
@@ -107,6 +111,7 @@ async fn process_one(
     db: &sqlx::PgPool,
     llm: &Arc<LlmClient>,
     agent_kick_tx: &tokio::sync::broadcast::Sender<crate::summarizer::agent::AgentKick>,
+    events_tx: &tokio::sync::broadcast::Sender<crate::contract::UserEvent>,
     req: &MomentCreated,
 ) -> anyhow::Result<()> {
     if std::env::var("MEETING_COMPANION_LLM_DISABLED").is_ok() {
@@ -212,19 +217,42 @@ async fn process_one(
     crate::db::update_moment_summary(db, &req.moment_id, Some(&summary_trimmed), "done").await?;
     info!(meeting_id = %req.meeting_id, moment_id = %req.moment_id, "moment summary done");
 
-    // Tell the agent the rich summary is now available. Earlier the
-    // WS handler kicked with `MomentMarked` (timestamp + optional
-    // note) so the agent knew the moment existed; this richer event
-    // lets the agent answer "what was that?" with content from the
-    // transcript window + screenshot synthesis.
+    // Re-read note for the broadcast — the agent kick already had
+    // `note` from MomentMarked, but the wire event downstream
+    // consumers will see needs the user-attached note included so
+    // mnemo can prefix the moment turn with the user's intent.
+    let note_for_event: Option<String> =
+        sqlx::query_scalar(r#"SELECT note FROM moments WHERE id = $1"#)
+            .bind(&req.moment_id)
+            .fetch_optional(db)
+            .await
+            .ok()
+            .flatten();
+
+    // Tell the agent the rich summary is now available.
     let _ = agent_kick_tx.send(crate::summarizer::agent::AgentKick {
         user_id: req.user_id.clone(),
         reason: crate::summarizer::agent::AgentKickReason::MomentSummarized {
             moment_id: req.moment_id.clone(),
             t_ms: req.t_ms,
-            summary: summary_trimmed,
+            summary: summary_trimmed.clone(),
         },
     });
+
+    // Wire-broadcast the same payload — mnemo pusher subscribes here
+    // and pushes the summary as an assistant-role memory turn.
+    // Clients today fall through (unknown event); a future "moment
+    // ready" toast or list refresh would slot in here.
+    let _ = events_tx.send(crate::contract::UserEvent::new(
+        req.user_id.clone(),
+        crate::contract::Event::MomentSummarized {
+            moment_id: req.moment_id.clone(),
+            meeting_id: req.meeting_id.clone(),
+            t_ms: req.t_ms,
+            summary: summary_trimmed,
+            note: note_for_event,
+        },
+    ));
     Ok(())
 }
 

@@ -285,6 +285,21 @@ pub enum Event {
         moment_id: String,
         t_ms: i64,
     },
+    /// Emitted by the moment-summary worker when it writes the
+    /// final summary text for a moment. Today's only consumer is
+    /// the mnemo pusher (which pushes the summary text — not the
+    /// screenshot — as an assistant-role turn so it lands in
+    /// long-term memory). PWA and Mac currently ignore this
+    /// event; future "moment ready" toast or auto-refresh of a
+    /// moments list would slot in here.
+    MomentSummarized {
+        moment_id: String,
+        meeting_id: String,
+        t_ms: i64,
+        summary: String,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        note: Option<String>,
+    },
 }
 
 #[cfg(test)]

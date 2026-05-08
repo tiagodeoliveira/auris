@@ -62,14 +62,31 @@ pub struct IngestEvent {
 pub type IngestRequest = IngestEvent;
 
 /// Build the context block that's sent with every push for a meeting.
-/// Reused for both per-sentence and end-of-meeting summary events.
+/// Reused for sentence / chat / moment / summary-bundle events.
+///
+/// `meeting_id` and `mode` (when set) ride along in `attributes` so
+/// mnemo's recall layer can filter by them. `meeting_id` keeps the
+/// door open for per-meeting recall ("what did I record in
+/// meeting X?") and the per-user mnemo identity work flagged in
+/// PLAN.md §4.2. `mode` distinguishes the source pipeline of each
+/// turn (transcript / chat / moment / summary_bundle) — useful for
+/// "show me chat-derived memories specifically" kinds of recall.
 pub fn build_context(
     workstation: &str,
     metadata: &HashMap<String, String>,
     started_at: chrono::DateTime<chrono::Utc>,
+    meeting_id: Option<&str>,
+    mode: Option<&str>,
 ) -> IngestContext {
     let project = metadata.get("project").cloned();
     let date = Some(started_at.format("%Y-%m-%d").to_string());
+    let mut attributes = metadata.clone();
+    if let Some(id) = meeting_id {
+        attributes.insert("meeting_id".to_string(), id.to_string());
+    }
+    if let Some(m) = mode {
+        attributes.insert("mode".to_string(), m.to_string());
+    }
     IngestContext {
         workstation: workstation.to_string(),
         workdir: WORKDIR.to_string(),
@@ -77,7 +94,7 @@ pub fn build_context(
         source: SOURCE.to_string(),
         project,
         date,
-        attributes: metadata.clone(),
+        attributes,
     }
 }
 
@@ -87,6 +104,7 @@ pub fn build_sentence_event(
     workstation: &str,
     metadata: &HashMap<String, String>,
     started_at: chrono::DateTime<chrono::Utc>,
+    meeting_id: Option<&str>,
     sentence: &str,
 ) -> IngestEvent {
     IngestEvent {
@@ -95,7 +113,80 @@ pub fn build_sentence_event(
             role: TurnRole::User,
             content: sentence.to_string(),
         }],
-        context: build_context(workstation, metadata, started_at),
+        context: build_context(
+            workstation,
+            metadata,
+            started_at,
+            meeting_id,
+            Some("transcript"),
+        ),
+    }
+}
+
+/// One chat exchange → one event with two turns: user-role
+/// question + assistant-role reply. Streams the same way as
+/// transcript sentences (per fire), so mnemo recall captures
+/// the question and the agent's answer as paired memories.
+pub fn build_chat_event(
+    session_id: &str,
+    workstation: &str,
+    metadata: &HashMap<String, String>,
+    started_at: chrono::DateTime<chrono::Utc>,
+    meeting_id: Option<&str>,
+    question: &str,
+    answer: &str,
+) -> IngestEvent {
+    IngestEvent {
+        session_id: session_id.to_string(),
+        turns: vec![
+            Turn {
+                role: TurnRole::User,
+                content: question.to_string(),
+            },
+            Turn {
+                role: TurnRole::Assistant,
+                content: answer.to_string(),
+            },
+        ],
+        context: build_context(workstation, metadata, started_at, meeting_id, Some("chat")),
+    }
+}
+
+/// Moment summary → one assistant-role turn carrying the
+/// transcript-window + screenshot-synthesis text. The screenshot
+/// itself isn't sent (mnemo only takes text); only the summary
+/// the LLM produced. `note` (when the user attached one at mark
+/// time) prefixes the turn so recall surfaces "the user's intent"
+/// alongside the auto-generated summary.
+pub fn build_moment_event(
+    session_id: &str,
+    workstation: &str,
+    metadata: &HashMap<String, String>,
+    started_at: chrono::DateTime<chrono::Utc>,
+    meeting_id: Option<&str>,
+    t_ms: i64,
+    summary: &str,
+    note: Option<&str>,
+) -> IngestEvent {
+    let total_secs = (t_ms.max(0) / 1000) as u64;
+    let timestamp = format!("{:02}:{:02}", total_secs / 60, total_secs % 60);
+    let mut content = format!("Moment at {timestamp}: {summary}");
+    if let Some(n) = note.filter(|s| !s.trim().is_empty()) {
+        content = format!("Moment at {timestamp} — user note: {n}\n{summary}");
+    }
+    IngestEvent {
+        session_id: session_id.to_string(),
+        turns: vec![Turn {
+            role: TurnRole::Assistant,
+            content,
+        }],
+        context: build_context(
+            workstation,
+            metadata,
+            started_at,
+            meeting_id,
+            Some("moment"),
+        ),
     }
 }
 
@@ -107,6 +198,7 @@ pub fn build_summary_event(
     workstation: &str,
     metadata: &HashMap<String, String>,
     started_at: chrono::DateTime<chrono::Utc>,
+    meeting_id: Option<&str>,
     items_by_mode: &HashMap<String, Vec<Item>>,
 ) -> Option<IngestEvent> {
     let mut turns = Vec::new();
@@ -138,7 +230,13 @@ pub fn build_summary_event(
     Some(IngestEvent {
         session_id: session_id.to_string(),
         turns,
-        context: build_context(workstation, metadata, started_at),
+        context: build_context(
+            workstation,
+            metadata,
+            started_at,
+            meeting_id,
+            Some("summary_bundle"),
+        ),
     })
 }
 
@@ -176,6 +274,7 @@ mod tests {
             "host",
             &meta(&[("project", "helix")]),
             ts(),
+            None,
             "We talked about the demo.",
         );
         assert_eq!(ev.session_id, "sess-1");
@@ -189,7 +288,7 @@ mod tests {
 
     #[test]
     fn project_field_promotes_from_metadata() {
-        let no_project = build_sentence_event("s", "h", &meta(&[("title", "x")]), ts(), "hi");
+        let no_project = build_sentence_event("s", "h", &meta(&[("title", "x")]), ts(), None, "hi");
         assert!(no_project.context.project.is_none());
         // Other metadata still rides along in attributes.
         assert_eq!(
@@ -205,8 +304,9 @@ mod tests {
             ("owner", "tiago"),
             ("title", "SMB demo"),
         ]);
-        let ev = build_sentence_event("s", "h", &m, ts(), "x");
-        assert_eq!(ev.context.attributes.len(), 3);
+        let ev = build_sentence_event("s", "h", &m, ts(), None, "x");
+        // 3 user-set attributes + 1 injected `mode = "transcript"`.
+        assert_eq!(ev.context.attributes.len(), 4);
         assert_eq!(
             ev.context.attributes.get("owner"),
             Some(&"tiago".to_string())
@@ -225,7 +325,8 @@ mod tests {
         // Transcript items must be skipped.
         by_mode.insert("transcript".into(), vec![item("t1", "We talked.")]);
 
-        let ev = build_summary_event("s", "h", &meta(&[]), ts(), &by_mode).expect("non-empty");
+        let ev =
+            build_summary_event("s", "h", &meta(&[]), ts(), None, &by_mode).expect("non-empty");
         assert_eq!(ev.turns.len(), 3);
         assert!(ev.turns[0].content.starts_with("Action items:"));
         assert!(ev.turns[0].content.contains("- Send recap"));
@@ -241,14 +342,15 @@ mod tests {
         let mut by_mode = HashMap::new();
         by_mode.insert("actions".into(), vec![item("a1", "Only this")]);
         by_mode.insert("highlights".into(), vec![]); // empty
-        let ev = build_summary_event("s", "h", &meta(&[]), ts(), &by_mode).expect("non-empty");
+        let ev =
+            build_summary_event("s", "h", &meta(&[]), ts(), None, &by_mode).expect("non-empty");
         assert_eq!(ev.turns.len(), 1);
         assert!(ev.turns[0].content.starts_with("Action items:"));
     }
 
     #[test]
     fn summary_event_returns_none_when_nothing_to_push() {
-        let ev = build_summary_event("s", "h", &meta(&[]), ts(), &HashMap::new());
+        let ev = build_summary_event("s", "h", &meta(&[]), ts(), None, &HashMap::new());
         assert!(ev.is_none());
     }
 
@@ -259,6 +361,7 @@ mod tests {
             "host-x",
             &meta(&[("project", "helix"), ("owner", "tiago")]),
             ts(),
+            Some("m-42"),
             "hello world",
         );
         let json = serde_json::to_value(&ev).unwrap();

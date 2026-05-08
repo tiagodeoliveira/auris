@@ -31,12 +31,18 @@ use uuid::Uuid;
 use crate::contract::{Event, Item, MeetingState, UserEvent};
 
 use super::client::MnemoClient;
-use super::payload::{build_sentence_event, build_summary_event};
+use super::payload::{
+    build_chat_event, build_moment_event, build_sentence_event, build_summary_event,
+};
 
 #[derive(Debug, Default)]
 struct PusherState {
     session_id: Option<String>,
     started_at: Option<DateTime<Utc>>,
+    /// Server-assigned meeting id from `MeetingStateChanged{Active}`.
+    /// Carried into every push as `attributes.meeting_id` so mnemo
+    /// recall can scope by meeting.
+    meeting_id: Option<String>,
     /// Number of transcript items already pushed in this session.
     transcript_pushed: usize,
     /// Per-mode item cache (excluding transcript). Populated as
@@ -83,13 +89,14 @@ async fn handle_event(client: &MnemoClient, state: &mut PusherState, event: Even
     match event {
         Event::MeetingStateChanged {
             meeting_state: MeetingState::Active,
-            ..
+            meeting_id,
         } => {
             if state.session_id.is_none() {
                 let id = Uuid::new_v4().to_string();
                 info!(session_id = %id, "mnemo: new meeting session");
                 state.session_id = Some(id);
                 state.started_at = Some(Utc::now());
+                state.meeting_id = meeting_id;
                 state.transcript_pushed = 0;
                 state.items_by_mode.clear();
                 // Keep metadata cache — ExtractMetadata may have populated it.
@@ -114,9 +121,30 @@ async fn handle_event(client: &MnemoClient, state: &mut PusherState, event: Even
         Event::ItemsUpdate { mode, items } => {
             if mode == "transcript" {
                 push_new_transcript(client, state, &items);
+            } else if mode == "chat" {
+                push_chat_pair(client, state, &items);
+                // Don't cache chat in items_by_mode — chat exchanges
+                // stream to mnemo per fire (above), and the
+                // end-of-meeting summary bundle intentionally
+                // omits chat (covered by the per-fire pushes).
+            } else if mode == "summary" {
+                // Summary is the running 3-5 sentence overview that
+                // refreshes on a heartbeat; pushing every refresh
+                // would spam mnemo with progressively-larger versions
+                // of the same content, and the actions/highlights/
+                // open_questions bundle at meeting stop already
+                // covers the same ground. Skip entirely.
             } else {
                 state.items_by_mode.insert(mode, items);
             }
+        }
+        Event::MomentSummarized {
+            t_ms,
+            summary,
+            note,
+            ..
+        } => {
+            push_moment(client, state, t_ms, &summary, note.as_deref());
         }
         // No-ops for memory purposes.
         Event::Snapshot { .. }
@@ -134,6 +162,68 @@ async fn handle_event(client: &MnemoClient, state: &mut PusherState, event: Even
     }
 }
 
+/// Chat exchange → one mnemo event with two turns. Fires per chat
+/// round-trip. The Q+A pair arrives in `items` as
+/// `[user_item, assistant_item]` (the chat fire's broadcast shape).
+fn push_chat_pair(client: &MnemoClient, state: &PusherState, items: &[Item]) {
+    let (Some(session_id), Some(started_at)) = (state.session_id.as_deref(), state.started_at)
+    else {
+        return;
+    };
+    if items.len() < 2 {
+        return;
+    }
+    let question = &items[0].text;
+    let answer = &items[1].text;
+    let payload = build_chat_event(
+        session_id,
+        client.workstation(),
+        &state.metadata,
+        started_at,
+        state.meeting_id.as_deref(),
+        question,
+        answer,
+    );
+    let client = client.clone();
+    tokio::spawn(async move {
+        if let Err(e) = client.push_event(&payload).await {
+            warn!(error = %e, "mnemo: chat push failed");
+        }
+    });
+}
+
+/// Moment summary → one assistant-role turn carrying the LLM's
+/// transcript-window + screenshot synthesis. Screenshot itself is
+/// not sent (mnemo is text-only).
+fn push_moment(
+    client: &MnemoClient,
+    state: &PusherState,
+    t_ms: i64,
+    summary: &str,
+    note: Option<&str>,
+) {
+    let (Some(session_id), Some(started_at)) = (state.session_id.as_deref(), state.started_at)
+    else {
+        return;
+    };
+    let payload = build_moment_event(
+        session_id,
+        client.workstation(),
+        &state.metadata,
+        started_at,
+        state.meeting_id.as_deref(),
+        t_ms,
+        summary,
+        note,
+    );
+    let client = client.clone();
+    tokio::spawn(async move {
+        if let Err(e) = client.push_event(&payload).await {
+            warn!(error = %e, "mnemo: moment push failed");
+        }
+    });
+}
+
 fn push_new_transcript(client: &MnemoClient, state: &mut PusherState, items: &[Item]) {
     let (Some(session_id), Some(started_at)) = (state.session_id.as_deref(), state.started_at)
     else {
@@ -147,9 +237,16 @@ fn push_new_transcript(client: &MnemoClient, state: &mut PusherState, items: &[I
     let workstation = client.workstation().to_string();
     let metadata = state.metadata.clone();
     let session_id = session_id.to_string();
+    let meeting_id = state.meeting_id.clone();
     for item in &items[state.transcript_pushed..] {
-        let payload =
-            build_sentence_event(&session_id, &workstation, &metadata, started_at, &item.text);
+        let payload = build_sentence_event(
+            &session_id,
+            &workstation,
+            &metadata,
+            started_at,
+            meeting_id.as_deref(),
+            &item.text,
+        );
         let client = client.clone();
         tokio::spawn(async move {
             if let Err(e) = client.push_event(&payload).await {
@@ -170,6 +267,7 @@ async fn flush_summary(client: &MnemoClient, state: &PusherState) {
         client.workstation(),
         &state.metadata,
         started_at,
+        state.meeting_id.as_deref(),
         &state.items_by_mode,
     ) else {
         debug!(session_id = %session_id, "mnemo: nothing to summarize, skipping final push");
