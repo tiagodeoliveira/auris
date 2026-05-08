@@ -122,6 +122,20 @@ struct MeetingOverlayView: View {
                 dismissWindow(id: "meeting-overlay")
             }
         }
+        // Server-authoritative dismiss path. `currentMeetingId` flips
+        // to nil the instant we receive `meeting_state_changed → idle`
+        // from the server (whether the stop came from this Mac or the
+        // PWA), well before `audioCapture.stop()` finishes its async
+        // teardown and `isMeetingActive` flips. Without this, ending
+        // the meeting on the PWA leaves the Mac overlay stuck on the
+        // live view for several seconds — long enough that users tap
+        // Stop again and again.
+        .onChange(of: model.currentMeetingId) { _, newId in
+            if newId == nil && (mode == .live || mode == .starting) {
+                addingMetadata = false
+                dismissWindow(id: "meeting-overlay")
+            }
+        }
         .onAppear {
             mode = model.isMeetingActive ? .live : .compose
             addingMetadata = false
