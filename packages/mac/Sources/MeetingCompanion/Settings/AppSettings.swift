@@ -42,8 +42,11 @@ final class AppSettings {
     }
 
     /// Configurable translucency for the overlay window's panel fill
-    /// and any inner bubble/card backgrounds. Range [0.4, 1.0]. Lower
-    /// values let the desktop bleed through; 1.0 is fully opaque.
+    /// and any inner bubble/card backgrounds. Range [0.01, 1.0]. The
+    /// floor is intentionally near-zero so the user can dial the
+    /// overlay down to a barely-visible heads-up — text strokes
+    /// remain at full opacity above the panel fill, so 1% panel is
+    /// still readable. 1.0 is fully opaque.
     var overlayOpacity: Double {
         didSet {
             UserDefaults.standard.set(overlayOpacity, forKey: Self.overlayOpacityKey)
@@ -58,6 +61,6 @@ final class AppSettings {
         let storedTheme = UserDefaults.standard.string(forKey: Self.overlayThemeKey).flatMap(OverlayTheme.init(rawValue:))
         self.overlayTheme = storedTheme ?? .light
         let storedOpacity = UserDefaults.standard.object(forKey: Self.overlayOpacityKey) as? Double
-        self.overlayOpacity = storedOpacity.map { min(max($0, 0.4), 1.0) } ?? Self.overlayOpacityDefault
+        self.overlayOpacity = storedOpacity.map { min(max($0, 0.01), 1.0) } ?? Self.overlayOpacityDefault
     }
 }

@@ -128,7 +128,7 @@ private struct AccountTab: View {
                             .foregroundStyle(.secondary)
                             .font(.callout.monospacedDigit())
                     }
-                    Slider(value: $model.settings.overlayOpacity, in: 0.4 ... 1.0, step: 0.02)
+                    Slider(value: $model.settings.overlayOpacity, in: 0.01 ... 1.0, step: 0.01)
                 }
             } header: {
                 Text("Overlay")

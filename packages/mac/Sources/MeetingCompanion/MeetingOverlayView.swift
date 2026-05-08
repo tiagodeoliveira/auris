@@ -64,6 +64,19 @@ struct MeetingOverlayView: View {
         _mode = State(initialValue: model.isMeetingActive ? .live : .compose)
     }
 
+    /// Close / hide the overlay window. SwiftUI's `dismissWindow(id:)`
+    /// has been observed to silently no-op in our menu-bar accessory
+    /// app (same finding as `AppModel.closeOverlayWindow`), so we go
+    /// through AppKit. For the singleton `Window(id:)` pattern this
+    /// is "hide" semantically — the window is preserved and a future
+    /// `openWindow(id: "meeting-overlay")` re-shows it without
+    /// rebuilding state.
+    private func closeOverlay() {
+        for win in NSApp.windows where win.title == "Meeting" {
+            win.close()
+        }
+    }
+
     var body: some View {
         Group {
             switch mode {
@@ -168,7 +181,7 @@ struct MeetingOverlayView: View {
                 Spacer()
 
                 Button {
-                    dismissWindow(id: "meeting-overlay")
+                    closeOverlay()
                 } label: {
                     Image(systemName: "xmark.circle.fill")
                         .font(.system(size: 16))
@@ -228,7 +241,7 @@ struct MeetingOverlayView: View {
                 .padding(6)
             }
             .padding(6)
-            .background(MCTheme.input)
+            .background(MCTheme.input.opacity(model.settings.overlayOpacity))
             .clipShape(RoundedRectangle(cornerRadius: 10))
             .overlay(
                 RoundedRectangle(cornerRadius: 10)
@@ -340,7 +353,23 @@ struct MeetingOverlayView: View {
             }
 
             VStack(alignment: .trailing, spacing: 8) {
-                actionCluster
+                HStack(spacing: 6) {
+                    // Hide-overlay button — closes the window without
+                    // stopping the meeting. The Window(id:) instance
+                    // is preserved; re-opening from the menu shows it
+                    // again with state intact.
+                    Button {
+                        closeOverlay()
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.system(size: 16))
+                            .foregroundStyle(MCTheme.muted)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Hide overlay (meeting keeps running)")
+
+                    actionCluster
+                }
 
                 if let status = model.momentStatus, !status.isEmpty {
                     Text(status)
@@ -530,7 +559,7 @@ struct MeetingOverlayView: View {
                 .focused($isChatFocused)
                 .padding(.horizontal, 10)
                 .padding(.vertical, 6)
-                .background(MCTheme.input)
+                .background(MCTheme.input.opacity(model.settings.overlayOpacity))
                 .overlay(
                     RoundedRectangle(cornerRadius: 6)
                         .strokeBorder(isChatFocused ? MCTheme.blue : MCTheme.border)
