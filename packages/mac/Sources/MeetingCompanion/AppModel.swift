@@ -394,6 +394,18 @@ final class AppModel {
         localMeetingTeardown()
     }
 
+    /// Close the floating meeting-overlay window via AppKit. Looks
+    /// up the window by its SwiftUI scene title ("Meeting"). Used
+    /// when the server signals meeting end so the overlay doesn't
+    /// linger in its live state — SwiftUI's `dismissWindow(id:)`
+    /// has been observed to silently no-op for our menu-bar
+    /// accessory app, so we go through AppKit directly.
+    private func closeOverlayWindow() {
+        for win in NSApp.windows where win.title == "Meeting" {
+            win.close()
+        }
+    }
+
     /// Stop the local capture + streamer and reset meeting-scoped
     /// state, *without* sending `stop_meeting`. Used when the
     /// server has already torn down (server restart → snapshot
@@ -577,19 +589,20 @@ final class AppModel {
             if state == "idle" {
                 // The meeting stopped — could be us (this Mac sent
                 // StopMeeting), the PWA (other client), or a server
-                // restart. In every case we need to:
-                //   1. Tear down local audio capture so isMeetingActive
-                //      flips false. The overlay's .onChange watches
-                //      that and dismisses the meeting-overlay window
-                //      when it flips during a live/starting session.
-                //   2. Clear per-meeting transient state.
-                // Without (1), pressing Stop on the PWA leaves the Mac
-                // overlay stuck in the live view forever — even local
-                // Stop clicks become no-ops because the server is
-                // already idle.
+                // restart. In every case we need to tear down local
+                // audio capture, clear per-meeting transient state,
+                // AND close the overlay window directly via AppKit.
+                //
+                // We tried using SwiftUI's `dismissWindow(id:)` from
+                // the overlay's .onChange — it silently no-ops on
+                // .accessory-policy menu-bar apps once the window's
+                // borderless/titled style is mucked with. Closing
+                // through AppKit's NSWindow.close() always works.
+                print("[AppModel] meeting_state=idle — closing overlay")
                 localMeetingTeardown()
                 pendingArtifactAttachments = []
                 currentMeetingAttachedArtifactIds = []
+                closeOverlayWindow()
             }
             if state == "active", let mid = meetingId, !pendingArtifactAttachments.isEmpty {
                 let ids = pendingArtifactAttachments
