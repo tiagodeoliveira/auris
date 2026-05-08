@@ -7,21 +7,44 @@ import { activeItems } from "../types";
 interface BridgeEvent {
   textEvent?: { eventType?: number | undefined };
   listEvent?: { eventType?: number | undefined };
-  sysEvent?: { eventType?: number };
+  sysEvent?: { eventType?: number; eventSource?: number };
 }
 
 type SendIntent = (intent: Intent) => void;
 
 export function handleBridgeEvent(event: BridgeEvent, store: Store, send: SendIntent): void {
-  const inputEvent = event.textEvent ?? event.listEvent;
+  const inputEvent = event.textEvent ?? event.listEvent ?? sysEventAsClick(event.sysEvent);
   if (inputEvent) {
     handleInput(normalizeEventType(inputEvent.eventType), store, send);
   }
-  // Sys events are not handled here — lifecycle.ts handles them.
+  // Other sysEvents (FOREGROUND_ENTER/EXIT, ABNORMAL/SYSTEM_EXIT,
+  // IMU_DATA_REPORT) are lifecycle.ts's job — see sysEventAsClick.
 }
 
 function normalizeEventType(t: number | undefined): number {
   return t === undefined ? OsEventTypeList.CLICK_EVENT : t;
+}
+
+/// The simulator (and likely real glasses for some configs) delivers
+/// the primary temple-tap as a `sysEvent` — *not* as a textEvent on
+/// the focused container — with `eventSource: 1` (TOUCH_EVENT_FROM_
+/// GLASSES_R). proto3 JSON omits scalar zeros, so a sysEvent with no
+/// `eventType` field is implicitly CLICK_EVENT (0); double-click
+/// arrives serialized as `eventType: 3`.
+///
+/// Returns a synthetic input-event shape only for click variants; all
+/// other sysEvent kinds are lifecycle's responsibility and should not
+/// be routed here (otherwise lifecycle FOREGROUND_EXIT etc. would
+/// become a phantom click).
+function sysEventAsClick(
+  sys: { eventType?: number; eventSource?: number } | undefined,
+): { eventType?: number } | undefined {
+  if (!sys) return undefined;
+  const t = sys.eventType ?? OsEventTypeList.CLICK_EVENT;
+  if (t === OsEventTypeList.CLICK_EVENT || t === OsEventTypeList.DOUBLE_CLICK_EVENT) {
+    return { eventType: t };
+  }
+  return undefined;
 }
 
 function handleInput(eventType: number, store: Store, send: SendIntent): void {

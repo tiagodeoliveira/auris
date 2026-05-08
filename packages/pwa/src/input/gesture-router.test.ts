@@ -81,6 +81,53 @@ describe("gesture-router", () => {
     handleBridgeEvent({ textEvent: { eventType: undefined } }, store, vi.fn());
     expect(store.get().glassesView).toBe("active_detail");
   });
+
+  // The simulator (and likely real glasses for primary tap) emits the
+  // click as a sysEvent with eventSource=1 (TOUCH_EVENT_FROM_GLASSES_R)
+  // and no eventType (proto3 default-omits zero == CLICK_EVENT).
+  test("sysEvent click (no eventType, eventSource=1) -> active_detail", () => {
+    const store = createStore({
+      ...defaultAppState(),
+      glassesView: "active_list",
+      itemsByMode: { transcript: [{ id: "a", text: "x", t: 0 }] },
+    });
+    handleBridgeEvent({ sysEvent: { eventSource: 1 } }, store, vi.fn());
+    expect(store.get().glassesView).toBe("active_detail");
+    expect(store.get().detailItemId).toBe("a");
+  });
+
+  test("sysEvent double-click (eventType=3, eventSource=1) -> mark_moment", () => {
+    const send = vi.fn();
+    const store = createStore({
+      ...defaultAppState(),
+      glassesView: "active_list",
+      meetingState: "active",
+    });
+    handleBridgeEvent(
+      { sysEvent: { eventType: OsEventTypeList.DOUBLE_CLICK_EVENT, eventSource: 1 } },
+      store,
+      send,
+    );
+    expect(send).toHaveBeenCalledWith(expect.objectContaining({ type: "mark_moment" }));
+  });
+
+  test("sysEvent FOREGROUND_EXIT does NOT trigger a click in gesture-router", () => {
+    const send = vi.fn();
+    const store = createStore({
+      ...defaultAppState(),
+      glassesView: "active_list",
+      itemsByMode: { transcript: [{ id: "a", text: "x", t: 0 }] },
+    });
+    handleBridgeEvent(
+      { sysEvent: { eventType: OsEventTypeList.FOREGROUND_EXIT_EVENT } },
+      store,
+      send,
+    );
+    // Stays in active_list — lifecycle.ts handles foreground events
+    // separately; gesture-router must not also treat them as clicks.
+    expect(store.get().glassesView).toBe("active_list");
+    expect(send).not.toHaveBeenCalled();
+  });
 });
 
 // suppress unused import warning
