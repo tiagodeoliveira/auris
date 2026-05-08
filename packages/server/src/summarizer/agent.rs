@@ -35,6 +35,7 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use rig::agent::AgentBuilder;
 use rig::completion::{Message as RigMessage, Prompt, ToolDefinition};
 use rig::message::AssistantContent;
 use rig::prelude::*;
@@ -856,8 +857,15 @@ async fn fire(
     let history_input = history.clone();
     let result = match &llm.backend {
         LlmBackend::Bedrock { client, model_id } => {
-            let agent = client
-                .agent(model_id)
+            // Prompt caching: Bedrock inserts CachePoint blocks after
+            // the system prompt and after the last message. Cache
+            // hits show up as `cache_read_input_tokens` (folded into
+            // rig's `cached_input_tokens`) on subsequent fires. If
+            // the cached prefix is too short or the model doesn't
+            // support caching, Bedrock silently ignores the
+            // checkpoint — no error path needed.
+            let model = client.completion_model(model_id).with_prompt_caching();
+            let agent = AgentBuilder::new(model)
                 .preamble(SYSTEM_PROMPT)
                 .tool(PushHighlight(ctx.clone()))
                 .tool(ReplaceHighlights(ctx.clone()))
@@ -892,8 +900,15 @@ async fn fire(
                 .await
         }
         LlmBackend::Anthropic { client, model_id } => {
-            let agent = client
-                .agent(model_id.as_str())
+            // Same caching strategy as the Bedrock arm — rig's
+            // `with_prompt_caching()` adds `cache_control: ephemeral`
+            // breakpoints on the system prompt and last message;
+            // Claude 3.5+ supports prompt caching as a GA feature
+            // (no `anthropic_beta` header required).
+            let model = client
+                .completion_model(model_id.as_str())
+                .with_prompt_caching();
+            let agent = AgentBuilder::new(model)
                 .preamble(SYSTEM_PROMPT)
                 .tool(PushHighlight(ctx.clone()))
                 .tool(ReplaceHighlights(ctx.clone()))
