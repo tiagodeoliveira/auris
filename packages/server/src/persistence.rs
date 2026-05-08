@@ -1,33 +1,34 @@
-//! Blob-side persistence: append committed transcript items to a
-//! per-meeting JSONL file.
+//! Per-meeting persistence: transcripts go to JSONL on disk; every
+//! other mode (highlights / actions / open_questions / summary /
+//! chat) goes to the `items` table in Postgres.
 //!
-//! Layout: `<DATA_DIR>/blobs/meetings/<meeting_id>/transcription.jsonl`,
-//! one JSON-encoded `Item` per line. The transcript summarizer
-//! pushes each finalized utterance as an `Item` into transcript
-//! mode and emits an `ItemsUpdate { mode: "transcript", items }`
-//! event; this task subscribes to that broadcast and appends.
+//! Transcript JSONL layout:
+//!   `<DATA_DIR>/blobs/meetings/<meeting_id>/transcription.jsonl`,
+//! one JSON-encoded `Item` per line. Sequential append-only; we
+//! read the whole file as part of moment-summary windowing and
+//! mnemo push, never query rows individually. Keeping it as a flat
+//! file matches the future S3-key layout (one prefix per meeting)
+//! and avoids bloating the relational DB with text blobs.
 //!
-//! Why not in SQLite: transcripts are sequential append-only data
-//! that we read whole, not query. They're also the only ground
-//! truth in a meeting (highlights/actions/open_questions are
-//! derived from them and can be re-run if lost). Keeping them as
-//! flat files matches the future S3-key layout (one prefix per
-//! meeting) and avoids bloating the relational DB with text blobs.
-//!
-//! Other modes are intentionally not persisted today. If we ever
-//! want a "review meeting" feature that includes derived items,
-//! we can replay the saved transcript through the summarizers.
+//! Items table (everything except transcript): one row per
+//! emitted item. Replace-strategy modes (highlights / summary /
+//! chat) atomically delete + re-insert per fire so the persisted
+//! state matches the live state exactly. Append modes (actions /
+//! open_questions) just insert with `ON CONFLICT DO NOTHING`.
+//! Powers the meeting-detail view's per-mode tabs once a meeting
+//! has ended.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
+use sqlx::PgPool;
 use tokio::fs::{create_dir_all, OpenOptions};
 use tokio::io::AsyncWriteExt;
 use tokio::sync::{broadcast, Mutex};
 use tracing::{info, warn};
 
-use crate::contract::{Event, Item, UserEvent};
+use crate::contract::{Event, Item, UpdateStrategy, UserEvent};
 use crate::state::ServerState;
 
 /// Spawn the transcript-persistence task. Subscribes to `events_tx`
@@ -58,6 +59,89 @@ pub fn spawn_task(state: Arc<Mutex<ServerState>>, events_tx: &broadcast::Sender<
             }
         }
     });
+}
+
+/// Spawn the items-persistence task. Subscribes to `events_tx` and
+/// writes every non-transcript `ItemsUpdate` to Postgres. Replace-
+/// strategy modes overwrite their slice atomically per fire; append
+/// modes just insert. Lives for the server lifetime.
+pub fn spawn_items_task(
+    state: Arc<Mutex<ServerState>>,
+    db: PgPool,
+    events_tx: &broadcast::Sender<UserEvent>,
+) {
+    let mut rx = events_tx.subscribe();
+    tokio::spawn(async move {
+        info!("items persistence task started");
+        loop {
+            match rx.recv().await {
+                Ok(envelope) => {
+                    if let Event::ItemsUpdate { mode, items } = &envelope.event {
+                        if mode == "transcript" {
+                            // Transcript persists to JSONL via spawn_task above.
+                            // Skipping here keeps the items table free of the
+                            // highest-volume mode and avoids double-writes.
+                            continue;
+                        }
+                        if let Err(e) =
+                            persist_items_update(&state, &db, &envelope.user_id, mode, items).await
+                        {
+                            warn!(error = ?e, %mode, "items persistence failed");
+                        }
+                    }
+                }
+                Err(broadcast::error::RecvError::Closed) => return,
+                Err(broadcast::error::RecvError::Lagged(n)) => {
+                    warn!(lagged = n, "items persistence task lagged");
+                }
+            }
+        }
+    });
+}
+
+/// Resolve `(user_id → meeting_id, mode → strategy)` and dispatch
+/// to the right write path. Skips when the user has no active
+/// meeting (race with stop_meeting) and when the mode isn't
+/// declared in `available_modes` (defensive — shouldn't happen).
+async fn persist_items_update(
+    state: &Arc<Mutex<ServerState>>,
+    db: &PgPool,
+    user_id: &str,
+    mode: &str,
+    items: &[Item],
+) -> Result<()> {
+    let (meeting_id, strategy) = {
+        let s = state.lock().await;
+        let user = match s.user(user_id) {
+            Some(u) => u,
+            None => return Ok(()),
+        };
+        let meeting_id = match user.current_meeting_id.clone() {
+            Some(m) => m,
+            None => return Ok(()),
+        };
+        let strategy = user
+            .available_modes
+            .iter()
+            .find(|m| m.id == mode)
+            .map(|m| m.update_strategy);
+        (meeting_id, strategy)
+    };
+    let Some(strategy) = strategy else {
+        return Ok(());
+    };
+
+    match strategy {
+        UpdateStrategy::Replace => {
+            crate::db::replace_items_for_meeting_mode(db, &meeting_id, mode, items).await?;
+        }
+        UpdateStrategy::Append => {
+            for item in items {
+                crate::db::insert_item_row(db, &meeting_id, mode, item).await?;
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Look up the active meeting for `user_id` and append `items` to

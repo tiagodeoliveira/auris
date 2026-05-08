@@ -205,6 +205,7 @@ pub async fn run_server_with_listener(
     // Other modes' items are not persisted (they're derived from
     // transcripts and can be re-run if ever needed).
     crate::persistence::spawn_task(state.clone(), &events_tx);
+    crate::persistence::spawn_items_task(state.clone(), db.clone(), &events_tx);
     let (moment_created_tx, _) = broadcast::channel::<crate::api::MomentCreated>(64);
     let (artifact_created_tx, _) = broadcast::channel::<crate::api::ArtifactCreated>(64);
     let (agent_kick_tx, _) = broadcast::channel::<crate::summarizer::agent::AgentKick>(32);

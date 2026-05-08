@@ -194,6 +194,12 @@ struct MeetingDetail {
     /// Library artifacts attached to this meeting, in attach order.
     /// PLAN.md §3.7. Empty when none were attached.
     artifacts: Vec<ArtifactDto>,
+    /// Persisted items for every non-transcript mode, grouped by
+    /// mode id (highlights / actions / open_questions / summary /
+    /// chat). Empty arrays for modes that produced no items.
+    /// Transcript items are NOT in this map — they live in the
+    /// `transcript` field above, sourced from the JSONL blob.
+    items_by_mode: std::collections::HashMap<String, Vec<Item>>,
 }
 
 /// Wire shape for a moment. Mirrors `db::MomentRow` minus internal
@@ -264,6 +270,9 @@ async fn get_meeting(
         .into_iter()
         .map(ArtifactDto::from)
         .collect();
+    let items_by_mode = crate::db::list_items_for_meeting_grouped(&state.db, &row.id)
+        .await
+        .map_err(|e| ApiError::Db(downcast_db(e)))?;
     let MeetingSummary {
         id,
         description,
@@ -280,6 +289,7 @@ async fn get_meeting(
         transcript,
         moments,
         artifacts,
+        items_by_mode,
     }))
 }
 

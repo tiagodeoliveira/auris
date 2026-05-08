@@ -576,6 +576,118 @@ pub async fn list_artifacts_for_meeting(
     Ok(rows)
 }
 
+// ─── Items (per-meeting persisted modes) ────────────────────────────
+
+/// Append one item to its meeting's persisted history. Used by the
+/// items-persistence task on every Append-strategy `ItemsUpdate`
+/// broadcast (actions / open_questions). `ON CONFLICT DO NOTHING` so
+/// the writer is idempotent — a transient retry that re-broadcasts
+/// the same id is a no-op.
+pub async fn insert_item_row(
+    pool: &PgPool,
+    meeting_id: &str,
+    mode: &str,
+    item: &crate::contract::Item,
+) -> Result<()> {
+    sqlx::query(
+        r#"INSERT INTO items (id, meeting_id, mode, text, detail, t_ms, meta)
+           VALUES ($1, $2, $3, $4, $5, $6, $7)
+           ON CONFLICT (id) DO NOTHING"#,
+    )
+    .bind(&item.id)
+    .bind(meeting_id)
+    .bind(mode)
+    .bind(&item.text)
+    .bind(&item.detail)
+    .bind(item.t as i64)
+    .bind(item.meta.as_ref())
+    .execute(pool)
+    .await
+    .with_context(|| format!("insert_item_row({})", item.id))?;
+    Ok(())
+}
+
+/// Replace-strategy persistence: drop everything for `(meeting_id,
+/// mode)` and insert the new set in a single transaction so a crash
+/// can never leave a torn snapshot. Used for highlights / summary /
+/// chat — modes whose live state is "the current full list, no
+/// history."
+pub async fn replace_items_for_meeting_mode(
+    pool: &PgPool,
+    meeting_id: &str,
+    mode: &str,
+    items: &[crate::contract::Item],
+) -> Result<()> {
+    let mut tx = pool.begin().await?;
+    sqlx::query(r#"DELETE FROM items WHERE meeting_id = $1 AND mode = $2"#)
+        .bind(meeting_id)
+        .bind(mode)
+        .execute(&mut *tx)
+        .await
+        .with_context(|| format!("replace_items: delete {meeting_id}/{mode}"))?;
+    for item in items {
+        sqlx::query(
+            r#"INSERT INTO items (id, meeting_id, mode, text, detail, t_ms, meta)
+               VALUES ($1, $2, $3, $4, $5, $6, $7)"#,
+        )
+        .bind(&item.id)
+        .bind(meeting_id)
+        .bind(mode)
+        .bind(&item.text)
+        .bind(&item.detail)
+        .bind(item.t as i64)
+        .bind(item.meta.as_ref())
+        .execute(&mut *tx)
+        .await
+        .with_context(|| format!("replace_items: insert {}", item.id))?;
+    }
+    tx.commit().await?;
+    Ok(())
+}
+
+/// Read every persisted item for a meeting, grouped by mode and
+/// ordered by `created_at` within each group. Powers the meeting-
+/// detail view's per-mode tabs. Excludes transcript-mode items —
+/// those live in the JSONL blob and aren't written to this table
+/// at all.
+pub async fn list_items_for_meeting_grouped(
+    pool: &PgPool,
+    meeting_id: &str,
+) -> Result<std::collections::HashMap<String, Vec<crate::contract::Item>>> {
+    let rows: Vec<(
+        String,
+        String,
+        String,
+        Option<String>,
+        i64,
+        Option<serde_json::Value>,
+    )> = sqlx::query_as(
+        r#"SELECT id, mode, text, detail, t_ms, meta
+                 FROM items
+                WHERE meeting_id = $1
+             ORDER BY mode, created_at"#,
+    )
+    .bind(meeting_id)
+    .fetch_all(pool)
+    .await
+    .with_context(|| format!("list_items_for_meeting_grouped({meeting_id})"))?;
+    let mut grouped: std::collections::HashMap<String, Vec<crate::contract::Item>> =
+        std::collections::HashMap::new();
+    for (id, mode, text, detail, t_ms, meta) in rows {
+        grouped
+            .entry(mode)
+            .or_default()
+            .push(crate::contract::Item {
+                id,
+                text,
+                detail,
+                t: t_ms.max(0) as u64,
+                meta,
+            });
+    }
+    Ok(grouped)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
