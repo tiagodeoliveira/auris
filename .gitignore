@@ -42,3 +42,7 @@ sparkle_pub.txt
 **/data/server.db-wal
 **/data/server.db-shm
 **/data/blobs/
+
+.env
+.env*
+!.env.*example
