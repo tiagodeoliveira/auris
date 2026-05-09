@@ -64,9 +64,8 @@ jobs:
         uses: actions/checkout@v4
 
       - if: steps.preflight.outputs.configured == 'true'
+        # Don't pass `version:` here — see mobile-ios.yml comment.
         uses: pnpm/action-setup@v4
-        with:
-          version: 9
 
       - if: steps.preflight.outputs.configured == 'true'
         uses: actions/setup-node@v4
