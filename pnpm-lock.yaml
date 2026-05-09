@@ -23,6 +23,9 @@ importers:
       expo:
         specifier: ~51.0.0
         version: 51.0.39(@babel/core@7.29.0)(@babel/preset-env@7.29.5(@babel/core@7.29.0))(react-native@0.74.5(@babel/core@7.29.0)(@babel/preset-env@7.29.5(@babel/core@7.29.0))(@types/react@18.2.79)(react@18.2.0))(react@18.2.0)
+      expo-audio:
+        specifier: ^55.0.14
+        version: 55.0.14(expo-asset@10.0.10(expo@51.0.39(@babel/core@7.29.0)(@babel/preset-env@7.29.5(@babel/core@7.29.0))(react-native@0.74.5(@babel/core@7.29.0)(@babel/preset-env@7.29.5(@babel/core@7.29.0))(@types/react@18.2.79)(react@18.2.0))(react@18.2.0)))(expo@51.0.39(@babel/core@7.29.0)(@babel/preset-env@7.29.5(@babel/core@7.29.0))(react-native@0.74.5(@babel/core@7.29.0)(@babel/preset-env@7.29.5(@babel/core@7.29.0))(@types/react@18.2.79)(react@18.2.0))(react@18.2.0))(react-native@0.74.5(@babel/core@7.29.0)(@babel/preset-env@7.29.5(@babel/core@7.29.0))(@types/react@18.2.79)(react@18.2.0))(react@18.2.0)
       expo-auth-session:
         specifier: ^55.0.15
         version: 55.0.15(expo@51.0.39(@babel/core@7.29.0)(@babel/preset-env@7.29.5(@babel/core@7.29.0))(react-native@0.74.5(@babel/core@7.29.0)(@babel/preset-env@7.29.5(@babel/core@7.29.0))(@types/react@18.2.79)(react@18.2.0))(react@18.2.0))(react-native@0.74.5(@babel/core@7.29.0)(@babel/preset-env@7.29.5(@babel/core@7.29.0))(@types/react@18.2.79)(react@18.2.0))(react@18.2.0)
@@ -2830,6 +2833,14 @@ packages:
     resolution: {integrity: sha512-0qoTIihB79k+wGus9wy0JMKq7DdenziVx3iUkGvMAy2azscSgWH6bd2gJ9CGnhC6JRd3qTMFBL0ou/fx7WZl7A==}
     peerDependencies:
       expo: '*'
+
+  expo-audio@55.0.14:
+    resolution: {integrity: sha512-Biy6ffKXrnKHgcWSVWLKVdWLNhV/pj1JWJeotY6nDR6fVe8mjXQDCvi6EbaSFPdffVHym6UB2siKzWUNSnG+kQ==}
+    peerDependencies:
+      expo: '*'
+      expo-asset: '*'
+      react: '*'
+      react-native: '*'
 
   expo-auth-session@55.0.15:
     resolution: {integrity: sha512-RPnoLs6+FY2MMWnV0cqz4uNzi2b1dwjqE6vv7Izb5vWI2RCFUnBSMy1fgXp4BSWaFm0VZzeMl6UjsgVh2QFe0g==}
@@ -8977,6 +8988,13 @@ snapshots:
       md5-file: 3.2.3
     transitivePeerDependencies:
       - supports-color
+
+  expo-audio@55.0.14(expo-asset@10.0.10(expo@51.0.39(@babel/core@7.29.0)(@babel/preset-env@7.29.5(@babel/core@7.29.0))(react-native@0.74.5(@babel/core@7.29.0)(@babel/preset-env@7.29.5(@babel/core@7.29.0))(@types/react@18.2.79)(react@18.2.0))(react@18.2.0)))(expo@51.0.39(@babel/core@7.29.0)(@babel/preset-env@7.29.5(@babel/core@7.29.0))(react-native@0.74.5(@babel/core@7.29.0)(@babel/preset-env@7.29.5(@babel/core@7.29.0))(@types/react@18.2.79)(react@18.2.0))(react@18.2.0))(react-native@0.74.5(@babel/core@7.29.0)(@babel/preset-env@7.29.5(@babel/core@7.29.0))(@types/react@18.2.79)(react@18.2.0))(react@18.2.0):
+    dependencies:
+      expo: 51.0.39(@babel/core@7.29.0)(@babel/preset-env@7.29.5(@babel/core@7.29.0))(react-native@0.74.5(@babel/core@7.29.0)(@babel/preset-env@7.29.5(@babel/core@7.29.0))(@types/react@18.2.79)(react@18.2.0))(react@18.2.0)
+      expo-asset: 10.0.10(expo@51.0.39(@babel/core@7.29.0)(@babel/preset-env@7.29.5(@babel/core@7.29.0))(react-native@0.74.5(@babel/core@7.29.0)(@babel/preset-env@7.29.5(@babel/core@7.29.0))(@types/react@18.2.79)(react@18.2.0))(react@18.2.0))
+      react: 18.2.0
+      react-native: 0.74.5(@babel/core@7.29.0)(@babel/preset-env@7.29.5(@babel/core@7.29.0))(@types/react@18.2.79)(react@18.2.0)
 
   expo-auth-session@55.0.15(expo@51.0.39(@babel/core@7.29.0)(@babel/preset-env@7.29.5(@babel/core@7.29.0))(react-native@0.74.5(@babel/core@7.29.0)(@babel/preset-env@7.29.5(@babel/core@7.29.0))(@types/react@18.2.79)(react@18.2.0))(react@18.2.0))(react-native@0.74.5(@babel/core@7.29.0)(@babel/preset-env@7.29.5(@babel/core@7.29.0))(@types/react@18.2.79)(react@18.2.0))(react@18.2.0):
     dependencies:

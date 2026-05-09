@@ -9,8 +9,9 @@
 // item expand + chat input + camera-attached moments.
 
 import { router } from "expo-router";
-import { useEffect, useMemo } from "react";
+import { useEffect, useState } from "react";
 import {
+  Alert,
   FlatList,
   Pressable,
   SafeAreaView,
@@ -20,6 +21,7 @@ import {
   View,
 } from "react-native";
 
+import { requestMicPermission, useAudioCapture } from "@/src/audio/audio-capture";
 import { useAppStore } from "@/src/store";
 import type { Item, ModeOption } from "@/src/wire/contract";
 
@@ -46,14 +48,39 @@ export default function MeetingScreen() {
   const liveInterim = useAppStore((s) => s.liveTranscriptInterim);
   const send = useAppStore((s) => s.send);
 
+  const audio = useAudioCapture();
+  const [micRequested, setMicRequested] = useState(false);
+
   // Server-authoritative dismissal — when meeting goes idle we pop
   // back to the tabs. Both the local "Stop" button and a stop from
   // another client (Mac, PWA) end up here.
   useEffect(() => {
     if (meetingState === "idle") {
+      void audio.stop();
       router.back();
     }
-  }, [meetingState]);
+  }, [meetingState, audio]);
+
+  // Auto-prompt mic + start capture when the meeting becomes active.
+  // Phase 3 only surfaces the level meter; PCM frame streaming to
+  // /stt lands in a follow-up.
+  useEffect(() => {
+    if (meetingState !== "active" || micRequested) return;
+    setMicRequested(true);
+    void (async () => {
+      const status = await requestMicPermission();
+      if (status === "denied") {
+        Alert.alert(
+          "Microphone access denied",
+          "Open Settings → Privacy & Security → Microphone to grant access.",
+        );
+        return;
+      }
+      if (status === "granted") {
+        await audio.start();
+      }
+    })();
+  }, [meetingState, micRequested, audio]);
 
   const items = itemsByMode[currentMode] ?? [];
   const showLiveRow = currentMode === "transcript" && liveInterim.trim().length > 0;
@@ -106,6 +133,8 @@ export default function MeetingScreen() {
 
       <ControlsBar
         meetingState={meetingState}
+        peak={audio.peak}
+        isRecording={audio.isRecording}
         onPause={() => send({ type: "pause" })}
         onResume={() => send({ type: "resume" })}
         onStop={() => send({ type: "stop_meeting" })}
@@ -156,27 +185,53 @@ function renderMeta(mode: string, item: Item): React.ReactNode {
 
 function ControlsBar({
   meetingState,
+  peak,
+  isRecording,
   onPause,
   onResume,
   onStop,
 }: {
   meetingState: string;
+  peak: number;
+  isRecording: boolean;
   onPause: () => void;
   onResume: () => void;
   onStop: () => void;
 }) {
   const paused = meetingState === "paused";
   return (
-    <View style={styles.controls}>
-      <Pressable
-        style={[styles.controlButton, styles.controlSecondary]}
-        onPress={paused ? onResume : onPause}
-      >
-        <Text style={styles.controlLabel}>{paused ? "Resume" : "Pause"}</Text>
-      </Pressable>
-      <Pressable style={[styles.controlButton, styles.controlDanger]} onPress={onStop}>
-        <Text style={[styles.controlLabel, styles.controlLabelDanger]}>Stop</Text>
-      </Pressable>
+    <View style={styles.controlsContainer}>
+      <PeakMeter peak={peak} active={isRecording && !paused} />
+      <View style={styles.controls}>
+        <Pressable
+          style={[styles.controlButton, styles.controlSecondary]}
+          onPress={paused ? onResume : onPause}
+        >
+          <Text style={styles.controlLabel}>{paused ? "Resume" : "Pause"}</Text>
+        </Pressable>
+        <Pressable style={[styles.controlButton, styles.controlDanger]} onPress={onStop}>
+          <Text style={[styles.controlLabel, styles.controlLabelDanger]}>Stop</Text>
+        </Pressable>
+      </View>
+    </View>
+  );
+}
+
+/// Horizontal bar that fills proportionally to the live mic peak.
+/// Greyed out while paused or before mic-permission grant.
+function PeakMeter({ peak, active }: { peak: number; active: boolean }) {
+  const widthPct = Math.round(peak * 100);
+  return (
+    <View style={styles.meterRow}>
+      <Text style={styles.meterLabel}>{active ? "MIC" : "MIC ⏸"}</Text>
+      <View style={styles.meterTrack}>
+        <View
+          style={[
+            styles.meterFill,
+            { width: `${widthPct}%`, backgroundColor: active ? "#2ea043" : "#d5dee9" },
+          ]}
+        />
+      </View>
     </View>
   );
 }
@@ -262,13 +317,39 @@ const styles = StyleSheet.create({
   empty: { padding: 24, alignItems: "center" },
   emptyText: { color: "#96a3b4", fontSize: 14 },
 
+  controlsContainer: {
+    borderTopWidth: 1,
+    borderTopColor: "#eef2f7",
+  },
+  meterRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    paddingHorizontal: 16,
+    paddingTop: 10,
+  },
+  meterLabel: {
+    fontSize: 10,
+    fontWeight: "700",
+    letterSpacing: 0.5,
+    color: "#647386",
+    width: 36,
+  },
+  meterTrack: {
+    flex: 1,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: "#eef2f7",
+    overflow: "hidden",
+  },
+  meterFill: {
+    height: "100%",
+  },
   controls: {
     flexDirection: "row",
     gap: 8,
     paddingHorizontal: 16,
     paddingVertical: 12,
-    borderTopWidth: 1,
-    borderTopColor: "#eef2f7",
   },
   controlButton: {
     flex: 1,
