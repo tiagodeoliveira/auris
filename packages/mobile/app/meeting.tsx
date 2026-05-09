@@ -9,15 +9,18 @@
 // item expand + chat input + camera-attached moments.
 
 import { router } from "expo-router";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   Alert,
   FlatList,
+  KeyboardAvoidingView,
+  Platform,
   Pressable,
   SafeAreaView,
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   View,
 } from "react-native";
 
@@ -50,6 +53,20 @@ export default function MeetingScreen() {
 
   const audio = useAudioCapture();
   const [micRequested, setMicRequested] = useState(false);
+
+  // Item-expand state. Two sets so cross-client auto-expand doesn't
+  // override an explicit local collapse — same pattern as the PWA's
+  // items-mirror.
+  //
+  //   - expandedIds       : opened explicitly by tapping the row
+  //   - manuallyCollapsed : closed explicitly after being open
+  //
+  // Effective expansion: not in manuallyCollapsed AND
+  // (in expandedIds OR item already has a `detail` value). The second
+  // arm is the "auto-expand when item_updated brings detail in from
+  // another client" rule.
+  const [expandedIds, setExpandedIds] = useState<Set<string>>(() => new Set());
+  const [manuallyCollapsed, setManuallyCollapsed] = useState<Set<string>>(() => new Set());
 
   // Server-authoritative dismissal — when meeting goes idle we pop
   // back to the tabs. Both the local "Stop" button and a stop from
@@ -85,6 +102,36 @@ export default function MeetingScreen() {
   const items = itemsByMode[currentMode] ?? [];
   const showLiveRow = currentMode === "transcript" && liveInterim.trim().length > 0;
 
+  function isEffectivelyExpanded(item: Item): boolean {
+    if (manuallyCollapsed.has(item.id)) return false;
+    if (expandedIds.has(item.id)) return true;
+    return !!item.detail && item.detail.length > 0;
+  }
+
+  function toggleExpanded(item: Item) {
+    if (isEffectivelyExpanded(item)) {
+      setExpandedIds((prev) => {
+        const next = new Set(prev);
+        next.delete(item.id);
+        return next;
+      });
+      setManuallyCollapsed((prev) => new Set(prev).add(item.id));
+    } else {
+      setExpandedIds((prev) => new Set(prev).add(item.id));
+      setManuallyCollapsed((prev) => {
+        const next = new Set(prev);
+        next.delete(item.id);
+        return next;
+      });
+      // First open on an item without detail → ask the agent. The
+      // reply lands via item_updated, which mutates the item in
+      // place and re-renders this row with `detail` populated.
+      if (!item.detail || item.detail.length === 0) {
+        send({ type: "expand_item", item_id: item.id });
+      }
+    }
+  }
+
   return (
     <SafeAreaView style={styles.root}>
       {/* Mode tabs — horizontal scroll so a long mode list (chat
@@ -110,26 +157,37 @@ export default function MeetingScreen() {
         })}
       </ScrollView>
 
-      <FlatList
-        style={styles.list}
-        data={items}
-        keyExtractor={(it) => it.id}
-        renderItem={({ item }) => <ItemRow item={item} mode={currentMode} />}
-        ListEmptyComponent={
-          <View style={styles.empty}>
-            <Text style={styles.emptyText}>{placeholderForMode(currentMode, meetingState)}</Text>
-          </View>
-        }
-        ListFooterComponent={
-          showLiveRow ? (
-            <View style={styles.liveRow}>
-              <Text style={styles.liveTime}>[ ⋯ ]</Text>
-              <Text style={styles.liveBody}>{liveInterim}</Text>
+      {currentMode === "chat" ? (
+        <ChatPane items={items} onSend={(text) => send({ type: "chat", text })} />
+      ) : (
+        <FlatList
+          style={styles.list}
+          data={items}
+          keyExtractor={(it) => it.id}
+          renderItem={({ item }) => (
+            <ItemRow
+              item={item}
+              mode={currentMode}
+              expanded={isEffectivelyExpanded(item)}
+              onToggle={() => toggleExpanded(item)}
+            />
+          )}
+          ListEmptyComponent={
+            <View style={styles.empty}>
+              <Text style={styles.emptyText}>{placeholderForMode(currentMode, meetingState)}</Text>
             </View>
-          ) : null
-        }
-        contentContainerStyle={styles.listContent}
-      />
+          }
+          ListFooterComponent={
+            showLiveRow ? (
+              <View style={styles.liveRow}>
+                <Text style={styles.liveTime}>[ ⋯ ]</Text>
+                <Text style={styles.liveBody}>{liveInterim}</Text>
+              </View>
+            ) : null
+          }
+          contentContainerStyle={styles.listContent}
+        />
+      )}
 
       <ControlsBar
         meetingState={meetingState}
@@ -138,18 +196,123 @@ export default function MeetingScreen() {
         onPause={() => send({ type: "pause" })}
         onResume={() => send({ type: "resume" })}
         onStop={() => send({ type: "stop_meeting" })}
+        onMarkMoment={() => send({ type: "mark_moment", t: 0 })}
       />
     </SafeAreaView>
   );
 }
 
-function ItemRow({ item, mode }: { item: Item; mode: string }) {
+function ItemRow({
+  item,
+  mode,
+  expanded,
+  onToggle,
+}: {
+  item: Item;
+  mode: string;
+  expanded: boolean;
+  onToggle: () => void;
+}) {
   return (
-    <View style={styles.itemRow}>
+    <Pressable onPress={onToggle} style={styles.itemRow}>
       <Text style={styles.itemTime}>{formatT(item.t)}</Text>
       <View style={styles.itemBody}>
-        <Text style={styles.itemText}>{item.text}</Text>
+        <View style={styles.itemHeaderRow}>
+          <Text style={styles.itemChevron}>{expanded ? "▾" : "▸"}</Text>
+          <Text style={styles.itemText}>{item.text}</Text>
+        </View>
         {renderMeta(mode, item)}
+        {expanded ? (
+          <View style={styles.itemDetail}>
+            {item.detail && item.detail.length > 0 ? (
+              <Text style={styles.itemDetailText}>{item.detail}</Text>
+            ) : (
+              <Text style={styles.itemDetailPending}>Expanding…</Text>
+            )}
+          </View>
+        ) : null}
+      </View>
+    </Pressable>
+  );
+}
+
+/// Chat-mode pane. Bubbles for each Q+A turn, role-aligned, with a
+/// bottom-anchored input + send button. Items in chat mode arrive
+/// from the agent loop tagged with `meta.role: "user" | "assistant"
+/// | "assistant-pending"`. Same shape as Mac + PWA — see
+/// packages/server/src/summarizer/agent.rs for the producer side.
+function ChatPane({ items, onSend }: { items: Item[]; onSend: (text: string) => void }) {
+  const [draft, setDraft] = useState("");
+  const listRef = useRef<FlatList<Item>>(null);
+
+  // Auto-scroll to the latest bubble whenever the list grows.
+  useEffect(() => {
+    if (items.length === 0) return;
+    listRef.current?.scrollToEnd({ animated: true });
+  }, [items.length]);
+
+  const handleSend = () => {
+    const text = draft.trim();
+    if (!text) return;
+    onSend(text);
+    setDraft("");
+  };
+
+  return (
+    <KeyboardAvoidingView
+      style={styles.chatRoot}
+      behavior={Platform.OS === "ios" ? "padding" : undefined}
+      keyboardVerticalOffset={Platform.OS === "ios" ? 80 : 0}
+    >
+      <FlatList
+        ref={listRef}
+        style={styles.list}
+        data={items}
+        keyExtractor={(it) => it.id}
+        renderItem={({ item }) => <ChatBubble item={item} />}
+        ListEmptyComponent={
+          <View style={styles.empty}>
+            <Text style={styles.emptyText}>─ ask the agent anything</Text>
+          </View>
+        }
+        contentContainerStyle={styles.chatListContent}
+      />
+      <View style={styles.chatInputRow}>
+        <TextInput
+          style={styles.chatInput}
+          value={draft}
+          onChangeText={setDraft}
+          placeholder="Ask the agent…"
+          placeholderTextColor="#96a3b4"
+          returnKeyType="send"
+          onSubmitEditing={handleSend}
+        />
+        <Pressable
+          style={[styles.chatSend, !draft.trim() && styles.chatSendDisabled]}
+          disabled={!draft.trim()}
+          onPress={handleSend}
+        >
+          <Text style={styles.chatSendLabel}>Send</Text>
+        </Pressable>
+      </View>
+    </KeyboardAvoidingView>
+  );
+}
+
+function ChatBubble({ item }: { item: Item }) {
+  const role = (item.meta?.role as string | undefined) ?? "assistant";
+  const isUser = role === "user";
+  const pending = role === "assistant-pending";
+  return (
+    <View style={[styles.bubbleRow, isUser ? styles.bubbleRowUser : styles.bubbleRowAssistant]}>
+      <View
+        style={[
+          styles.bubble,
+          isUser ? styles.bubbleUser : styles.bubbleAssistant,
+          pending && styles.bubblePending,
+        ]}
+      >
+        <Text style={[styles.bubbleText, isUser && styles.bubbleTextUser]}>{item.text}</Text>
       </View>
     </View>
   );
@@ -190,6 +353,7 @@ function ControlsBar({
   onPause,
   onResume,
   onStop,
+  onMarkMoment,
 }: {
   meetingState: string;
   peak: number;
@@ -197,12 +361,16 @@ function ControlsBar({
   onPause: () => void;
   onResume: () => void;
   onStop: () => void;
+  onMarkMoment: () => void;
 }) {
   const paused = meetingState === "paused";
   return (
     <View style={styles.controlsContainer}>
       <PeakMeter peak={peak} active={isRecording && !paused} />
       <View style={styles.controls}>
+        <Pressable style={[styles.controlButton, styles.controlMoment]} onPress={onMarkMoment}>
+          <Text style={[styles.controlLabel, styles.controlLabelMoment]}>Moment</Text>
+        </Pressable>
         <Pressable
           style={[styles.controlButton, styles.controlSecondary]}
           onPress={paused ? onResume : onPause}
@@ -368,4 +536,82 @@ const styles = StyleSheet.create({
   },
   controlLabel: { fontSize: 14, fontWeight: "600", color: "#17212e" },
   controlLabelDanger: { color: "#e5484d" },
+  controlMoment: {
+    borderColor: "#f2b705",
+    backgroundColor: "#fff",
+  },
+  controlLabelMoment: { color: "#765a00" },
+
+  // ─── Item expand ────────────────────────────────────────────────
+  itemHeaderRow: { flexDirection: "row", alignItems: "flex-start", gap: 8 },
+  itemChevron: {
+    fontSize: 12,
+    color: "#647386",
+    paddingTop: 4,
+    width: 12,
+  },
+  itemDetail: {
+    marginTop: 8,
+    paddingTop: 8,
+    borderTopWidth: 1,
+    borderTopColor: "#eef2f7",
+  },
+  itemDetailText: { fontSize: 14, color: "#17212e", lineHeight: 20 },
+  itemDetailPending: { fontSize: 14, color: "#96a3b4", fontStyle: "italic" },
+
+  // ─── Chat pane ──────────────────────────────────────────────────
+  chatRoot: { flex: 1 },
+  chatListContent: { paddingTop: 8, paddingBottom: 8 },
+  chatInputRow: {
+    flexDirection: "row",
+    gap: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderTopWidth: 1,
+    borderTopColor: "#eef2f7",
+    backgroundColor: "#fff",
+  },
+  chatInput: {
+    flex: 1,
+    minHeight: 40,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderWidth: 1,
+    borderColor: "#d5dee9",
+    borderRadius: 10,
+    fontSize: 15,
+    color: "#17212e",
+    backgroundColor: "#fff",
+  },
+  chatSend: {
+    paddingHorizontal: 16,
+    justifyContent: "center",
+    backgroundColor: "#2563eb",
+    borderRadius: 10,
+  },
+  chatSendDisabled: { opacity: 0.5 },
+  chatSendLabel: { color: "#fff", fontSize: 15, fontWeight: "600" },
+
+  bubbleRow: { paddingHorizontal: 12, paddingVertical: 4 },
+  bubbleRowUser: { alignItems: "flex-end" },
+  bubbleRowAssistant: { alignItems: "flex-start" },
+  bubble: {
+    maxWidth: "80%",
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 14,
+  },
+  bubbleUser: {
+    backgroundColor: "#2563eb",
+    borderBottomRightRadius: 4,
+  },
+  bubbleAssistant: {
+    backgroundColor: "#f0f4f9",
+    borderWidth: 1,
+    borderColor: "#d5dee9",
+    borderBottomLeftRadius: 4,
+  },
+  bubblePending: { opacity: 0.6 },
+  bubbleText: { fontSize: 15, color: "#17212e", lineHeight: 21 },
+  bubbleTextUser: { color: "#fff" },
 });
