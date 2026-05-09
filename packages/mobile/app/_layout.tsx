@@ -48,6 +48,14 @@ export default function RootLayout() {
             gestureEnabled: false,
           }}
         />
+        <Stack.Screen
+          name="meeting/[id]"
+          options={{
+            // Not a modal — pushes onto the tab stack like a normal
+            // drill-in. Header back button returns to History.
+            title: "Meeting",
+          }}
+        />
       </Stack>
       {!identity && <Redirect href="/login" />}
     </>
