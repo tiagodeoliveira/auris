@@ -1,7 +1,7 @@
 {
   "expo": {
     "name": "Meeting Companion",
-    "slug": "meeting-companion-mobile",
+    "slug": "meeting-companion",
     "version": "0.1.0",
     "orientation": "portrait",
     "scheme": "meetingcompanion",
