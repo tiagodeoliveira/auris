@@ -20,15 +20,7 @@
     "android": {
       "package": "sh.tiago.meetingcompanion"
     },
-    "plugins": [
-      "expo-router",
-      [
-        "expo-audio",
-        {
-          "microphonePermission": "Capture meeting audio for live transcription and summarization."
-        }
-      ]
-    ],
+    "plugins": ["expo-router", "expo-secure-store"],
     "experiments": {
       "typedRoutes": true
     },
