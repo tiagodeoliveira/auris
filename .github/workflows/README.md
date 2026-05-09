@@ -111,7 +111,7 @@ to a _branch_ of the same name by convention:
 main. Use `workflow_dispatch` to publish to `preview` or
 `development` for testing OTA changes before promoting to prod.
 
-3. **Mac bundle**
+4. **Mac bundle**
    - No setup needed for unsigned builds. Push to main; the artifact
      appears under **Actions → Mac bundle → <run> → Artifacts**.
 
