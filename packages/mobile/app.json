@@ -24,6 +24,12 @@
         "projectId": "eab5beef-bbaa-4517-9efc-498eb552cbb6"
       }
     },
-    "owner": "tiagodeoliveira"
+    "owner": "tiagodeoliveira",
+    "runtimeVersion": {
+      "policy": "appVersion"
+    },
+    "updates": {
+      "url": "https://u.expo.dev/eab5beef-bbaa-4517-9efc-498eb552cbb6"
+    }
   }
 }
