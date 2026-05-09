@@ -69,6 +69,23 @@
     <key>NSCameraUsageDescription</key>
     <string>Attach a photo to a meeting moment.</string>
 
+    <!-- ────────────  App Transport Security  ────────────
+         Disable ATS so we can talk to the server over plain `ws://`
+         (Tailscale provides transport-layer encryption between
+         authenticated nodes, so the lack of TLS at the websocket
+         layer doesn't expose tokens or transcript data on the
+         wire). Required for personal Tailscale-routed deploys; if
+         we ever publish a server with a public TLS cert, switch
+         the bundle to `wss://` and remove this key.
+
+         App-Store-distributed apps would need a justification for
+         this; we don't ship through the App Store. -->
+    <key>NSAppTransportSecurity</key>
+    <dict>
+        <key>NSAllowsArbitraryLoads</key>
+        <true/>
+    </dict>
+
     <!-- ────────────  Build-time environment values  ────────────
          All baked in from repo variables via envsubst in
          mac-bundle.yml. Empty strings fall back to defaults coded

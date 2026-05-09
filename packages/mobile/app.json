@@ -9,7 +9,12 @@
     "assetBundlePatterns": ["**/*"],
     "ios": {
       "supportsTablet": false,
-      "bundleIdentifier": "sh.tiago.meetingcompanion"
+      "bundleIdentifier": "sh.tiago.meetingcompanion",
+      "infoPlist": {
+        "NSAppTransportSecurity": {
+          "NSAllowsArbitraryLoads": true
+        }
+      }
     },
     "android": {
       "package": "sh.tiago.meetingcompanion"
