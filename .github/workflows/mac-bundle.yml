@@ -24,7 +24,12 @@ on:
 
 jobs:
   build:
-    runs-on: macos-14
+    # macos-15 ships Xcode 16, which carries the macOS 15 SDK that
+    # `Package.swift` declares as the minimum (SCStream's microphone
+    # capture path requires macOS 15). macos-14 / macos-latest alias
+    # to Xcode 15 → max SDK is 14.5 → "minimum platform version 15.0
+    # but this target supports 14.5" build failure.
+    runs-on: macos-15
     permissions:
       contents: write # write needed when attaching to a Release on tag
     steps:
