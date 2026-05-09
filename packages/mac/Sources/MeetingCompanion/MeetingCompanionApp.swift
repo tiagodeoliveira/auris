@@ -26,9 +26,15 @@ struct MeetingCompanionApp: App {
     @NSApplicationDelegateAdaptor private var appDelegate: AppDelegate
     @State private var model = AppModel()
 
+    /// Sparkle auto-update controller. Owned by the App struct for
+    /// the process lifetime; constructing it kicks off the background
+    /// check loop per the Info.plist's SUEnableAutomaticChecks +
+    /// SUScheduledCheckInterval settings.
+    @StateObject private var updaterController = UpdaterController()
+
     var body: some Scene {
         MenuBarExtra("Meeting Companion", systemImage: model.statusSystemImageName) {
-            MenuBarContent(model: model)
+            MenuBarContent(model: model, updater: updaterController)
         }
 
         // Settings window — summoned from the menu via openWindow(id:).

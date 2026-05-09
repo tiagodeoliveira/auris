@@ -17,13 +17,20 @@ let package = Package(
         .executable(name: "MeetingCompanion", targets: ["MeetingCompanion"])
     ],
     dependencies: [
-        // Will be added in subsequent Phase 2 sub-phases:
-        // - Starscream or URLSession.WebSocketTask for WS client
-        // - Sparkle for autoupdates (Phase 6+)
+        // Sparkle drives the OTA update flow. App polls SUFeedURL
+        // (an appcast.xml attached to each GitHub Release), prompts
+        // the user when a newer signed bundle is available, downloads
+        // + verifies the EdDSA signature, and replaces the .app in
+        // /Applications. CI signs the bundle on tag pushes — see
+        // .github/workflows/mac-bundle.yml.
+        .package(url: "https://github.com/sparkle-project/Sparkle", from: "2.6.0")
     ],
     targets: [
         .executableTarget(
             name: "MeetingCompanion",
+            dependencies: [
+                .product(name: "Sparkle", package: "Sparkle")
+            ],
             path: "Sources/MeetingCompanion"
         )
     ]

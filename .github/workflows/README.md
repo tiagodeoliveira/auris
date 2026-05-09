@@ -38,6 +38,37 @@ to push to GHCR. The package's visibility (private vs public)
 inherits from the repo on first push — flip it under **Packages**
 once it exists.
 
+### `SPARKLE_PRIVATE_KEY` (secret) + `SPARKLE_PUBLIC_KEY` (variable) — for `mac-bundle.yml`
+
+Sparkle drives the Mac auto-update flow. Each tagged release is
+signed with an EdDSA private key in CI and verified by the bundled
+public key on every user's machine. Without the keys, the app ships
+with an empty `SUPublicEDKey` and Sparkle fail-closes — no updates
+will install.
+
+One-time generation (locally):
+
+```sh
+SPARKLE_VERSION=2.6.4
+curl -L -o /tmp/sparkle.tar.xz \
+  "https://github.com/sparkle-project/Sparkle/releases/download/$SPARKLE_VERSION/Sparkle-$SPARKLE_VERSION.tar.xz"
+mkdir -p /tmp/sparkle && tar -xf /tmp/sparkle.tar.xz -C /tmp/sparkle
+/tmp/sparkle/bin/generate_keys -p > sparkle_pub.txt    # public key (safe to commit / publish as a repo variable)
+/tmp/sparkle/bin/generate_keys -x sparkle_priv.pem      # private key (NEVER commit; goes in GH secrets)
+```
+
+Then in **Settings → Secrets and variables → Actions**:
+
+- Add `SPARKLE_PRIVATE_KEY` as a **secret** (paste the contents of
+  `sparkle_priv.pem`).
+- Add `SPARKLE_PUBLIC_KEY` as a **variable** (paste the contents of
+  `sparkle_pub.txt`, single line of base64).
+
+Delete `sparkle_priv.pem` from your machine after pasting. Keep a
+backup somewhere safe (1Password, etc.) — losing the private key
+means existing installed bundles can never auto-update again, and
+all users have to manually download a freshly-keyed build.
+
 ### Optional: Apple Developer credentials — for signed Mac builds
 
 Today `mac-bundle.yml` produces an **unsigned** `.app`. macOS

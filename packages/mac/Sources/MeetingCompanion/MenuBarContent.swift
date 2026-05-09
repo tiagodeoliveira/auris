@@ -10,6 +10,7 @@ import SwiftUI
 
 struct MenuBarContent: View {
     @Bindable var model: AppModel
+    @ObservedObject var updater: UpdaterController
     @Environment(\.openWindow) private var openWindow
     @Environment(\.dismissWindow) private var dismissWindow
 
@@ -108,6 +109,13 @@ struct MenuBarContent: View {
         }
 
         Divider()
+
+        Button {
+            updater.checkForUpdates()
+        } label: {
+            Label("Check for updates…", systemImage: "arrow.triangle.2.circlepath")
+        }
+        .disabled(!updater.canCheckForUpdates)
 
         Button(role: .destructive) {
             NSApplication.shared.terminate(nil)

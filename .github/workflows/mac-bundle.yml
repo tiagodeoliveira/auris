@@ -71,6 +71,11 @@ jobs:
         env:
           VERSION: ${{ steps.version.outputs.version }}
           BUILD: ${{ steps.version.outputs.build }}
+          # Embedded into Info.plist by envsubst. Repo variable, not
+          # secret — public keys aren't sensitive. If unset the app
+          # ships with an empty SUPublicEDKey and Sparkle fail-closes
+          # on every update attempt (won't install anything).
+          SPARKLE_PUBLIC_KEY: ${{ vars.SPARKLE_PUBLIC_KEY }}
         run: |
           BUNDLE="MeetingCompanion.app"
           rm -rf "$BUNDLE"
@@ -92,9 +97,89 @@ jobs:
           path: packages/mac/MeetingCompanion-${{ steps.version.outputs.version }}.zip
           if-no-files-found: error
 
+      # ──────────  Sparkle: sign + generate appcast (tag pushes only)  ──────────
+      # Tag pushes are the only events that publish a new version
+      # users will auto-update to; main pushes produce sha-tagged
+      # bundles for testing but don't update the appcast feed.
+
+      - name: Set up Sparkle tools
+        if: github.event_name == 'push' && github.ref_type == 'tag'
+        env:
+          SPARKLE_VERSION: "2.6.4"
+        run: |
+          curl -fSL -o /tmp/sparkle.tar.xz \
+            "https://github.com/sparkle-project/Sparkle/releases/download/${SPARKLE_VERSION}/Sparkle-${SPARKLE_VERSION}.tar.xz"
+          mkdir -p /tmp/sparkle
+          tar -xf /tmp/sparkle.tar.xz -C /tmp/sparkle
+          echo "/tmp/sparkle/bin" >> "$GITHUB_PATH"
+
+      - name: Sign update bundle with EdDSA
+        if: github.event_name == 'push' && github.ref_type == 'tag'
+        id: sign
+        working-directory: packages/mac
+        env:
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          if [[ -z "$SPARKLE_PRIVATE_KEY" ]]; then
+            echo "::error::SPARKLE_PRIVATE_KEY is not set. See .github/workflows/README.md."
+            exit 1
+          fi
+          # Write key to a temp file just long enough for sign_update
+          # to consume it. Avoid leaving any trace in the workspace.
+          KEY_FILE="$(mktemp)"
+          printf '%s' "$SPARKLE_PRIVATE_KEY" > "$KEY_FILE"
+          # `sign_update -f <keyfile>` returns a single line containing
+          # the `sparkle:edSignature` and `length` attributes ready to
+          # paste into the appcast's <enclosure>.
+          SIG_BLOB=$(sign_update -f "$KEY_FILE" "MeetingCompanion-${VERSION}.zip")
+          rm -f "$KEY_FILE"
+          # Multi-line outputs need EOF-delimiter syntax to round-trip
+          # through GITHUB_OUTPUT cleanly.
+          {
+            echo "sig_blob<<EOF"
+            echo "$SIG_BLOB"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Generate appcast.xml
+        if: github.event_name == 'push' && github.ref_type == 'tag'
+        working-directory: packages/mac
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          BUILD: ${{ steps.version.outputs.build }}
+          SIG_BLOB: ${{ steps.sign.outputs.sig_blob }}
+          DOWNLOAD_URL: https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/MeetingCompanion-${{ steps.version.outputs.version }}.zip
+        run: |
+          PUB_DATE=$(date -u +"%a, %d %b %Y %H:%M:%S GMT")
+          cat > appcast.xml <<EOF
+          <?xml version="1.0" encoding="utf-8"?>
+          <rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
+              <channel>
+                  <title>Meeting Companion</title>
+                  <link>https://github.com/${GITHUB_REPOSITORY}</link>
+                  <description>Auto-update feed for the Meeting Companion menu-bar app.</description>
+                  <language>en</language>
+                  <item>
+                      <title>Version ${VERSION}</title>
+                      <pubDate>${PUB_DATE}</pubDate>
+                      <sparkle:version>${BUILD}</sparkle:version>
+                      <sparkle:shortVersionString>${VERSION}</sparkle:shortVersionString>
+                      <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+                      <enclosure url="${DOWNLOAD_URL}" ${SIG_BLOB} type="application/octet-stream" />
+                  </item>
+              </channel>
+          </rss>
+          EOF
+          echo "::group::appcast.xml"
+          cat appcast.xml
+          echo "::endgroup::"
+
       - name: Attach to release on tag
         if: github.event_name == 'push' && github.ref_type == 'tag'
         uses: softprops/action-gh-release@v2
         with:
-          files: packages/mac/MeetingCompanion-${{ steps.version.outputs.version }}.zip
+          files: |
+            packages/mac/MeetingCompanion-${{ steps.version.outputs.version }}.zip
+            packages/mac/appcast.xml
           fail_on_unmatched_files: true
