@@ -35,6 +35,24 @@ final class PermissionMonitor {
 
     init() {
         refresh()
+        // Re-read OS state every time the user comes back to the app.
+        // The two scenarios this catches:
+        //   1. User clicked "Open System Settings", flipped a toggle,
+        //      switched back to the app — without this, the in-app
+        //      UI keeps showing "Request…" until the next launch.
+        //   2. User revoked a permission in Settings — we'd happily
+        //      keep claiming `.granted` forever otherwise.
+        // No observer cleanup: PermissionMonitor lives the process
+        // lifetime; the OS releases notification observers at exit.
+        NotificationCenter.default.addObserver(
+            forName: NSApplication.didBecomeActiveNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.refresh()
+            }
+        }
     }
 
     /// True when both required permissions are granted. Audio capture
