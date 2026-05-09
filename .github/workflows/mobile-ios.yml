@@ -86,8 +86,8 @@ jobs:
           cache: pnpm
 
       - if: steps.preflight.outputs.configured == 'true'
-        # Install from inside packages/mobile/ so the local .npmrc
-        # (node-linker=hoisted) takes effect — see mobile-update.yml.
+        # node-linker=hoisted lives at the workspace root .npmrc.
+        # See mobile-update.yml for the rationale.
         working-directory: packages/mobile
         run: pnpm install --frozen-lockfile
 

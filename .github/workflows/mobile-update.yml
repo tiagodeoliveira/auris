@@ -74,11 +74,12 @@ jobs:
           cache: pnpm
 
       - if: steps.preflight.outputs.configured == 'true'
-        # Install from inside packages/mobile/ so the local .npmrc
-        # (node-linker=hoisted) takes effect — Expo's CLI needs a
-        # hoisted node_modules to resolve transitive deps like
-        # expo-asset that pnpm's strict isolation otherwise hides.
-        # Workspace root's pnpm-lock.yaml is still respected.
+        # node-linker=hoisted lives at the workspace root .npmrc so
+        # both local installs AND EAS Build's installs (which run
+        # from the workspace root) get the flat node_modules layout
+        # Expo expects. cwd doesn't matter for that, but we keep
+        # the install scoped to the mobile package for cache
+        # locality.
         working-directory: packages/mobile
         run: pnpm install --frozen-lockfile
 
