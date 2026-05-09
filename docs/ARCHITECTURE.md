@@ -1,13 +1,14 @@
 # Architecture
 
-Real-time meeting summarization with two independent clients and a
-shared server. A native Mac menu-bar app and a phone-hosted PWA each
-connect to a Rust server that owns audio capture, streaming STT, and
-parallel "modes" (transcript, highlights, actions, open questions).
-A single tool-calling agent loop (Claude Opus 4.7, stateful
-conversation history per meeting) reasons about the live transcript
-and decides what to push to which mode via tool calls. The PWA also
-drives the Even Realities G2 glasses display via the EvenHub SDK.
+Real-time meeting summarization with **three independent client
+surfaces** and a shared Rust server. A native Mac menu-bar app, a
+browser PWA (which also drives Even Realities G2 glasses), and an
+Expo iOS/Android mobile app each connect to the same server, which
+owns audio capture, streaming STT, and the mode catalog (transcript,
+highlights, actions, open_questions, summary, chat). A single
+tool-calling agent loop (Claude Opus 4.7, stateful conversation
+history per meeting) reasons about the live transcript and decides
+what to push to which mode via tool calls.
 
 ```
 ┌──────────────┐                 ┌─────────────────────────┐                ┌──────────────┐
@@ -15,27 +16,39 @@ drives the Even Realities G2 glasses display via the EvenHub SDK.
 │  (SwiftUI,   │   :7331         │                         │   :7331        │  (TS, EvenHub│
 │   menu bar)  │                 │  • audio ingest         │                │   WebView)   │
 │              │                 │  • streaming STT (Soniox)│               │              │
-│  • capture   │                 │  • summarizers          │                │  • control   │
-│  • dictation │                 │  • LLM extraction (rig) │                │  • items     │
+│  • capture   │                 │  • mode catalog (×6)    │                │  • control   │
+│  • dictation │                 │  • agent loop (Opus 4.7)│                │  • items     │
 │  • overlay   │                 │  • moments + screenshots│                │    mirror    │
-│              │                 │  • mnemo memory         │                │              │
-│  • Auth0     │                 │  • Auth0 / per-user     │                │  • Auth0 SPA │
-│              │                 │  • Postgres + blobs     │                │              │
-└──────────────┘                 └─────────────────────────┘                └──────┬───────┘
-                                                                                   │
-                                                                                   │ BLE
-                                                                                   ▼
-                                                                          ┌──────────────┐
-                                                                          │  G2 Glasses  │
-                                                                          │  (E.R. App)  │
-                                                                          │  thin display│
-                                                                          └──────────────┘
+│              │                 │  • artifacts + summaries│                │              │
+│  • Sparkle   │                 │  • mnemo memory         │                │  • Auth0 SPA │
+│    auto-     │                 │  • Auth0 / per-user     │                │              │
+│    update    │                 │  • Postgres + blobs     │                └──────┬───────┘
+│  • Auth0     │                 │                         │                       │
+│    PKCE      │                 │                         │                       │ BLE
+└──────────────┘                 └────────────┬────────────┘                       ▼
+                                              │                            ┌──────────────┐
+                                              │ WebSocket :7331            │  G2 Glasses  │
+                                              ▼                            │  (E.R. App)  │
+                                  ┌──────────────────────┐                 │  thin display│
+                                  │  Mobile app          │                 └──────────────┘
+                                  │  (Expo, iOS+Android) │
+                                  │                      │
+                                  │  • control surface   │
+                                  │  • Auth0 PKCE        │
+                                  │  • EAS Build/Update  │
+                                  └──────────────────────┘
 ```
 
-Both clients are bidirectional WebSocket peers — each can send intents
-and receive events. Pairing is additive: either client works alone.
-The glasses are PWA-only (LVGL pages built in `packages/pwa/src/glasses/`,
-shipped to the Even Realities companion app over BLE).
+All three clients are bidirectional WebSocket peers — each can send
+intents and receive events for their authenticated user. Pairing is
+additive: any client works alone. The glasses are PWA-only (LVGL
+pages built in `packages/pwa/src/glasses/`, shipped to the Even
+Realities companion app over BLE).
+
+**Distribution.** Server image to GHCR, Mac `.app` to GitHub
+Releases (Sparkle-signed for auto-update), iOS/Android via EAS Build
++ EAS Update. See `.github/workflows/` and the per-package READMEs
+for the full pipeline.
 
 ---
 
@@ -54,8 +67,10 @@ Modules:
   dispatch, per-user pipeline lifecycle, the `spawn_live_pipeline`
   function that wires up STT + transcript summarizer + agent loop
   per active meeting.
-- `api.rs` — REST endpoints: `GET/DELETE /api/meetings`, `GET
-  /api/meetings/:id`, moment routes, blob serving (`GET /api/blobs/...`).
+- `api.rs` — REST endpoints: `GET/DELETE /meetings`, `GET
+  /meetings/:id`, moment screenshot upload/fetch routes,
+  artifact CRUD + attach/detach. Mounted at the root next to the
+  WS endpoints — no `/api/` prefix.
 - `auth.rs` — Auth0 JWT validation. JWKS fetched lazily, cached by
   `kid`, refetch-on-miss with cooldown to resist forged-`kid` floods.
   `MEETING_COMPANION_AUTH_DISABLED=1` provides a synthetic dev user
@@ -74,7 +89,7 @@ Modules:
   dictation mic and the PWA's listening flow both push PCM through
   this; the server owns the Soniox session and broadcasts transcript
   updates back. No provider keys leave the server.
-- `summarizer/` — four pipelines:
+- `summarizer/` — five pipelines, six modes:
   - `transcript` (pass-through, no LLM; emits each finalized chunk
     as a transcript-mode item).
   - `agent` (single tool-calling LLM loop per active meeting, with
@@ -82,15 +97,18 @@ Modules:
     into highlights/actions/open_questions via `push_*` /
     `replace_highlights` tools, reads attached artifacts via
     `fetch_artifact_summary` / `fetch_artifact`, and replies to
-    chat questions in chat mode). See ADR-0011.
+    chat questions in chat mode via Q+A bubble pairs). Anthropic
+    prompt caching enabled. See ADR-0011.
   - `summary` (running 3-5 sentence meeting summary, single-item
     Replace strategy; hybrid trigger — fires on a token threshold
     OR a 5-min ceiling whichever first).
-  - `moment` and `artifact` (one-shot async LLM summaries
-    triggered by user action: marking a moment or uploading an
-    artifact). The moment worker also kicks the agent on
-    completion so chat questions about a snapped moment have
-    full context.
+  - `moment` (vision-LLM summarizer for screenshots taken on
+    `mark_moment`).
+  - `artifact` (one-shot async summarizer for uploaded
+    PDF/image/text artifacts: `short_summary` + `long_summary`).
+  - The moment + artifact workers both kick the agent on
+    completion so chat questions about a just-snapped moment or a
+    just-attached artifact have full context.
 - `llm.rs` — `LlmClient` with multi-provider support via `rig`
   (Bedrock / OpenAI / Anthropic). Vision path
   (`extract_with_prompt_and_image`) base64-encodes screenshots and
@@ -129,7 +147,7 @@ Files of note:
   - `WebSocketClient.swift` — main control / event WS.
   - `Auth0Client.swift` — native Auth0 OAuth flow, token storage in
     Keychain.
-  - `MeetingsAPI.swift` — REST client for `/api/meetings`.
+  - `MeetingsAPI.swift` — REST client for `/meetings`.
   - `Protocol.swift` — wire types (hand-synced with `contract.rs`).
   - `SttSession.swift` — `/stt` WS client for the dictation mic path.
 - `Audio/` — `AudioCapture` + `MicCapture` + `AudioStreamer`
@@ -167,13 +185,52 @@ Layered roughly as:
   taps, foreground/background).
 - `listening.ts` — `/stt` WS client for the dictation flow (matches
   the Mac path; PCM through server).
-- `meetings-api.ts` — REST client for `/api/meetings`.
+- `meetings-api.ts` — REST client for `/meetings`.
 - `ui/` — DOM components. One file per surface; all self-hide based
   on `meetingState`.
 - `state-machine.ts` — small reducer that maps bridge events to
   glasses view transitions.
 
 Detailed UX in [`UX.md`](UX.md).
+
+### Mobile app — `packages/mobile/` (Expo + React Native)
+
+A native iOS and Android client built on Expo SDK 51 with Expo
+Router (file-based routing). Same wire types as the PWA, hand-synced
+into `src/wire/contract.ts`. Same Auth0 tenant; uses the Mac's
+Native client_id for personal-use simplicity.
+
+Files of note:
+
+- `app/` — file-routed screens. `_layout.tsx` (root Stack with auth
+  bootstrap + auto-WS-on-identity), `login.tsx` (Auth0 sign-in),
+  `(tabs)/index.tsx` (compose), `(tabs)/history.tsx` (past
+  meetings, bucketed), `(tabs)/artifacts.tsx` (artifact list),
+  `(tabs)/settings.tsx`, `meeting.tsx` (live-meeting fullscreen
+  modal), `meeting/[id].tsx` (past-meeting detail).
+- `src/wire/` — the protocol layer. `contract.ts` (types),
+  `ws.ts` (`ReconnectingSocket` ported verbatim from PWA),
+  `meetings-api.ts`, `artifacts-api.ts` (REST clients).
+- `src/auth/auth0.ts` — PKCE flow via `expo-auth-session`,
+  refresh token in `expo-secure-store`, `getAccessToken` with
+  silent refresh, identity subscription API.
+- `src/store/index.ts` — Zustand store mirroring PWA's
+  `defaultAppState` reducer; owns the `ReconnectingSocket`
+  lifecycle.
+- `src/audio/audio-capture.ts` — currently stubbed (no-op).
+  expo-audio per-buffer PCM is gated on Expo SDK 52+; SDK 51 here
+  forces a deferred PCM path. Phase 3 of MOBILE-PLAN.
+- `src/lib/meetings.ts` — pure helpers (`pickMeetingTitle`,
+  `relativeBucket`, `formatDateLong`, `formatTokens`) shared with
+  the PWA's display logic.
+
+Distribution: EAS Build (matrixed `[ios, android]`) for binaries,
+EAS Update for OTA JS bundles via channels. See `eas.json` and
+`.github/workflows/mobile-{build,update}.yml`.
+
+Phases 0-5 of [`MOBILE-PLAN`](MOBILE-PLAN.md) shipped. Deferred:
+PCM streaming (3.3+), camera-attached moments (4.5+), moment image
+rendering (5.4), artifact uploads (5.7+).
 
 ### Glasses — Even Realities G2 (display only)
 
@@ -310,7 +367,7 @@ fresh frame, persists the screenshot under
 `<DATA_DIR>/blobs/meetings/<meeting_id>/moments/<moment_id>.jpg`, then
 schedules an async vision-LLM summarizer (`summarizer/moment.rs`) that
 reads back the screenshot bytes and produces a structured note. The
-moment appears in the meeting detail view via `/api/meetings/:id`.
+moment appears in the meeting detail view via `/meetings/:id`.
 
 ADRs covering this flow:
 

@@ -56,23 +56,64 @@ services:
       postgres:
         condition: service_healthy
     environment:
+      # ─── Required (server fails to start without these) ──────────────
       DATABASE_URL: postgres://${POSTGRES_USER:-meeting_companion}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-meeting_companion}
-      MEETING_COMPANION_DATA_DIR: /data
       AUTH0_DOMAIN: ${AUTH0_DOMAIN}
       AUTH0_API_AUDIENCE: ${AUTH0_API_AUDIENCE}
-      # Optional providers — leave unset to disable. The server
-      # gracefully no-ops when an integration's env vars are missing.
-      SONIOX_API_KEY: ${SONIOX_API_KEY:-}
+
+      # ─── Server runtime ─────────────────────────────────────────────
+      MEETING_COMPANION_DATA_DIR: /data
+      RUST_LOG: ${RUST_LOG:-info}
+      MEETING_COMPANION_HEARTBEAT_MS: ${MEETING_COMPANION_HEARTBEAT_MS:-10000}
+
+      # ─── Toggles (1 = enable, unset = off) ──────────────────────────
+      MEETING_COMPANION_AUTH_DISABLED: ${MEETING_COMPANION_AUTH_DISABLED:-}
+      MEETING_COMPANION_LLM_DISABLED: ${MEETING_COMPANION_LLM_DISABLED:-}
+      MEETING_COMPANION_AUDIO_DISABLED: ${MEETING_COMPANION_AUDIO_DISABLED:-}
+      MEETING_COMPANION_SKIP_BOOT_RECOVERY: ${MEETING_COMPANION_SKIP_BOOT_RECOVERY:-}
+      AGENT_LOG_PROMPT: ${AGENT_LOG_PROMPT:-}
+
+      # ─── LLM provider ───────────────────────────────────────────────
+      MEETING_COMPANION_LLM_PROVIDER: ${MEETING_COMPANION_LLM_PROVIDER:-bedrock}
+      # Provider-specific defaults coded in src/llm.rs apply when unset:
+      #   bedrock  → us.anthropic.claude-sonnet-4-7-20251015-v1:0
+      #   openai   → gpt-4o
+      #   anthropic→ claude-opus-4-7
+      MEETING_COMPANION_LLM_MODEL_ID: ${MEETING_COMPANION_LLM_MODEL_ID:-}
+      MEETING_COMPANION_LLM_REGION: ${MEETING_COMPANION_LLM_REGION:-us-west-2}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
-      MEETING_COMPANION_LLM_PROVIDER: ${MEETING_COMPANION_LLM_PROVIDER:-bedrock}
       AWS_REGION: ${AWS_REGION:-us-west-2}
       AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
-      # Mnemo env names use the MEETING_COMPANION_ prefix per the
-      # server's `mnemo::client` module — passing plain `MNEMO_URL`
-      # silently disables the integration because the server can't
-      # find the expected key.
+
+      # ─── STT (speech-to-text) ───────────────────────────────────────
+      MEETING_COMPANION_STT_PROVIDER: ${MEETING_COMPANION_STT_PROVIDER:-soniox}
+      MEETING_COMPANION_SONIOX_MODEL: ${MEETING_COMPANION_SONIOX_MODEL:-stt-rt-preview}
+      MEETING_COMPANION_STT_MOCK_INTERVAL_MS: ${MEETING_COMPANION_STT_MOCK_INTERVAL_MS:-3000}
+      SONIOX_API_KEY: ${SONIOX_API_KEY:-}
+
+      # ─── Agent loop (per ADR-0011) ──────────────────────────────────
+      AGENT_TRIGGER_TOKENS: ${AGENT_TRIGGER_TOKENS:-200}
+      AGENT_TRIGGER_SENTENCES: ${AGENT_TRIGGER_SENTENCES:-4}
+      AGENT_TRIGGER_SILENCE_MS: ${AGENT_TRIGGER_SILENCE_MS:-4000}
+      AGENT_TRIGGER_MAX_MS: ${AGENT_TRIGGER_MAX_MS:-30000}
+
+      # ─── Summary mode ───────────────────────────────────────────────
+      SUMMARY_TRIGGER_TOKENS: ${SUMMARY_TRIGGER_TOKENS:-500}
+      SUMMARY_BOOTSTRAP_TOKENS: ${SUMMARY_BOOTSTRAP_TOKENS:-100}
+      SUMMARY_TRIGGER_MAX_MS: ${SUMMARY_TRIGGER_MAX_MS:-300000}
+
+      # ─── Moment summarizer (vision LLM context window) ──────────────
+      MEETING_COMPANION_MOMENT_WINDOW_MS: ${MEETING_COMPANION_MOMENT_WINDOW_MS:-60000}
+      MEETING_COMPANION_MOMENT_GRACE_MS: ${MEETING_COMPANION_MOMENT_GRACE_MS:-5000}
+
+      # ─── mnemo memory layer (optional integration) ──────────────────
+      # Unset = integration disabled. Both URL and API_KEY required to
+      # enable. Names use the MEETING_COMPANION_ prefix per the server's
+      # `mnemo::client` module — passing plain `MNEMO_URL` silently
+      # disables the integration because the server can't find the
+      # expected key.
       MEETING_COMPANION_MNEMO_URL: ${MEETING_COMPANION_MNEMO_URL:-}
       MEETING_COMPANION_MNEMO_API_KEY: ${MEETING_COMPANION_MNEMO_API_KEY:-}
       MEETING_COMPANION_MNEMO_WORKSTATION: ${MEETING_COMPANION_MNEMO_WORKSTATION:-}

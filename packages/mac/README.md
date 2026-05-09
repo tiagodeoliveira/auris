@@ -1,56 +1,38 @@
 # Meeting Companion — Mac app
 
-Native macOS menu-bar app that captures audio for meetings, streams it
-to the server over WebSocket, and exposes meeting lifecycle controls.
-Designed to be **independently useful**: a user with no PWA paired can
-still run a meeting from the Mac alone (per ADR-0009 / standalone-first
-principle in [`docs/PLAN.md`](../../docs/PLAN.md)).
+Native macOS menu-bar app. Captures audio (system + mic) and streams
+it to the server, hosts a floating overlay during meetings (mode
+tabs, items list, mark-moment, dictation, stop), and provides a
+native browse window for past meetings. Auto-updates via Sparkle
+from GitHub Releases.
 
 System overview: [`docs/ARCHITECTURE.md`](../../docs/ARCHITECTURE.md).
 Wire protocol: [`docs/PROTOCOL.md`](../../docs/PROTOCOL.md).
-Roadmap: [`docs/PLAN.md`](../../docs/PLAN.md) §4 Phase 2.
+Roadmap: [`docs/PLAN.md`](../../docs/PLAN.md).
 
-## What this app is
+## What it does
 
-- **Menu-bar accessory app** (`LSUIElement`-equivalent via
-  `setActivationPolicy(.accessory)`). No Dock icon, no app-switcher
-  entry. Lifetime is tied to the menu bar item.
-- **Audio capture source** for the server (the system audio + mic
-  combined, mixed into a 16 kHz mono S16LE PCM stream).
-- **Standalone meeting controller** when no PWA is paired (compose,
-  start, stop from the Mac alone).
-- **Floating overlay** during meetings (Phase 6+) for live items + action
-  buttons.
-- **Native browse window** for past meetings (Phase 2h, depends on
-  Phase 4's REST APIs).
-
-What it is _not_:
-
-- A web view embed. Pure SwiftUI + AppKit.
-- A standalone meeting backend. The server still owns state, STT,
-  summarizers, mnemo. The Mac is the audio source + a control surface.
-
-## Status — Phase 2c complete (Mac talks to the server)
-
-| Sub-phase | Goal                                                           | Status     |
-| --------- | -------------------------------------------------------------- | ---------- |
-| **2a**    | Mac scaffold: SwiftPM + menu bar item + AppModel placeholder   | **✓ Done** |
-| **2b**    | Server-side device registry + control channel                  | **✓ Done** |
-| **2c**    | Settings window + token-based server connection                | **✓ Done** |
-| **2f₁**   | Mac registers as a device on connect; ownDevice + capabilities | **✓ Done** |
-| **2d**    | Permissions onboarding (Microphone + Screen Recording)         | **✓ Done** |
-| **2e**    | Audio capture in Swift (SCKit) + mixer parity with Rust        | **✓ Done** |
-| **2f₂**   | Stream PCM via `/audio` (depends on 2e)                        | **✓ Done** |
-| **2g**    | Compose window (description input + Start Meeting flow)        | Pending    |
-| **2h**    | Native Meetings browse window (depends on Phase 4 APIs)        | Deferred   |
-
-Acceptance for Phase 2 overall: three demos pass — Mac standalone,
-PWA-led with Mac as source, Mac standalone with browse (where 2h is
-deferred to Phase 4).
+- **Menu-bar accessory app** (`setActivationPolicy(.accessory)`). No
+  Dock icon, no app-switcher entry.
+- **Audio source** for active meetings: ScreenCaptureKit system audio
+  - microphone, mixed at ~50 fps to 16 kHz mono S16LE PCM, streamed
+    over `/audio` WS. Same pipeline as the server's local-capture
+    path; the choice is which side of the Tailnet runs the bytes.
+- **Standalone meeting controller**: compose, start, pause, resume,
+  stop, mark moments, dictate descriptions, browse history — all
+  from the Mac alone.
+- **Floating overlay** during meetings. Mode tabs (TRANSCRIPT,
+  HIGHLIGHTS, ACTIONS, QUESTIONS, SUMMARY, CHAT), items list with
+  detail expand, peak meter, dictation mic, mark-moment, stop.
+- **Drives the G2 glasses** via the EvenHub bridge when this is the
+  active client (alternative to PWA-driven glasses).
+- **Sparkle auto-update.** Tagged releases ship a signed `appcast.xml`
+  on GitHub Releases; the app polls daily and prompts the user.
 
 ## Build & run
 
-Requires Xcode 15+ (Swift 5.9, macOS 14 SDK).
+Requires Xcode 16+ (Swift 5.9+, macOS 15 SDK — needed for the
+`SCStream` microphone path).
 
 ### From the command line
 
@@ -60,18 +42,13 @@ swift build       # debug binary
 swift run         # build + launch
 ```
 
-The menu bar icon appears (a hollow circle in the scaffold state)
-top-right. Click → dropdown with status + stubbed actions. Click
-"Quit Meeting Companion" or `⌘Q` to exit.
-
 ### From Xcode
 
 ```bash
 open packages/mac/Package.swift
 ```
 
-Xcode opens the SwiftPM package as if it were a project. Run with
-`⌘R`. Set breakpoints, debug, the usual.
+Run with `⌘R`. Standard breakpoints / debugger.
 
 ### From the repo root via `just`
 
@@ -80,106 +57,148 @@ just mac-build    # swift build
 just mac-run      # swift run (launches the app)
 ```
 
+### Producing a signed `.app` bundle locally
+
+```bash
+packages/mac/scripts/codesign-local.sh   # auto-detects Developer ID identity
+```
+
+The script runs `swift build -c release`, packages a universal `.app`
+bundle, copies the Sparkle framework into `Contents/lib/`, signs with
+`--deep --options runtime --timestamp`, and strips the `com.apple.quarantine`
+xattr. The output `.app` lives under `packages/mac/.build/release/`.
+
+## Configuration
+
+Build-time configuration is baked into `Info.plist` via envsubst in
+`mac-bundle.yml`. Locally, `Info.plist.template` reads the same env
+vars at build time. Variables (with hardcoded defaults in
+`Auth0Client.swift` and `AppSettings.swift` for personal-use safety):
+
+| Variable                       | Used for                                                       |
+| ------------------------------ | -------------------------------------------------------------- |
+| `MEETING_COMPANION_SERVER_URL` | WS / REST endpoint (e.g. `ws://jarvis.tail48cb4.ts.net:7331`). |
+| `AUTH0_DOMAIN`                 | Auth0 tenant (e.g. `your-tenant.us.auth0.com`).                |
+| `AUTH0_MAC_CLIENT_ID`          | Auth0 Native application client ID.                            |
+| `AUTH0_API_AUDIENCE`           | Auth0 API identifier the JWT must `aud`-match.                 |
+| `SPARKLE_PUBLIC_KEY`           | EdDSA public key Sparkle uses to verify update signatures.     |
+
+Auth0 access + refresh tokens are persisted in the macOS Keychain.
+Overlay theme + opacity are persisted in `UserDefaults`.
+
+## Auto-update (Sparkle)
+
+`mac-bundle.yml` runs on each `v*` tag:
+
+1. `swift build -c release` (universal binary).
+2. Wraps into a `.app` bundle.
+3. Signs the bundle's contents with the Developer ID (when
+   `MAC_SIGNING_*` secrets are configured; otherwise builds an
+   ad-hoc signed dev artifact).
+4. Generates an EdDSA signature with `sign_update` (Sparkle's CLI
+   tool, using the `SPARKLE_PRIVATE_KEY` secret).
+5. Updates `appcast.xml` with the new version, signature, and
+   download URL.
+6. Uploads `.app.zip` + `appcast.xml` as a GitHub Release asset.
+
+The shipping app reads `appcast.xml` from the configured
+`SUFeedURL`, validates the EdDSA signature against the embedded
+`SUPublicEDKey`, downloads the `.app.zip`, and prompts the user.
+
+To generate a new key pair:
+
+```bash
+sign_update --generate-keys                # writes to macOS Keychain
+sign_update --print-public-key             # prints SPARKLE_PUBLIC_KEY
+sign_update --export-secret-key file.pem   # exports SPARKLE_PRIVATE_KEY
+```
+
+Set `SPARKLE_PUBLIC_KEY` as a repo variable, `SPARKLE_PRIVATE_KEY`
+as a repo secret. See `.github/workflows/README.md` for the
+complete secret/variable inventory.
+
 ## Architecture
 
 Single executable target. Files under `Sources/MeetingCompanion/`:
 
-| File                        | Role                                                                                                                                                            |
-| --------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `MeetingCompanionApp.swift` | `@main` entry. `MenuBarExtra` scene. Sets accessory activation policy.                                                                                          |
-| `MenuBarContent.swift`      | The dropdown view. Most actions are stubbed (disabled) — each Phase 2 sub-phase wires more of them.                                                             |
-| `AppModel.swift`            | `@Observable` source of truth for app-wide state. Connection state today; capabilities, bound meeting state, captured-frame counters added by later sub-phases. |
+| File                                      | Role                                                                                              |
+| ----------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| `MeetingCompanionApp.swift`               | `@main` entry. App delegate. Accessory activation policy.                                         |
+| `AppModel.swift`                          | `@Observable` source of truth. Mirrors per-user server state (modes, items, devices, transcript). |
+| `MenuBarContent.swift`                    | Menu dropdown. Status, Start / Stop / Compose, Meetings…, Settings…, Permissions….                |
+| `MeetingOverlayView.swift`                | Floating overlay panel during meetings. Mode tabs, items, peak meter, mark-moment, mic, stop.     |
+| `DictationController.swift`               | Mic-only `/stt` flow for the description-dictation path.                                          |
+| `Net/WebSocketClient.swift`               | Control-channel WS client. Reconnect, heartbeat, intent dispatch.                                 |
+| `Net/Auth0Client.swift`                   | Native PKCE OAuth flow, refresh-token-in-Keychain.                                                |
+| `Net/MeetingsAPI.swift`                   | REST client (`GET/DELETE /meetings`, moments, artifacts).                                         |
+| `Net/Protocol.swift`                      | Wire types, hand-synced with `packages/server/src/contract.rs`.                                   |
+| `Net/SttSession.swift`                    | `/stt` WS client for the dictation mic path.                                                      |
+| `Audio/AudioCapture.swift`                | ScreenCaptureKit system audio + mic. SCStream microphone path (macOS 15+).                        |
+| `Audio/MicCapture.swift`                  | Mic-only capture for dictation. Realtime audio thread, `@unchecked Sendable`.                     |
+| `Audio/AudioStreamer.swift`               | 50 fps mixer + `/audio` WS sender. Drops on backpressure rather than buffering.                   |
+| `Capture/ScreenshotCapture.swift`         | On-demand screenshot for moments. Triggered by server's `capture_moment_screenshot`.              |
+| `Permissions/PermissionMonitor.swift`     | Live status of mic + screen-recording permissions. Refresh on app activation.                     |
+| `Permissions/PermissionsOnboarding.swift` | First-run UX with deep links to System Settings.                                                  |
+| `Settings/AppSettings.swift`              | UserDefaults-backed: overlay theme, overlay opacity, server URL display.                          |
+| `Settings/SettingsView.swift`             | Settings window: account (signed-in identity + logout), overlay appearance, LLM usage rollup.     |
+| `UpdaterController.swift`                 | Sparkle wrapper (`SPUStandardUpdaterController` + `@Published canCheckForUpdates`).               |
 
-### Sub-phases will add (rough sketch)
+## Permissions
 
-```
-Sources/MeetingCompanion/
-  MeetingCompanionApp.swift        ✓ 2a (extended in 2c with Settings window scene)
-  MenuBarContent.swift             ✓ 2a (extended in 2c with Connect/Disconnect/Settings)
-  AppModel.swift                   ✓ 2a (extended in 2c to own settings + ws)
-  Settings/
-    AppSettings.swift              ✓ 2c: UserDefaults-backed settings
-    SettingsView.swift             ✓ 2c: server URL + token form
-  Net/
-    WebSocketClient.swift          ✓ 2c: URLSessionWebSocketTask wrapper
-    DeviceRegistration.swift        2f: POST /devices, capability advertisement
-  Permissions/
-    PermissionsOnboarding.swift     2d: first-launch UX
-    PermissionMonitor.swift         2d: live status of mic + screen perms
-  Audio/
-    AudioCapture.swift              2e: SCKit setup
-    AudioMixer.swift                2e: 50fps mixer (parity with Rust)
-    AudioStreamer.swift             2f: send PCM frames to /audio WS
-  Compose/
-    ComposeWindow.swift             2g: description + Extract Tags + Start
-  Meetings/
-    MeetingsWindow.swift            2h: native master/detail (deferred to Phase 4)
-```
+Two TCC permissions are required:
 
-## Conventions
+1. **Screen Recording** — for ScreenCaptureKit system audio + the
+   moment-screenshot path.
+2. **Microphone** — for the system+mic mixer and dictation.
 
-- **No Storyboards / NIBs.** SwiftUI for views; AppKit only where SwiftUI
-  doesn't reach (custom panels, floating windows in Phase 6).
-- **`@Observable` on the model**, not `ObservableObject`. We target
-  macOS 14+; modern Observation is preferred.
-- **State flows down, intent flows up**. Views read from `AppModel`,
-  call methods on it. The model owns network/audio side effects.
-- **One concept per file.** Adding a new feature is a new file,
-  not a new section in an existing file.
-- **Comments explain _why_, not _what_.** The menu-bar-accessory
-  comment in `MeetingCompanionApp.swift` is a good template.
+The first-run onboarding sheet deep-links to System Settings →
+Privacy & Security → Screen Recording / Microphone with an "Open
+Settings" button. After granting, **the app must be quit and
+relaunched**: macOS caches the screen-recording check at process
+launch (`CGPreflightScreenCaptureAccess`), so granting alone
+doesn't propagate. The mic permission updates live thanks to the
+`PermissionMonitor` observer on `NSApplication.didBecomeActiveNotification`.
 
-## Smoke test (through Phase 2f₁)
+## Smoke test
 
-Two terminals:
+Two terminals (or just the Mac if you're hitting the deployed
+server):
 
 ```bash
-# Terminal 1 — start the server:
+# Terminal 1 — server (skip if pointing at production):
 just server-run
 
 # Terminal 2 — launch the Mac app:
 just mac-run
 ```
 
-First run only: click the menu bar icon → "Open Settings to sign
-in…" → enter `ws://localhost:7331` + token `dev` → close.
+First launch:
 
-Click the menu bar icon → **Connect** → the status line should
-quickly progress through:
+1. Sign in with Auth0 from the menu dropdown.
+2. Grant Microphone + Screen Recording in System Settings; relaunch.
+3. Click the menu bar icon → **Compose meeting…**.
+4. Type a description (or click the mic to dictate). Click **Start**.
+5. Floating overlay appears. Speak; verify the transcript items
+   appear within ~1–2s of sentence boundaries.
+6. After ~30s of speech, switch to `HIGHLIGHTS` / `ACTIONS` /
+   `QUESTIONS` tabs — the agent loop populates them.
+7. Switch to `SUMMARY` — the rolling summary appears as one card.
+8. Switch to `CHAT` — type a question, send. Agent reply lands in
+   the same panel.
+9. Click the camera icon → moment marked, screenshot taken,
+   summary populates async.
+10. Click **Stop** to end the meeting.
+
+## Update path for users
 
 ```
-Not signed in
-   ↓ (Connect)
-Connecting…
-   ↓
-Connected · registering…
-   ↓ (server replies device_registered)
-Connected · registered as <hostname>
+sparkle-pinned app → polls appcast.xml → user clicks "Install Update"
+                                              → downloads .app.zip
+                                              → verifies EdDSA signature
+                                              → relaunches into new version
 ```
 
-A `Device id: <8-char-prefix>…` line appears below the status,
-confirming the server-assigned UUID. **Disconnect** clears it.
-
-You can verify the registry from a third terminal with `websocat`:
-
-```bash
-websocat 'ws://localhost:7331/?token=dev'
-# Look at the snapshot's `devices` array — should include the Mac.
-```
-
-When the Mac disconnects, the websocat session sees a
-`devices_changed` broadcast with the entry gone.
-
-## Next: Phase 2d → 2e → 2f₂
-
-The unblocked sub-phases now run in dependency order:
-
-- **2d**: Permissions onboarding (Microphone + Screen Recording).
-  Required before 2e can produce frames.
-- **2e**: SCKit audio capture in Swift. Mirror of the existing Rust
-  pipeline. Produces 16 kHz mono S16LE PCM into an
-  `AsyncStream<Data>` or `AsyncChannel<Data>`.
-- **2f₂**: Stream those PCM frames to the server's `/audio`
-  endpoint via a second WebSocket connection. Once this lands, the
-  server's `RemoteAudioSource` (Phase 1b) consumes them and the
-  full Mac-as-audio-source path is wired end-to-end.
+Users with a Developer-ID-signed bundle get seamless auto-update.
+For ad-hoc-signed builds (no `MAC_SIGNING_*` secrets), users must
+manually run `xattr -cr` on the new `.app` after Gatekeeper marks
+it quarantined.

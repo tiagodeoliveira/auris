@@ -55,17 +55,89 @@ RUN apt-get update \
 
 COPY --from=builder /work/target/release/meeting-companion-server /usr/local/bin/
 
-# Default data dir = `/data`, intended as a mounted volume so SQLite +
-# future blobs survive container restarts.
+# ──────────────────────────────────────────────────────────────────────────
+# Environment surface. The full list of env vars the server reads, with
+# defaults baked in for the ones that have one. Values without a default
+# are listed as commented placeholders so `docker run` operators can
+# discover what's available without grepping the source.
+#
+# Override at runtime with `-e VAR=value` or via docker-compose's
+# `environment:` block. See `.env.example` for fuller commentary on each.
+# ──────────────────────────────────────────────────────────────────────────
+
+# ─── Required (server fails to start without these unless AUTH_DISABLED=1) ─
+# DATABASE_URL=postgres://user:pass@host:5432/db
+# AUTH0_DOMAIN=your-tenant.us.auth0.com
+# AUTH0_API_AUDIENCE=https://meeting-companion.api
+
+# ─── Server defaults ──────────────────────────────────────────────────────
+# `/data` intended as a mounted volume so Postgres metadata + transcript
+# JSONL + moment screenshots + artifact blobs survive container restarts.
 ENV MEETING_COMPANION_DATA_DIR=/data
+ENV RUST_LOG=info
+ENV MEETING_COMPANION_HEARTBEAT_MS=10000
+
+# ─── Toggles (set to 1 to enable; unset = off) ───────────────────────────
+# ENV MEETING_COMPANION_AUTH_DISABLED=1
+# ENV MEETING_COMPANION_LLM_DISABLED=1
+# ENV MEETING_COMPANION_AUDIO_DISABLED=1
+# ENV MEETING_COMPANION_SKIP_BOOT_RECOVERY=1
+# ENV AGENT_LOG_PROMPT=1
+
+# ─── LLM ──────────────────────────────────────────────────────────────────
+ENV MEETING_COMPANION_LLM_PROVIDER=bedrock
+ENV MEETING_COMPANION_LLM_REGION=us-west-2
+# Provider-specific defaults are coded in src/llm.rs and apply when this
+# is unset:
+#   bedrock  → us.anthropic.claude-sonnet-4-7-20251015-v1:0
+#   openai   → gpt-4o
+#   anthropic→ claude-opus-4-7
+# ENV MEETING_COMPANION_LLM_MODEL_ID=
+# ENV OPENAI_API_KEY=
+# ENV ANTHROPIC_API_KEY=
+# ENV AWS_REGION=us-west-2
+# ENV AWS_ACCESS_KEY_ID=
+# ENV AWS_SECRET_ACCESS_KEY=
+
+# ─── STT (speech-to-text) ────────────────────────────────────────────────
+ENV MEETING_COMPANION_STT_PROVIDER=soniox
+ENV MEETING_COMPANION_SONIOX_MODEL=stt-rt-preview
+ENV MEETING_COMPANION_STT_MOCK_INTERVAL_MS=3000
+# ENV SONIOX_API_KEY=
+# Legacy switch — `STT_PROVIDER=mock` is the canonical path.
+# ENV MEETING_COMPANION_STT_MOCK=1
+
+# ─── Agent loop (per ADR-0011) ────────────────────────────────────────────
+ENV AGENT_TRIGGER_TOKENS=200
+ENV AGENT_TRIGGER_SENTENCES=4
+ENV AGENT_TRIGGER_SILENCE_MS=4000
+ENV AGENT_TRIGGER_MAX_MS=30000
+
+# ─── Summary mode ────────────────────────────────────────────────────────
+ENV SUMMARY_TRIGGER_TOKENS=500
+ENV SUMMARY_BOOTSTRAP_TOKENS=100
+ENV SUMMARY_TRIGGER_MAX_MS=300000
+
+# ─── Moment summarizer (vision LLM context window) ───────────────────────
+ENV MEETING_COMPANION_MOMENT_WINDOW_MS=60000
+ENV MEETING_COMPANION_MOMENT_GRACE_MS=5000
+
+# ─── mnemo memory layer (optional integration) ───────────────────────────
+# Unset = integration disabled. Both URL and API_KEY required to enable.
+# ENV MEETING_COMPANION_MNEMO_URL=
+# ENV MEETING_COMPANION_MNEMO_API_KEY=
+# ENV MEETING_COMPANION_MNEMO_WORKSTATION=
+
 RUN mkdir -p /data
 VOLUME ["/data"]
 
-# 7331 serves both WebSocket (PWA + Mac control plane + /audio) and
-# REST (/meetings…) via axum on a single port.
+# 7331 serves both WebSocket (PWA + Mac + mobile control plane + /audio
+# + /stt) and REST (/meetings, /artifacts, /moments) via axum on a
+# single port.
 EXPOSE 7331
 
 # `--port 7331` matches the existing `just server-run` recipe and the
-# Mac client's default. Override at run time with extra args.
+# Mac/mobile clients' baked-in defaults. Override at run time with
+# extra args, e.g. `docker run ... ghcr.io/.../server --port 8080`.
 ENTRYPOINT ["meeting-companion-server"]
 CMD ["--port", "7331"]

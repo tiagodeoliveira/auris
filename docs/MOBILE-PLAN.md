@@ -6,9 +6,36 @@ chat / moments, _without_ the EvenHub glasses bridge (browser-only
 SDK). Treats the existing PWA as the canonical reference for flows
 and visual language; reuse is opportunistic, not load-bearing.
 
-This is forward planning, not yet decided. Companion to
-[`PLAN.md`](PLAN.md); will graduate to an ADR once the stack and
-wire-format strategy land.
+Companion to [`PLAN.md`](PLAN.md); will graduate to an ADR once the
+stack and wire-format strategy land.
+
+---
+
+## Status
+
+**Phases 0–5 shipped.** The phone is a working control surface +
+browse client today. Live use case: sign in, compose a meeting,
+start it, watch transcript / highlights / actions / open_questions
+/ summary populate, ask the agent questions in chat mode, mark
+moments, stop, browse past meetings + artifacts.
+
+Deferred buckets, per the per-phase notes below:
+
+- **Audio PCM streaming (3.3+)** — peak meter only today; full PCM
+  → `/stt` and `/audio` blocked on a SDK-52+ expo-audio bump or a
+  custom dev-client native module. Phone is "control surface +
+  observer" until this lands.
+- **Camera-attached moments (4.5+)** — `expo-camera` integration,
+  bottom-sheet UX (camera / no-image / app-snapshot), JPEG upload
+  to the artifact summarizer path, long-press shortcut.
+- **Moment image rendering (5.4)** — past-meeting detail shows
+  moments without their screenshots; needs `expo-file-system` +
+  `expo-image` to bridge auth-aware blob fetch to a `file://` URI.
+- **Artifact uploads + attach (5.7+)** — read-only artifact list
+  today; per-source pickers (image / document / paste-text),
+  multi-select compose attach, live attach during meeting.
+
+**Phase 6 (polish)** — accumulates as needed; no hard gate.
 
 ---
 

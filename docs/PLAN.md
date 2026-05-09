@@ -8,21 +8,25 @@ git history and `docs/adr/`. The current shape of the system lives in
 
 ## 1. Status
 
-The local-first MVP is shipped and in personal-use rotation:
+The local-first MVP is shipped and in personal-use rotation across
+**four shipping surfaces** — server + Mac + PWA + iOS/Android mobile,
+all Auth0-authenticated, all driven by CI.
 
-- Native Mac menu-bar app + browser PWA, both Auth0-authenticated.
-- Per-user data isolation, Postgres persistence, boot recovery for
-  meetings interrupted by a server crash.
-- Server-mediated STT (the PWA and Mac dictation both flow through
-  `/stt`, no provider keys leave the server).
-- Moments with screenshots and vision-capable LLM summaries.
-- mnemo memory integration (streaming push + recall at start).
-- Artifact subsystem (PDF / image / text upload, async LLM
-  summarization, attach to meetings, 3-tier agent retrieval).
+### Server (`packages/server/`, Rust)
+
+- Multi-tenant per-user state (`HashMap<UserId, UserState>`) with
+  Postgres persistence and boot recovery for meetings interrupted by
+  a server crash.
+- Server-mediated STT: PWA and Mac dictation both flow through
+  `/stt`; no provider keys leave the server.
+- Moments with screenshots + vision-capable LLM summaries
+  (see commit `33ee736`).
+- Artifact subsystem (PDF / image / text upload → async LLM
+  summarization → attach to meetings → 3-tier agent retrieval).
+- mnemo memory integration: streaming push + recall at start.
 - Single stateful agent loop replacing the three per-mode
   summarizers — see [ADR-0011](adr/0011-agentic-summarizer-loop.md).
-  Default model: Claude Opus 4.7 (1M context). Mode catalog now
-  includes:
+  Default model: Claude Opus 4.7 (1M context). Mode catalog:
   - `transcript` (raw STT chunks, pass-through, no LLM),
   - `highlights` / `actions` / `open_questions` (agent tool
     emissions),
@@ -31,36 +35,91 @@ The local-first MVP is shipped and in personal-use rotation:
   - `chat` (ask the agent questions during a live meeting; Q+A
     bubble pairs replace each previous exchange — agent's
     conversation history is the context, no separate UI thread).
-- Moment marks and artifact attaches both inject into the agent's
+- Moment marks + artifact attaches inject into the agent's
   conversation history as `[event]` blocks (immediate ack on
   creation, follow-up event when the moment-summary worker
-  completes), so chat questions about a just-snapped moment work
+  completes); chat questions about a just-snapped moment work
   end-to-end.
-- The user's freeform meeting description seeds the agent on
-  first fire as a dedicated `[context]` block, alongside the
-  structured `[meeting]` (LLM-extracted metadata) and `[attached
-artifacts]` blocks — relationships, intent, and expected outcomes
-  the user typed at compose time inform what the agent treats as
-  noteworthy without polluting the metadata table.
-- Anthropic / Bedrock prompt caching enabled on the agent loop. The
-  system prompt and accumulated history reuse from cache on every
-  fire after the first within the 5-minute TTL window; cache reads
-  surface as `cached_input_tokens` in the per-meeting usage rollup.
+- The user's freeform meeting description seeds the agent on first
+  fire as a dedicated `[context]` block alongside structured
+  `[meeting]` (LLM-extracted metadata) and `[attached artifacts]`
+  blocks.
+- Anthropic / Bedrock prompt caching enabled on the agent loop:
+  cache reads surface as `cached_input_tokens` in the per-meeting
+  usage rollup.
 - Per-meeting LLM usage tracked end-to-end (input / output / cached
-  / model id) and persisted to the `meetings` row, surfaced in both
-  the PWA and Mac detail views.
+  / model id) and persisted to the `meetings` row, surfaced in PWA
+  / Mac / mobile detail views.
 - `expand_item` end-to-end via the agent — clicking an item on any
-  client (PWA chevron, glasses ring-tap, Mac chevron) routes a
-  prompt-block kick that produces a 2-3 sentence expansion, with
-  cross-surface auto-expand once the detail flows back via
-  `item_updated`.
-- Even Realities G2 glasses are a first-class display + control
-  surface alongside PWA and Mac: chat-mode flowing-thread layout,
-  list/detail click-to-expand (via simulator-shaped `sysEvent`
-  click routing), denser 80×6 character layout calibrated against
-  the device's fixed-font firmware.
-- Container-shaped server (`docker compose up`) — same image for
-  local dev and any future production host.
+  client routes a prompt-block kick that produces a 2-3 sentence
+  expansion, with cross-surface auto-expand once detail flows back
+  via `item_updated`.
+- Container-shaped server: same Docker image for local dev and a
+  single-VM production deploy via `docker-compose.deploy.yml` +
+  `.env.deploy.example`.
+
+### Mac app (`packages/mac/`, SwiftUI)
+
+- Menu-bar accessory app with floating overlay during meetings.
+  Mode tabs, items list, peak meter, mark-moment, pause/stop.
+- Audio capture: ScreenCaptureKit system audio + mic mixed at 50fps,
+  16kHz mono S16LE PCM streamed over `/audio` WS.
+- Auth0 native PKCE flow with refresh token in Keychain; same
+  tenant the PWA + mobile use.
+- Sparkle auto-update: tagged releases sign the bundle with EdDSA,
+  publish `appcast.xml` to GitHub Releases, app polls daily and
+  prompts the user to install. See `mac-bundle.yml` workflow.
+- Configurable overlay opacity (1–100%) + light/dark theme picker,
+  both persisted in UserDefaults.
+- Even Realities G2 glasses are driven by the Mac OR the PWA
+  (whichever client has the EvenHub bridge active). Chat-mode
+  flowing-thread layout, list/detail click-to-expand (via
+  simulator-shaped `sysEvent` click routing), 80×6 character layout.
+
+### PWA (`packages/pwa/`, TypeScript + Vite)
+
+- Auth0 SPA flow; same tenant.
+- Items mirror with DOM diffing (preserves node identity for
+  unchanged rows so the fade-in animation only plays on append).
+- Meeting browse: master/detail with title/description split,
+  collapsible long-form description, metadata + LLM usage rollup,
+  moments with screenshots, transcript.
+- Drives the Even Realities G2 glasses display via `@evenrealities/even_hub_sdk`.
+
+### Mobile app (`packages/mobile/`, Expo + React Native)
+
+- Native iOS + Android via Expo SDK 51, EAS Build for binaries,
+  EAS Update for OTA JS bundles. See [`MOBILE-PLAN.md`](MOBILE-PLAN.md).
+- Phases 0–5 of MOBILE-PLAN shipped: skeleton + auth + bare meeting
+  flow + audio peak meter + item interactions + history/artifacts
+  browse. Audio PCM streaming, camera-attached moments, moment
+  image rendering, and artifact uploads sit as deferred buckets.
+- Same wire types (hand-synced from `pwa/src/contract.ts`), same
+  Auth0 tenant (shared client_id with the Mac for personal use).
+
+### CI / publish pipeline (`.github/workflows/`)
+
+Four workflows, one per shipping surface:
+
+- `server-image.yml` — Rust → Docker → GHCR, pushed on main + tags.
+- `mac-bundle.yml` — `swift build` → universal `.app` zip → workflow
+  artifact + GitHub Release asset on tag. Sparkle-signed when
+  `SPARKLE_PRIVATE_KEY` secret + `SPARKLE_PUBLIC_KEY` variable are
+  set.
+- `mobile-build.yml` — EAS Build matrixed across `[ios, android]`,
+  produces installable APK / IPA in the EAS dashboard.
+- `mobile-update.yml` — EAS Update for JS-only changes, publishes
+  to the `production` branch automatically on push to main.
+
+Build-time configuration split between GitHub repo variables (Mac +
+server) and EAS env vars (mobile). Documented in
+`.github/workflows/README.md`.
+
+### Deploy
+
+`docker-compose.deploy.yml` + `.env.deploy.example` for single-VM
+deploy (Postgres + server image pulled from GHCR). Update flow on
+the host: `docker compose pull server && up -d`.
 
 The roadmap from here is shaped by personal-use signal. Two forward
 themes, in priority order.
@@ -196,6 +255,29 @@ Not blocking the next phase, but flagged for later resolution.
   of `sysEvent`. Plan: when the G2 lands, run through highlights /
   chat / detail views and confirm. Tune constants in
   `glasses/layout-active-list.ts` if the device cuts mid-line.
+- **Mobile audio PCM streaming.** Phase 3 of MOBILE-PLAN landed mic
+  permission + peak meter only; full PCM frame extraction →
+  resampler → VAD → `/stt` upload was deferred because `expo-audio`
+  doesn't expose per-buffer PCM in its public JS API. Path forward:
+  either a config plugin around `react-native-live-audio-stream`,
+  or a small custom dev-client native module bridging
+  AVAudioEngine. Either unlocks "phone drives a meeting end-to-end."
+  Currently the phone is "control surface + observer" only.
+- **Mobile camera-attached moments.** Tasks 4.5–4.8 of MOBILE-PLAN.
+  Adds `expo-camera`, a bottom-sheet UX (camera / no-image /
+  app-snapshot), JPEG upload to the artifact summarizer path, and
+  long-press shortcut. The vision-LLM moment summarizer already
+  reasons about phone-camera images identically to Mac
+  screenshots — no server-side work.
+- **Mobile moment image rendering.** Task 5.4 of MOBILE-PLAN. Moment
+  screenshots in past-meeting detail need an auth-aware blob fetch
+  (PWA uses `URL.createObjectURL`, RN has no equivalent). Path:
+  `expo-file-system` to download the bytes to a temp file, point
+  `expo-image` at the resulting `file://` URI.
+- **Mobile artifact uploads + attach.** Tasks 5.7–5.11 of
+  MOBILE-PLAN. Per-source pickers (`expo-image-picker`,
+  `expo-document-picker`, paste-text), multi-select attach UI for
+  compose, live-attach during an active meeting.
 - **Rolling-summary compression.** With Opus 4.7's 1M context, a
   meeting can run hours before history exhausts the window. When
   (if) we hit the ceiling: compress the older portion of history

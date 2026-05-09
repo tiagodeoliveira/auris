@@ -33,36 +33,46 @@ pnpm -F @meeting-companion/pwa pack         # → meeting-companion.ehpk
 
 ## Configuration
 
-The PWA reads its server URL, server token, and Soniox API key from
-the EvenHub bridge's local storage with a browser `localStorage`
+The server URL is a build-time constant (`VITE_SERVER_URL`,
+hard-coded into the bundle by Vite — see `src/server-url.ts`).
+Auth0 SPA configuration is also build-time (`VITE_AUTH0_DOMAIN`,
+`VITE_AUTH0_CLIENT_ID`, `VITE_AUTH0_AUDIENCE`).
+
+For local dev, copy `.env.example` to `.env.local` and fill those
+in. Auth0 access + refresh tokens are persisted at runtime via the
+EvenHub bridge's local storage with a browser `localStorage`
 fallback (per [ADR-0003](../../docs/adr/0003-persistence-via-bridge.md)).
-On first run, open Settings (gear icon, top-right) and fill them in.
 
-To skip retyping in development, copy `.env.example` to `.env.local`
-and set the `VITE_DEFAULT_*` variables — the PWA seeds first-run
-defaults from these.
+The login screen mounts before any meeting state. After sign-in,
+the WS auto-connects with the JWT on the query string.
 
-## Manual hardware checklist (Phase 1)
+## Manual hardware checklist (G2 sideload)
 
 1. Sideload to G2: `pnpm -F @meeting-companion/pwa dev:qr`, scan QR in
    the Even Realities companion app.
-2. Verify the idle "NEW MEETING" surface renders.
-3. Tap mic on phone → dictation starts (Soniox transcript fills the
-   textarea live).
-4. Tap mic again → dictation stops; transcript stays editable.
-5. Tap `EXTRACT TAGS` (or Cmd/Ctrl+Enter in the textarea) → metadata
+2. Sign in with Auth0 on first launch.
+3. Verify the idle "NEW MEETING" surface renders.
+4. Tap mic on phone → dictation starts (server-mediated `/stt`
+   transcript fills the textarea live).
+5. Tap mic again → dictation stops; transcript stays editable.
+6. Tap `EXTRACT TAGS` (or Cmd/Ctrl+Enter in the textarea) → metadata
    chips appear in the chip strip.
-6. Edit a chip value, press Enter → confirmed save (no flicker, no
+7. Edit a chip value, press Enter → confirmed save (no flicker, no
    typing erasure).
-7. Tap `START MEETING` → idle compose hides, active surface appears
+8. Tap `START MEETING` → idle compose hides, active surface appears
    (header + memory badge if mnemo populated context + mode tabs +
    items mirror).
-8. Speak; verify transcript items appear within ~1–2 s of sentence
+9. Speak; verify transcript items appear within ~1–2 s of sentence
    boundaries; live in-flight row shows the dim italic interim text.
-9. Wait ~15–20 s; verify highlights / actions / open_questions populate
-   from the LLM summarizers.
-10. Switch modes via tabs; verify items reflect the selected mode.
-11. Tap `STOP` once (armed: "Tap again to confirm"); tap again
+10. Wait ~15–20 s; verify highlights / actions / open_questions
+    populate from the agent loop.
+11. Switch to `SUMMARY` tab; verify the rolling summary appears as a
+    single item.
+12. Switch to `CHAT` tab; type a question, send; verify the agent's
+    reply lands as the assistant bubble in the same Q+A pair.
+13. Switch back to `TRANSCRIPT`; tap an item's chevron; verify a
+    detail expansion arrives.
+14. Tap `STOP` once (armed: "Tap again to confirm"); tap again
     (commits). Verify everything clears.
 
 ### Hardware-specific follow-ups (open)

@@ -129,9 +129,10 @@ has content, sends `extract_metadata` to the server. Becomes
 on success. Cmd/Ctrl+Enter inside the textarea is the keyboard
 shortcut.
 
-**Start Meeting** — full-width rust gradient. Sends `start_meeting`
-with the description but _without_ a `metadata` field, so the server
-preserves whatever's in `state.metadata` (extracted + edited chips).
+**Start Meeting** — full-width primary-blue button. Sends
+`start_meeting` with the description but _without_ a `metadata`
+field, so the server preserves whatever's in `state.metadata`
+(extracted + edited chips).
 
 ### Metadata chips
 
@@ -150,18 +151,32 @@ form modal of earlier iterations is gone.
 and the memory badge (`★ memory · N recalled`) when mnemo recall
 populated context.
 
-**Mode tabs** — four monospace labels: `HIGHLIGHTS · TRANSCRIPT ·
-ACTIONS · QUESTIONS`. Active tab shows a rust underline. Click to
-emit `set_mode`.
+**Mode tabs** — six monospace labels: `HIGHLIGHTS · TRANSCRIPT ·
+ACTIONS · QUESTIONS · SUMMARY · CHAT`. Active tab shows a brand-blue
+underline. Click to emit `set_mode`. Order is server-driven via
+`available_modes`; the labels above are the current default catalog.
 
 **Items mirror** — scrollable list of cards, one per `Item`. Each
 card has: timestamp pill, body text, optional mode-specific meta line
 (owner/due for actions, importance for highlights, kind/context for
-open_questions, speaker for transcript).
+open_questions, speaker for transcript). Each item has a chevron
+that expands to show `detail` (lazy-fetched via `expand_item`).
 
 In transcript mode, when `transcript_interim` is non-empty, a dim
 italic "live row" appears at the bottom of the list with `[ ⋯ ]` for
 its timestamp. Auto-scroll keeps it visible.
+
+**Summary mode** — the agent's running 3-5 sentence rolling summary.
+Single-item Replace strategy on the server side; rendered as one
+prominent card without the items-list affordances.
+
+**Chat mode** — replaces the items list with a chat-pane layout
+(user-bubble + assistant-bubble pair) plus a text input + send
+button at the bottom. Sending fires the `chat` intent; the agent's
+reply lands as the assistant bubble in the same pair. The agent's
+conversation history (stateful per-meeting) is the chat context —
+there is no separate UI thread, so each new question replaces the
+previous Q+A.
 
 ### Stop confirmation
 
@@ -170,12 +185,23 @@ confirm") and commits on second. Prevents accidental data loss for a
 non-undoable action. See ADR-0001 for why this is in-PWA rather than
 on a glasses gesture.
 
+### Login + sign-in
+
+Auth0 SPA flow. Before any meeting state mounts, the login screen
+prompts the user to sign in with the configured Auth0 tenant. On
+success, the access token + refresh token are persisted via
+`bridge.setLocalStorage` (with browser `localStorage` fallback) and
+the WebSocket auto-connects with the JWT on the query string. A
+`prior_context_changed` event subsequently arrives if mnemo recall
+populated the user's context for the active meeting.
+
 ### Settings modal
 
-Reachable via the gear icon in the top bar. Two fields: server URL,
-server token. Persisted to both `bridge.setLocalStorage` and browser
-`localStorage` — read prefers the bridge with `localStorage` as
-fallback. The `WS · BLE` indicator pair updates live based on
+Reachable via the gear icon in the top bar. Shows the signed-in
+identity (email / name / `sub` fallback) and a logout button. The
+server URL is build-time (configured via `VITE_SERVER_URL` /
+`server-url.ts`) and shown read-only so users don't need to fiddle
+with it. The `WS · BLE` indicator pair updates live based on
 `wsStatus` and `bleConnected`.
 
 ### Toasts and errors
@@ -192,7 +218,7 @@ fallback. The `WS · BLE` indicator pair updates live based on
 ## Memory badge
 
 When the server emits a `prior_context_changed` event with non-empty
-counts, the active-meeting header shows a small rust pill:
+counts, the active-meeting header shows a small brand-blue pill:
 
 ```
 ★ memory · N recalled
@@ -222,19 +248,25 @@ Every UI component lives in `packages/pwa/src/ui/` as a `mount<Name>`
 function called once at boot from `ui/index.ts`. They share state via
 the typed `Store<AppState>`.
 
-| File                | Role                                                |
-| ------------------- | --------------------------------------------------- |
-| `top-bar.ts`        | WS / BLE indicators, settings gear. Always visible. |
-| `compose-region.ts` | Idle textarea + mic + Extract Tags.                 |
-| `compose-start.ts`  | Idle Start Meeting button.                          |
-| `header-strip.ts`   | Active title + timer + memory badge.                |
-| `kv-editor.ts`      | Metadata chip strip.                                |
-| `mode-tabs.ts`      | Active mode selector.                               |
-| `items-mirror.ts`   | Active items list with live transcript row.         |
-| `cta-region.ts`     | Active Pause/Stop / Listening status.               |
-| `settings-modal.ts` | Server URL / token form.                            |
-| `toast.ts`          | Bottom-right transient messages.                    |
-| `error-overlay.ts`  | Full-screen unrecoverable error.                    |
+| File                      | Role                                                                     |
+| ------------------------- | ------------------------------------------------------------------------ |
+| `login-screen.ts`         | Auth0 sign-in gate. Mounted first; hides when `auth` slice is populated. |
+| `top-bar.ts`              | WS / BLE indicators, history, artifacts, settings gear. Always visible.  |
+| `compose-region.ts`       | Idle textarea + mic + Extract Tags.                                      |
+| `compose-audio-source.ts` | Idle audio-source picker (filtered by `audio_capture` device list).      |
+| `compose-start.ts`        | Idle Start Meeting button.                                               |
+| `header-strip.ts`         | Active title + timer + memory badge.                                     |
+| `kv-editor.ts`            | Metadata chip strip.                                                     |
+| `mode-tabs.ts`            | Active mode selector.                                                    |
+| `items-mirror.ts`         | Active items list with live transcript row + item-detail expand.         |
+| `chat-input.ts`           | Active chat-mode input + send button.                                    |
+| `cta-region.ts`           | Active Pause/Stop / Listening / Mark-Moment.                             |
+| `settings-modal.ts`       | Account (signed-in identity) + logout. Server URL is read-only.          |
+| `meetings-modal.ts`       | History browse: master/detail, transcript, moments, LLM usage.           |
+| `artifacts-modal.ts`      | Artifact upload + manage.                                                |
+| `artifact-picker.ts`      | Multi-select attach picker for compose / live meeting.                   |
+| `toast.ts`                | Bottom-right transient messages.                                         |
+| `error-overlay.ts`        | Full-screen unrecoverable error.                                         |
 
 ### Adding a new screen state
 
