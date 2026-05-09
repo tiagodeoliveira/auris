@@ -9,12 +9,10 @@
     "assetBundlePatterns": ["**/*"],
     "ios": {
       "supportsTablet": false,
-      "bundleIdentifier": "sh.tiago.meetingcompanion",
-      "newArchEnabled": true
+      "bundleIdentifier": "sh.tiago.meetingcompanion"
     },
     "android": {
-      "package": "sh.tiago.meetingcompanion",
-      "newArchEnabled": true
+      "package": "sh.tiago.meetingcompanion"
     },
     "plugins": ["expo-router"],
     "experiments": {

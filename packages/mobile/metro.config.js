@@ -1,8 +1,15 @@
-// Metro config — monorepo-aware. The repo uses pnpm workspaces with
-// no hoisting; Metro by default only walks node_modules from the
-// project root upward, which misses both `packages/*/node_modules`
-// and the workspace root's `node_modules`. We extend the watch
-// folders + module-resolution paths explicitly.
+// Metro config — monorepo-aware.
+//
+// We use `node-linker=hoisted` in the workspace-root .npmrc, which
+// produces a flat node_modules layout (yarn / npm-classic style).
+// That means Metro's default hierarchical lookup just works — we
+// don't need to override `disableHierarchicalLookup` (Expo's
+// doctor flags that override as dangerous, and rightly so once
+// hoisting handles resolution).
+//
+// What we DO still customize: watch the entire monorepo so changes
+// in workspace siblings (e.g. a future `packages/shared-ts`) trigger
+// Fast Refresh inside the mobile app.
 const { getDefaultConfig } = require("expo/metro-config");
 const path = require("path");
 
@@ -10,18 +17,6 @@ const projectRoot = __dirname;
 const monorepoRoot = path.resolve(projectRoot, "../..");
 
 const config = getDefaultConfig(projectRoot);
-
-// Watch the entire monorepo so changes in shared packages (e.g.
-// `packages/shared-ts`, when extracted per MOBILE-PLAN §3) trigger
-// a Fast Refresh inside the mobile app.
 config.watchFolders = [monorepoRoot];
-
-// pnpm doesn't hoist by default. Metro needs both the package's own
-// node_modules and the workspace root's to resolve every dep.
-config.resolver.nodeModulesPaths = [
-  path.resolve(projectRoot, "node_modules"),
-  path.resolve(monorepoRoot, "node_modules"),
-];
-config.resolver.disableHierarchicalLookup = true;
 
 module.exports = config;
