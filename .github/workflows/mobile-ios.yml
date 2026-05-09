@@ -99,6 +99,15 @@ jobs:
           # default to the simulator-arch profile so we don't burn
           # EAS quota on real-device builds without intent.
           PROFILE: ${{ inputs.profile || 'preview-simulator' }}
+          # Build-time configuration baked into the JS bundle. Expo
+          # inlines every `process.env.EXPO_PUBLIC_*` reference at
+          # bundle time, so these become string literals in the
+          # binary. Empty values land as empty strings; the app's
+          # config.ts module guards on `auth0Configured`.
+          EXPO_PUBLIC_SERVER_URL: ${{ vars.MEETING_COMPANION_SERVER_URL }}
+          EXPO_PUBLIC_AUTH0_DOMAIN: ${{ vars.AUTH0_DOMAIN }}
+          EXPO_PUBLIC_AUTH0_MOBILE_CLIENT_ID: ${{ vars.AUTH0_MOBILE_CLIENT_ID }}
+          EXPO_PUBLIC_AUTH0_API_AUDIENCE: ${{ vars.AUTH0_API_AUDIENCE }}
         run: |
           eas build \
             --platform ios \

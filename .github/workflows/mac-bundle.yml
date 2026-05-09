@@ -71,10 +71,17 @@ jobs:
         env:
           VERSION: ${{ steps.version.outputs.version }}
           BUILD: ${{ steps.version.outputs.build }}
-          # Embedded into Info.plist by envsubst. Repo variable, not
-          # secret — public keys aren't sensitive. If unset the app
-          # ships with an empty SUPublicEDKey and Sparkle fail-closes
-          # on every update attempt (won't install anything).
+          # Embedded into Info.plist by envsubst. All are repo
+          # variables (not secrets) — these values get baked into
+          # the bundle anyway, secrecy is meaningless. If a value is
+          # unset the corresponding Info.plist key gets an empty
+          # string; the app's runtime code falls back to its coded
+          # defaults (localhost server, dev Auth0 tenant).
+          MEETING_COMPANION_SERVER_URL: ${{ vars.MEETING_COMPANION_SERVER_URL }}
+          AUTH0_DOMAIN: ${{ vars.AUTH0_DOMAIN }}
+          AUTH0_MAC_CLIENT_ID: ${{ vars.AUTH0_MAC_CLIENT_ID }}
+          AUTH0_API_AUDIENCE: ${{ vars.AUTH0_API_AUDIENCE }}
+          # Sparkle public key — fail-closes auto-update if unset.
           SPARKLE_PUBLIC_KEY: ${{ vars.SPARKLE_PUBLIC_KEY }}
         run: |
           BUNDLE="MeetingCompanion.app"

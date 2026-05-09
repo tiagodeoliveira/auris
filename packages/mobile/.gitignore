@@ -16,3 +16,5 @@ expo-env.d.ts
 
 .env
 .env.local
+# `.env.example` is committed — it documents the variable surface.
+!.env.example

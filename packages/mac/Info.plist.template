@@ -69,6 +69,24 @@
     <key>NSCameraUsageDescription</key>
     <string>Attach a photo to a meeting moment.</string>
 
+    <!-- ────────────  Build-time environment values  ────────────
+         All baked in from repo variables via envsubst in
+         mac-bundle.yml. Empty strings fall back to defaults coded
+         into AppSettings / Auth0Client (i.e. `swift run` keeps
+         working without any env config). See
+         .github/workflows/README.md for the full variable surface. -->
+    <key>MeetingCompanionServerURL</key>
+    <string>${MEETING_COMPANION_SERVER_URL}</string>
+
+    <key>Auth0Domain</key>
+    <string>${AUTH0_DOMAIN}</string>
+
+    <key>Auth0ClientID</key>
+    <string>${AUTH0_MAC_CLIENT_ID}</string>
+
+    <key>Auth0Audience</key>
+    <string>${AUTH0_API_AUDIENCE}</string>
+
     <!-- ────────────  Sparkle auto-update  ────────────
          The bundle reads SUFeedURL on a schedule, parses the appcast
          XML it returns, verifies signed enclosures with SUPublicEDKey,

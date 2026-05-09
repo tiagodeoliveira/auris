@@ -21,16 +21,24 @@ enum OverlayTheme: String, CaseIterable, Identifiable {
 
 @Observable
 final class AppSettings {
-    /// WebSocket server URL. Hardcoded for now — future builds will
-    /// substitute this at compile time (e.g., dev vs prod targets each
-    /// shipping their own constant baked into the binary). The user
-    /// shouldn't be configuring this in-app.
+    /// Local-dev fallback when no `MeetingCompanionServerURL` is
+    /// embedded in the bundle's Info.plist. Used by `swift run`
+    /// where there's no Info.plist; CI builds always have the key
+    /// populated by envsubst from the `MEETING_COMPANION_SERVER_URL`
+    /// repo variable (see .github/workflows/mac-bundle.yml).
     static let serverURLDefault = "ws://localhost:7331"
 
-    /// Read-only convenience so call sites stay readable
-    /// (`settings.serverURL`) and we can swap to a per-build value
-    /// without touching every caller.
-    var serverURL: String { Self.serverURLDefault }
+    /// WebSocket server URL. Reads the bundled Info.plist value
+    /// first; falls back to localhost so unbundled `swift run`
+    /// development keeps working without any env config.
+    var serverURL: String {
+        if let bundled = Bundle.main.object(forInfoDictionaryKey: "MeetingCompanionServerURL") as? String,
+           !bundled.isEmpty
+        {
+            return bundled
+        }
+        return Self.serverURLDefault
+    }
 
     /// Visual theme for the meeting overlay. Drives the panel/text
     /// palette via `Color(light:dark:)`-adaptive tokens in `MCTheme`,

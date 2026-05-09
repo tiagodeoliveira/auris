@@ -24,6 +24,34 @@ ships JS-only updates over-the-air to already-built mobile binaries.
 ## Required secrets / variables
 
 Configure under repo **Settings → Secrets and variables → Actions**.
+The workflows reference repo-level entries only — no environments
+needed (single deployment target per surface).
+
+### Quick-reference table
+
+`secret` = masked in logs, accessed via `${{ secrets.NAME }}`.
+`variable` = visible in logs, accessed via `${{ vars.NAME }}`. Auth0
+client IDs / domains / audiences are _embedded in the public binary
+anyway_, so they live as variables rather than secrets — secrecy is
+meaningless once shipped.
+
+| Name                           | Kind     | Used by             | Purpose                                                                         |
+| ------------------------------ | -------- | ------------------- | ------------------------------------------------------------------------------- |
+| `GITHUB_TOKEN`                 | built-in | server-image.yml    | GHCR push auth. No setup needed.                                                |
+| `EXPO_TOKEN`                   | secret   | mobile-{ios,update} | EAS Build + EAS Update access token. Generate with `eas account:tokens:create`. |
+| `SPARKLE_PRIVATE_KEY`          | secret   | mac-bundle.yml      | EdDSA private key signing OTA update bundles.                                   |
+| `SPARKLE_PUBLIC_KEY`           | variable | mac-bundle.yml      | Matching public key, embedded in Info.plist via envsubst.                       |
+| `MEETING_COMPANION_SERVER_URL` | variable | mac + mobile        | WebSocket endpoint the bundled apps connect to (`wss://...`).                   |
+| `AUTH0_DOMAIN`                 | variable | mac + mobile        | Auth0 tenant host (e.g., `dev-xyz.us.auth0.com`).                               |
+| `AUTH0_API_AUDIENCE`           | variable | mac + mobile        | Auth0 API identifier (e.g., `https://meeting-companion.api`).                   |
+| `AUTH0_MAC_CLIENT_ID`          | variable | mac-bundle.yml      | Client ID of the **Native** Auth0 application registered for the Mac.           |
+| `AUTH0_MOBILE_CLIENT_ID`       | variable | mobile-{ios,update} | Client ID of the **Native** Auth0 application registered for mobile.            |
+
+Missing values are not fatal: bundles ship with empty strings for
+those keys, and the apps fall back to compiled-in defaults
+(localhost server, dev Auth0 tenant). That keeps `swift run` /
+`expo start` development zero-configuration while letting CI swap
+in environment-specific values without code changes.
 
 ### `EXPO_TOKEN` (secret) — for `mobile-ios.yml`
 

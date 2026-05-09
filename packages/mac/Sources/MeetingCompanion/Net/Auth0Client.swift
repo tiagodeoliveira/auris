@@ -48,13 +48,25 @@ final class Auth0Client: NSObject {
         }
     }
 
-    // Auth0 dashboard config — baked in for the dev tenant. Move to
-    // env-injected build settings before shipping anything user-facing.
-    private let domain = "dev-jrva0wzk3qkdxcar.us.auth0.com"
-    private let clientId = "YDK0XoDAIRhp2uORlfk8TijQkcqRzjsi"
-    private let audience = "https://meeting-companion.api"
+    // Auth0 dashboard config. CI builds populate Info.plist via
+    // envsubst from the AUTH0_DOMAIN / AUTH0_MAC_CLIENT_ID /
+    // AUTH0_API_AUDIENCE repo variables; `swift run` development
+    // falls back to the hardcoded dev-tenant values.
+    private let domain = Auth0Client.bundled("Auth0Domain") ?? "dev-jrva0wzk3qkdxcar.us.auth0.com"
+    private let clientId = Auth0Client.bundled("Auth0ClientID") ?? "YDK0XoDAIRhp2uORlfk8TijQkcqRzjsi"
+    private let audience = Auth0Client.bundled("Auth0Audience") ?? "https://meeting-companion.api"
     private let redirectScheme = "meetingcompanion"
     private var redirectURI: String { "\(redirectScheme)://callback" }
+
+    /// Read a non-empty string from `Info.plist`. Returns nil for
+    /// missing keys AND for empty values — covers both "not bundled"
+    /// (local dev) and "bundled but envsubst saw an empty repo var".
+    private static func bundled(_ key: String) -> String? {
+        guard let v = Bundle.main.object(forInfoDictionaryKey: key) as? String,
+              !v.isEmpty
+        else { return nil }
+        return v
+    }
 
     private enum Keys {
         static let refreshToken = "meetingCompanion.auth.refreshToken"
