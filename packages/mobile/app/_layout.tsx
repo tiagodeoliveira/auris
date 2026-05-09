@@ -1,12 +1,35 @@
-// Root layout. Wraps the whole app in a Stack so we can push a
-// modal sign-in screen above the tab bar when there's no active
-// session. Auth gating itself lands in Phase 1 (MOBILE-PLAN §6.1);
-// for now both the (tabs) group and the login screen are reachable.
+// Root layout. Bootstraps auth on first mount and gates the tab
+// surface behind a signed-in identity. While auth is bootstrapping
+// we render nothing (avoids the "flash login → flash compose"
+// double-render every time the app starts with a valid refresh
+// token persisted).
 
-import { Stack } from "expo-router";
+import { Redirect, Stack } from "expo-router";
 import { StatusBar } from "expo-status-bar";
+import { useEffect } from "react";
+
+import { useAppStore } from "@/src/store";
 
 export default function RootLayout() {
+  const bootstrap = useAppStore((s) => s.bootstrap);
+  const authBootstrapped = useAppStore((s) => s.authBootstrapped);
+  const identity = useAppStore((s) => s.identity);
+  const connect = useAppStore((s) => s.connect);
+
+  useEffect(() => {
+    void bootstrap();
+  }, [bootstrap]);
+
+  // Auto-connect the WS once auth lands. The store's connect() is
+  // idempotent — calling again on identity changes is fine.
+  useEffect(() => {
+    if (identity) connect();
+  }, [identity, connect]);
+
+  if (!authBootstrapped) {
+    return null;
+  }
+
   return (
     <>
       <StatusBar style="auto" />
@@ -14,6 +37,7 @@ export default function RootLayout() {
         <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
         <Stack.Screen name="login" options={{ presentation: "modal", title: "Sign in" }} />
       </Stack>
+      {!identity && <Redirect href="/login" />}
     </>
   );
 }
