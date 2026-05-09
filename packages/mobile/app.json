@@ -18,6 +18,12 @@
     "plugins": ["expo-router"],
     "experiments": {
       "typedRoutes": true
-    }
+    },
+    "extra": {
+      "eas": {
+        "projectId": "eab5beef-bbaa-4517-9efc-498eb552cbb6"
+      }
+    },
+    "owner": "tiagodeoliveira"
   }
 }
