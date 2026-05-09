@@ -116,7 +116,11 @@ final class WebSocketClient {
     /// `serverURL` + a freshly-fetched token. Called both from
     /// `connect()` and from the backoff loop.
     private func openSocket() {
-        guard let serverURL, let provider = tokenProvider else { return }
+        guard let serverURL, let provider = tokenProvider else {
+            print("[WebSocketClient] openSocket() skipped — serverURL or tokenProvider not set")
+            return
+        }
+        print("[WebSocketClient] connecting to \(serverURL)")
         state = .connecting
         Task { [weak self] in
             guard let self else { return }
@@ -135,10 +139,17 @@ final class WebSocketClient {
                 return
             }
             guard let url = Self.buildURL(serverURL: serverURL, token: token) else {
+                print(
+                    "[WebSocketClient] invalid server URL: '\(serverURL)' — must be ws:// or wss://"
+                )
                 self.state = .error("Invalid server URL.")
                 self.shouldAutoReconnect = false  // bad config — no point retrying
                 return
             }
+            // Log the final URL with the token redacted so the user
+            // can confirm the host/port they're hitting without
+            // leaking the access token.
+            print("[WebSocketClient] dialing \(Self.redactToken(url))")
             let task = URLSession.shared.webSocketTask(with: url)
             self.task = task
             task.resume()
@@ -146,6 +157,18 @@ final class WebSocketClient {
                 await self?.runReceiveLoop(task: task)
             }
         }
+    }
+
+    /// Strip the token query parameter from a URL for logging.
+    /// Returns a string that's safe to print without leaking a JWT.
+    private static func redactToken(_ url: URL) -> String {
+        guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+            return url.absoluteString
+        }
+        components.queryItems = components.queryItems?.map { item in
+            item.name == "token" ? URLQueryItem(name: "token", value: "<redacted>") : item
+        }
+        return components.url?.absoluteString ?? url.absoluteString
     }
 
     /// Send an `Encodable` intent as a JSON text frame. Safe to call
@@ -196,17 +219,24 @@ final class WebSocketClient {
                 if state != .connected {
                     state = .connected
                     nextBackoff = Self.backoffBase  // healthy traffic resets the cooldown
+                    print("[WebSocketClient] connected")
                     onConnected?()
                 }
                 handleMessage(message)
             } catch {
                 if Task.isCancelled { return }
                 if shouldAutoReconnect {
+                    print(
+                        "[WebSocketClient] dropped: \(error.localizedDescription); reconnecting in \(nextBackoff)s"
+                    )
                     Self.log.warning(
                         "WS dropped (\(error.localizedDescription, privacy: .public)); reconnecting in \(self.nextBackoff, privacy: .public)s"
                     )
                     scheduleReconnect()
                 } else {
+                    print(
+                        "[WebSocketClient] dropped (no reconnect): \(error.localizedDescription)"
+                    )
                     state = .error(error.localizedDescription)
                 }
                 return

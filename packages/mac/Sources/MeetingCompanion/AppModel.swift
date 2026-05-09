@@ -295,6 +295,7 @@ final class AppModel {
     /// into the provider on every (re)connect, so an expired access
     /// token is silently refreshed before the new socket dials in.
     func connect() {
+        print("[AppModel] connect() — serverURL=\(settings.serverURL) signedIn=\(auth0.isSignedIn)")
         webSocket.connect(
             serverURL: settings.serverURL,
             tokenProvider: { [auth0] in
