@@ -86,11 +86,30 @@ jobs:
         run: |
           BUNDLE="MeetingCompanion.app"
           rm -rf "$BUNDLE"
-          mkdir -p "$BUNDLE/Contents/MacOS" "$BUNDLE/Contents/Resources"
+          mkdir -p "$BUNDLE/Contents/MacOS" "$BUNDLE/Contents/Resources" "$BUNDLE/Contents/lib"
           # SwiftPM with multiple --arch produces a universal binary
           # under .build/apple/Products/Release.
           cp .build/apple/Products/Release/MeetingCompanion "$BUNDLE/Contents/MacOS/"
           envsubst < Info.plist.template > "$BUNDLE/Contents/Info.plist"
+
+          # Sparkle ships as a binary-target xcframework. The linked
+          # binary's rpath is `@executable_path/../lib`, so we copy
+          # the framework into Contents/lib/ to match (rather than
+          # the more conventional Contents/Frameworks/, which would
+          # require install_name_tool surgery on the rpath). Find
+          # it dynamically so SwiftPM artifact-path changes between
+          # toolchain versions don't break the bundle step.
+          SPARKLE_FW=$(find .build -path "*/Sparkle.framework" -type d -maxdepth 8 2>/dev/null | head -1)
+          if [[ -z "$SPARKLE_FW" ]]; then
+            echo "::error::Sparkle.framework not found under .build/. SwiftPM artifact layout may have changed."
+            exit 1
+          fi
+          echo "Copying Sparkle.framework from: $SPARKLE_FW"
+          # `cp -R` follows symlinks; Sparkle's .framework is a
+          # bundle-of-symlinks (Versions/A → Current style), so use
+          # `ditto` which preserves symlink + bundle metadata
+          # correctly.
+          ditto "$SPARKLE_FW" "$BUNDLE/Contents/lib/Sparkle.framework"
           # `ditto -c -k --keepParent` preserves the bundle's directory
           # structure inside the zip (matching what users get from
           # GitHub Release downloads).
