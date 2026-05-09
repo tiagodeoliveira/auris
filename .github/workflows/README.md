@@ -3,16 +3,16 @@
 Four workflows. Three publish to a different shipping surface; one
 ships JS-only updates over-the-air to already-built mobile binaries.
 
-| File                | Surface         | Output                                                          |
-| ------------------- | --------------- | --------------------------------------------------------------- |
-| `server-image.yml`  | Rust server     | Docker image at `ghcr.io/<owner>/meeting-companion-server`      |
-| `mac-bundle.yml`    | SwiftUI Mac app | Unsigned `.app` zip as workflow artifact + Release asset on tag |
-| `mobile-ios.yml`    | Expo iOS binary | EAS Build (cloud) — artifact in EAS dashboard                   |
-| `mobile-update.yml` | Expo JS bundle  | EAS Update — pushed to deployed binaries on next launch         |
+| File                | Surface            | Output                                                                       |
+| ------------------- | ------------------ | ---------------------------------------------------------------------------- |
+| `server-image.yml`  | Rust server        | Docker image at `ghcr.io/<owner>/meeting-companion-server`                   |
+| `mac-bundle.yml`    | SwiftUI Mac app    | Unsigned `.app` zip as workflow artifact + Release asset on tag              |
+| `mobile-build.yml`  | Expo iOS + Android | EAS Build (cloud), matrix over `[ios, android]` — artifacts in EAS dashboard |
+| `mobile-update.yml` | Expo JS bundle     | EAS Update — pushed to deployed binaries on next launch                      |
 
 ## When to rebuild vs. update (mobile)
 
-- **Rebuild (`mobile-ios.yml`)** — needed when native code or native
+- **Rebuild (`mobile-build.yml`)** — needed when native code or native
   config changes: new native module, `app.json` permissions /
   plugins, `eas.json` profiles, anything under `ios/` or `android/`.
   ~25 minutes; new binary lands in TestFlight / EAS dashboard.
@@ -176,7 +176,7 @@ Apple Developer enrollment. Real-device builds (`preview` or
      Flip to **private** under **Packages → meeting-companion-server
      → Package settings**.
 
-2. **EAS / mobile-ios.yml**
+2. **EAS / mobile-build.yml**
    - `pnpm dlx eas-cli login` (one-time, locally).
    - `cd packages/mobile && pnpm dlx eas-cli init` — registers the
      project on Expo's side and writes `extra.eas.projectId` into
@@ -187,6 +187,19 @@ Apple Developer enrollment. Real-device builds (`preview` or
      table above (one `eas env:create` per name per environment).
      Without them the bundle ships with empty defaults and falls
      back to localhost / unconfigured Auth0.
+   - **Per platform** (run once each, when you're ready to build for
+     real devices):
+     - `eas credentials --platform ios` — generates the iOS
+       Distribution cert + provisioning profile. Requires an Apple
+       Developer Program membership AND device UDIDs registered
+       via `eas device:create`.
+     - `eas credentials --platform android` — generates the Android
+       upload keystore. No paid account needed; Expo stores the
+       keystore in their vault. **DO NOT lose this keystore** —
+       Android requires every update to be signed with the same
+       one, and there's no recovery if it's lost. Export a backup
+       via the same command (option "Download credentials") and
+       stash it somewhere safe (1Password, etc.).
 
 3. **EAS Update / mobile-update.yml** (after step 2)
    - `cd packages/mobile && pnpm dlx eas-cli update:configure` — adds
@@ -228,7 +241,7 @@ itself is in the path filter so editing the workflow re-triggers it.
 - `server-image.yml`: `packages/server/**`, `Cargo.{toml,lock}`,
   `Dockerfile`, this workflow file.
 - `mac-bundle.yml`: `packages/mac/**`, this workflow file.
-- `mobile-ios.yml`: `packages/mobile/**`, this workflow file.
+- `mobile-build.yml`: `packages/mobile/**`, this workflow file.
 - `mobile-update.yml`: `packages/mobile/**` excluding native config
   paths (`app.json`, `eas.json`, `ios/`, `android/`) — those need a
   rebuild, not an OTA. Workflow file is in scope so editing the

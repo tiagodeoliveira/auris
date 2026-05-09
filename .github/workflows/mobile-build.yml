@@ -1,28 +1,17 @@
-# Build the iOS app via EAS Build (Expo's cloud build service).
+# Build the mobile app via EAS Build (Expo's cloud build service).
+# Matrixed across [ios, android] so a single workflow file covers
+# both platforms; on push events both fire in parallel, on
+# workflow_dispatch the operator picks one (or both).
 #
-# Default profile: `preview-simulator` — produces a simulator-arch
-# `.app` bundle that doesn't require Apple Developer credentials and
-# downloads from the EAS dashboard. Switch to `preview` (real-device
-# unsigned) or `production` (signed) once an Apple Developer account
-# is enrolled and Apple credentials are linked to the EAS project.
+# Default profile on push: `preview-simulator` for iOS, `preview` for
+# Android (no equivalent of "simulator-only" on Android — emulator
+# images run real APKs). Switch via workflow_dispatch inputs.
 #
-# Required secrets:
-#   - EXPO_TOKEN : `eas-cli` access token; create with
-#     `eas account:tokens:create` on a logged-in machine, then add to
-#     the repo as a secret named `EXPO_TOKEN`.
-#
-# First-time project setup (one-time, locally):
-#   1. `pnpm dlx eas-cli login`
-#   2. `cd packages/mobile && pnpm dlx eas-cli init`
-#   3. Commit the `eas.json` already in this repo + the `extra.eas.projectId`
-#      that `eas init` writes into `app.json`.
-#
-# `--no-wait` returns as soon as the build is queued; the artifact URL
-# lands in the EAS dashboard. Switch to `--wait` if you want the
-# workflow to block until the build finishes (~20-30 min) and surface
-# the URL as a step output.
+# Required secrets: EXPO_TOKEN. See .github/workflows/README.md for
+# first-time setup of the iOS + Android keystores via
+# `eas credentials --platform <ios|android>`.
 
-name: Mobile iOS
+name: Mobile build
 
 on:
   push:
@@ -30,17 +19,26 @@ on:
     tags: ["v*"]
     paths:
       - "packages/mobile/**"
-      - ".github/workflows/mobile-ios.yml"
+      - ".github/workflows/mobile-build.yml"
   pull_request:
     paths:
       - "packages/mobile/**"
-      - ".github/workflows/mobile-ios.yml"
+      - ".github/workflows/mobile-build.yml"
   workflow_dispatch:
     inputs:
+      platform:
+        description: "Platform(s) to build"
+        required: false
+        default: "all"
+        type: choice
+        options:
+          - all
+          - ios
+          - android
       profile:
         description: "EAS build profile"
         required: false
-        default: "preview-simulator"
+        default: "preview"
         type: choice
         options:
           - development
@@ -54,6 +52,12 @@ env:
 jobs:
   build:
     runs-on: ubuntu-latest
+    strategy:
+      # Don't bail one platform when the other fails — independent
+      # builds shouldn't cancel each other.
+      fail-fast: false
+      matrix:
+        platform: ${{ fromJSON(inputs.platform == 'ios' && '["ios"]' || inputs.platform == 'android' && '["android"]' || '["ios","android"]') }}
     env:
       EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
     steps:
@@ -104,10 +108,13 @@ jobs:
         if: steps.preflight.outputs.configured == 'true' && github.event_name != 'pull_request'
         working-directory: packages/mobile
         env:
-          # workflow_dispatch carries `inputs.profile`; push events
-          # default to the simulator-arch profile so we don't burn
-          # EAS quota on real-device builds without intent.
-          PROFILE: ${{ inputs.profile || 'preview-simulator' }}
+          PLATFORM: ${{ matrix.platform }}
+          # Per-platform default profile: iOS gets the simulator
+          # variant on push so we don't burn quota on Apple-Developer-
+          # gated real-device builds; Android has no simulator-only
+          # equivalent (emulators run real APKs), so it goes to
+          # `preview`. workflow_dispatch can override either.
+          PROFILE: ${{ inputs.profile || (matrix.platform == 'ios' && 'preview-simulator' || 'preview') }}
         run: |
           # `EXPO_PUBLIC_*` build-time config (server URL, Auth0
           # domain / client_id / audience) lives in EAS environment
@@ -116,7 +123,7 @@ jobs:
           # EAS injects them into every build queued from any
           # machine. See .github/workflows/README.md.
           eas build \
-            --platform ios \
+            --platform "$PLATFORM" \
             --profile "$PROFILE" \
             --non-interactive \
             --no-wait
@@ -125,7 +132,9 @@ jobs:
         if: steps.preflight.outputs.configured == 'true' && github.event_name == 'pull_request'
         working-directory: packages/mobile
         run: |
+          # Run typecheck once per matrix platform — cheap and catches
+          # platform-specific TS issues (e.g., an iOS-only API used in
+          # shared code). `eas build:configure` validates eas.json on
+          # the active platform without queueing a real build.
           pnpm exec tsc --noEmit
-          # Validate eas.json schema doesn't drift on PRs without
-          # spending an EAS build.
-          eas build:configure --platform ios --non-interactive || true
+          eas build:configure --platform "${{ matrix.platform }}" --non-interactive || true
