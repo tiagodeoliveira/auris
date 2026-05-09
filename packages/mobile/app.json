@@ -1,0 +1,23 @@
+{
+  "expo": {
+    "name": "Meeting Companion",
+    "slug": "meeting-companion-mobile",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "scheme": "meetingcompanion",
+    "userInterfaceStyle": "automatic",
+    "newArchEnabled": true,
+    "assetBundlePatterns": ["**/*"],
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "sh.tiago.meetingcompanion"
+    },
+    "android": {
+      "package": "sh.tiago.meetingcompanion"
+    },
+    "plugins": ["expo-router"],
+    "experiments": {
+      "typedRoutes": true
+    }
+  }
+}
