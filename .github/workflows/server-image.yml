@@ -34,6 +34,13 @@ on:
       - ".github/workflows/server-image.yml"
   workflow_dispatch:
 
+# Opt every JavaScript action in this workflow into Node 24 to clear
+# the "Node.js 20 actions are deprecated" warnings. GitHub forces
+# Node 24 for everyone on 2026-06-02 anyway; flipping it now means
+# we'd see incompatibilities early rather than on the deadline.
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   build:
     name: Build${{ github.event_name == 'pull_request' && '' || ' & push' }}

@@ -22,6 +22,9 @@ on:
       - ".github/workflows/mac-bundle.yml"
   workflow_dispatch:
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   build:
     # macos-15 ships Xcode 16, which carries the macOS 15 SDK that
