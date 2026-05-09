@@ -74,6 +74,12 @@ jobs:
           cache: pnpm
 
       - if: steps.preflight.outputs.configured == 'true'
+        # Install from inside packages/mobile/ so the local .npmrc
+        # (node-linker=hoisted) takes effect — Expo's CLI needs a
+        # hoisted node_modules to resolve transitive deps like
+        # expo-asset that pnpm's strict isolation otherwise hides.
+        # Workspace root's pnpm-lock.yaml is still respected.
+        working-directory: packages/mobile
         run: pnpm install --frozen-lockfile
 
       - if: steps.preflight.outputs.configured == 'true'
