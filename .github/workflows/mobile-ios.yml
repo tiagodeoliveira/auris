@@ -1,0 +1,105 @@
+# Build the iOS app via EAS Build (Expo's cloud build service).
+#
+# Default profile: `preview-simulator` — produces a simulator-arch
+# `.app` bundle that doesn't require Apple Developer credentials and
+# downloads from the EAS dashboard. Switch to `preview` (real-device
+# unsigned) or `production` (signed) once an Apple Developer account
+# is enrolled and Apple credentials are linked to the EAS project.
+#
+# Required secrets:
+#   - EXPO_TOKEN : `eas-cli` access token; create with
+#     `eas account:tokens:create` on a logged-in machine, then add to
+#     the repo as a secret named `EXPO_TOKEN`.
+#
+# First-time project setup (one-time, locally):
+#   1. `pnpm dlx eas-cli login`
+#   2. `cd packages/mobile && pnpm dlx eas-cli init`
+#   3. Commit the `eas.json` already in this repo + the `extra.eas.projectId`
+#      that `eas init` writes into `app.json`.
+#
+# `--no-wait` returns as soon as the build is queued; the artifact URL
+# lands in the EAS dashboard. Switch to `--wait` if you want the
+# workflow to block until the build finishes (~20-30 min) and surface
+# the URL as a step output.
+
+name: Mobile iOS
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+    paths:
+      - "packages/mobile/**"
+      - ".github/workflows/mobile-ios.yml"
+  pull_request:
+    paths:
+      - "packages/mobile/**"
+      - ".github/workflows/mobile-ios.yml"
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: "EAS build profile"
+        required: false
+        default: "preview-simulator"
+        type: choice
+        options:
+          - development
+          - preview-simulator
+          - preview
+          - production
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Guard on EXPO_TOKEN presence
+        if: github.event_name != 'pull_request'
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        run: |
+          if [[ -z "$EXPO_TOKEN" ]]; then
+            echo "::error::EXPO_TOKEN is not set. See .github/workflows/README.md."
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - uses: expo/expo-github-action@v8
+        with:
+          eas-version: latest
+          token: ${{ secrets.EXPO_TOKEN }}
+
+      - name: EAS build (queue, do not wait)
+        if: github.event_name != 'pull_request'
+        working-directory: packages/mobile
+        env:
+          # workflow_dispatch carries `inputs.profile`; push events
+          # default to the simulator-arch profile so we don't burn
+          # EAS quota on real-device builds without intent.
+          PROFILE: ${{ inputs.profile || 'preview-simulator' }}
+        run: |
+          eas build \
+            --platform ios \
+            --profile "$PROFILE" \
+            --non-interactive \
+            --no-wait
+
+      - name: Lint-only on PRs
+        if: github.event_name == 'pull_request'
+        working-directory: packages/mobile
+        run: |
+          pnpm exec tsc --noEmit
+          # Validate eas.json schema doesn't drift on PRs without
+          # spending an EAS build.
+          eas build:configure --platform ios --non-interactive || true

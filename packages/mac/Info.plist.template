@@ -1,0 +1,72 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Info.plist for the Meeting Companion menu-bar app. Used by the
+  CI bundling step (.github/workflows/mac-bundle.yml) to wrap the
+  SwiftPM-built executable into a `.app` structure.
+
+  `${VERSION}` and `${BUILD}` are filled in by `envsubst` during the
+  workflow — VERSION is the semver-ish marketing version (from the
+  git tag, or `0.1.0-<sha>` on main pushes) and BUILD is the
+  GitHub Actions run number.
+
+  Permission usage descriptions are required for the OS to surface
+  the runtime prompts; without them the corresponding APIs return
+  immediate denial. ScreenCaptureKit / microphone use the strings
+  in NSScreenCapture* / NSMicrophoneUsageDescription respectively.
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>en</string>
+
+    <key>CFBundleExecutable</key>
+    <string>MeetingCompanion</string>
+
+    <key>CFBundleIdentifier</key>
+    <string>sh.tiago.meetingcompanion</string>
+
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+
+    <key>CFBundleName</key>
+    <string>MeetingCompanion</string>
+
+    <key>CFBundleDisplayName</key>
+    <string>Meeting Companion</string>
+
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+
+    <key>CFBundleShortVersionString</key>
+    <string>${VERSION}</string>
+
+    <key>CFBundleVersion</key>
+    <string>${BUILD}</string>
+
+    <key>LSMinimumSystemVersion</key>
+    <string>15.0</string>
+
+    <!-- Menu-bar app: hide from Dock + ⌘-Tab. -->
+    <key>LSUIElement</key>
+    <true/>
+
+    <key>NSPrincipalClass</key>
+    <string>NSApplication</string>
+
+    <key>NSHumanReadableCopyright</key>
+    <string>Copyright © Tiago Oliveira</string>
+
+    <!-- Permission usage descriptions. Required for the OS to show
+         the corresponding runtime prompt; missing strings here means
+         the API returns immediate denial. -->
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Capture meeting audio for live transcription and summarization.</string>
+
+    <key>NSScreenCaptureUsageDescription</key>
+    <string>Capture screen snippets when you mark a moment, so the agent can include visual context in the meeting summary.</string>
+
+    <key>NSCameraUsageDescription</key>
+    <string>Attach a photo to a meeting moment.</string>
+</dict>
+</plist>

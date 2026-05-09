@@ -1,0 +1,95 @@
+# Build the Mac menu-bar app and bundle it into a `.app` structure.
+# Output is uploaded as a workflow artifact and (on tag pushes)
+# attached to the GitHub Release.
+#
+# Unsigned bundle: macOS Gatekeeper will warn on first launch; users
+# right-click → Open to dismiss. Code signing + notarization is a
+# follow-up that requires APPLE_DEVELOPER_ID + APPLE_API_KEY secrets;
+# see .github/workflows/README.md.
+
+name: Mac bundle
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+    paths:
+      - "packages/mac/**"
+      - ".github/workflows/mac-bundle.yml"
+  pull_request:
+    paths:
+      - "packages/mac/**"
+      - ".github/workflows/mac-bundle.yml"
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-14
+    permissions:
+      contents: write # write needed when attaching to a Release on tag
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache SwiftPM build
+        uses: actions/cache@v4
+        with:
+          path: packages/mac/.build
+          key: ${{ runner.os }}-swift-${{ hashFiles('packages/mac/Package.swift', 'packages/mac/Package.resolved') }}-${{ hashFiles('packages/mac/Sources/**/*.swift') }}
+          restore-keys: |
+            ${{ runner.os }}-swift-${{ hashFiles('packages/mac/Package.swift', 'packages/mac/Package.resolved') }}-
+            ${{ runner.os }}-swift-
+
+      - name: Resolve version
+        id: version
+        run: |
+          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+          else
+            # Marketing version on non-tag pushes is a semver-ish
+            # ${baseline}-${sha7}. Bump the baseline when shipping a
+            # tagged release.
+            VERSION="0.1.0-${GITHUB_SHA::7}"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "build=${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+
+      - name: Build (universal release binary)
+        working-directory: packages/mac
+        run: |
+          swift build \
+            -c release \
+            --arch arm64 \
+            --arch x86_64
+
+      - name: Bundle into .app
+        working-directory: packages/mac
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          BUILD: ${{ steps.version.outputs.build }}
+        run: |
+          BUNDLE="MeetingCompanion.app"
+          rm -rf "$BUNDLE"
+          mkdir -p "$BUNDLE/Contents/MacOS" "$BUNDLE/Contents/Resources"
+          # SwiftPM with multiple --arch produces a universal binary
+          # under .build/apple/Products/Release.
+          cp .build/apple/Products/Release/MeetingCompanion "$BUNDLE/Contents/MacOS/"
+          envsubst < Info.plist.template > "$BUNDLE/Contents/Info.plist"
+          # `ditto -c -k --keepParent` preserves the bundle's directory
+          # structure inside the zip (matching what users get from
+          # GitHub Release downloads).
+          ditto -c -k --keepParent "$BUNDLE" "MeetingCompanion-${VERSION}.zip"
+          ls -la "MeetingCompanion-${VERSION}.zip"
+
+      - name: Upload bundle artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: MeetingCompanion-${{ steps.version.outputs.version }}
+          path: packages/mac/MeetingCompanion-${{ steps.version.outputs.version }}.zip
+          if-no-files-found: error
+
+      - name: Attach to release on tag
+        if: github.event_name == 'push' && github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: packages/mac/MeetingCompanion-${{ steps.version.outputs.version }}.zip
+          fail_on_unmatched_files: true

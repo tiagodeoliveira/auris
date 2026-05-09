@@ -1,0 +1,88 @@
+# Production / single-VM deploy stack. Pull the latest image from
+# GHCR, restart the container, that's the update flow:
+#
+#   docker compose -f docker-compose.deploy.yml pull server
+#   docker compose -f docker-compose.deploy.yml up -d server
+#
+# Uses an `.env.deploy` file for runtime configuration (Auth0 tenant,
+# Soniox API key, mnemo URL, etc.) — see `.env.deploy.example` for
+# the expected variable surface.
+#
+# State that survives container restarts:
+#   - Postgres data        → named volume `pg-data`
+#   - Server data dir      → named volume `server-data` (transcript JSONL,
+#                            moment screenshots, artifact blobs)
+#
+# Notes on deployment:
+#   - The server image is private on GHCR. The host needs to be logged
+#     in to ghcr.io with a Personal Access Token (classic, scope
+#     `read:packages`). One-time:
+#       echo $GHCR_TOKEN | docker login ghcr.io -u <user> --password-stdin
+#   - Postgres is bound to the docker network only — no host port
+#     exposure. The server reaches it as `postgres:5432`.
+#   - The server's `:7331` port IS exposed on the host. Front it with
+#     a reverse proxy (caddy / nginx / traefik) for TLS termination.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: meeting-companion-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-meeting_companion}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env.deploy}
+      POSTGRES_DB: ${POSTGRES_DB:-meeting_companion}
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U ${POSTGRES_USER:-meeting_companion} -d ${POSTGRES_DB:-meeting_companion}",
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  server:
+    # Image tag pin: bump explicitly to roll a new release. `latest`
+    # works for "always grab the newest main build" but defeats the
+    # ability to roll back without remembering a sha. CI publishes
+    # `latest`, `sha-<short>`, and `<git-tag>` — prefer the tag.
+    image: ghcr.io/${GHCR_OWNER:?Set GHCR_OWNER in .env.deploy}/meeting-companion-server:${SERVER_TAG:-latest}
+    container_name: meeting-companion-server
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-meeting_companion}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-meeting_companion}
+      MEETING_COMPANION_DATA_DIR: /data
+      AUTH0_DOMAIN: ${AUTH0_DOMAIN}
+      AUTH0_API_AUDIENCE: ${AUTH0_API_AUDIENCE}
+      # Optional providers — leave unset to disable. The server
+      # gracefully no-ops when an integration's env vars are missing.
+      SONIOX_API_KEY: ${SONIOX_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      MEETING_COMPANION_LLM_PROVIDER: ${MEETING_COMPANION_LLM_PROVIDER:-bedrock}
+      AWS_REGION: ${AWS_REGION:-us-west-2}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+      MNEMO_URL: ${MNEMO_URL:-}
+      MNEMO_API_KEY: ${MNEMO_API_KEY:-}
+    ports:
+      # Front this with a reverse proxy for TLS. Don't expose 7331 to
+      # the public internet without one — auth tokens travel as a
+      # query parameter on the WebSocket upgrade.
+      - "${SERVER_PORT:-7331}:7331"
+    volumes:
+      - server-data:/data
+    # No server-side healthcheck yet — `/healthz` endpoint doesn't
+    # exist on the server today. Add one (returns 200 OK + db ping)
+    # alongside this and re-enable. depends_on already waits for
+    # postgres's own healthcheck.
+
+volumes:
+  pg-data:
+  server-data:
