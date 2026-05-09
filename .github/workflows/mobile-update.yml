@@ -1,0 +1,108 @@
+# EAS Update — over-the-air JS+asset updates for already-built
+# binaries. Ships in seconds; applies on the next app launch.
+#
+# When to update vs rebuild:
+#   - JS code change                            → eas update (this workflow)
+#   - New native module / native config change  → eas build (mobile-ios.yml)
+#
+# Channels map 1:1 to git branches by convention:
+#   - main        → "production"  (EAS branch + channel)
+#   - any branch  → workflow_dispatch with channel input
+#
+# Builds know which channel to listen to via `channel` in eas.json.
+# A binary built on profile=production tracks channel=production and
+# pulls only updates published to the matching branch.
+
+name: Mobile update
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "packages/mobile/**"
+      # Native config changes need a rebuild, not an OTA — exclude
+      # them so we don't ship a JS bundle that depends on a native
+      # module the deployed binary doesn't have.
+      - "!packages/mobile/app.json"
+      - "!packages/mobile/eas.json"
+      - "!packages/mobile/ios/**"
+      - "!packages/mobile/android/**"
+      - ".github/workflows/mobile-update.yml"
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: "EAS Update branch (matches a build channel)"
+        required: false
+        default: "production"
+        type: choice
+        options:
+          - production
+          - preview
+          - development
+      message:
+        description: "Update message (defaults to commit subject)"
+        required: false
+        default: ""
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    env:
+      EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+    steps:
+      - name: Check EAS configuration
+        id: preflight
+        run: |
+          if [[ -z "$EXPO_TOKEN" ]]; then
+            echo "::notice::EXPO_TOKEN secret is not set; skipping EAS update. See .github/workflows/README.md."
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - if: steps.preflight.outputs.configured == 'true'
+        uses: actions/checkout@v4
+
+      - if: steps.preflight.outputs.configured == 'true'
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - if: steps.preflight.outputs.configured == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - if: steps.preflight.outputs.configured == 'true'
+        run: pnpm install --frozen-lockfile
+
+      - if: steps.preflight.outputs.configured == 'true'
+        uses: expo/expo-github-action@v8
+        with:
+          eas-version: latest
+          token: ${{ secrets.EXPO_TOKEN }}
+
+      - name: Publish update
+        if: steps.preflight.outputs.configured == 'true'
+        working-directory: packages/mobile
+        env:
+          BRANCH: ${{ inputs.branch || 'production' }}
+        run: |
+          # `--auto` derives the branch from the current git branch
+          # AND uses the latest commit message — but we override the
+          # branch explicitly so push-to-main always lands on
+          # `production` regardless of the local branch name. The
+          # `--message` flag picks up the dispatched message when
+          # supplied; otherwise eas falls back to the commit subject.
+          if [[ -n "${{ inputs.message }}" ]]; then
+            eas update \
+              --branch "$BRANCH" \
+              --message "${{ inputs.message }}" \
+              --non-interactive
+          else
+            eas update \
+              --branch "$BRANCH" \
+              --auto \
+              --non-interactive
+          fi

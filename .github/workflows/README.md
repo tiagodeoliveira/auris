@@ -1,13 +1,25 @@
 # CI Workflows
 
-Three publish workflows, one for each shipping surface. All triggered
-by push-to-main, push of a `v*` tag, and `workflow_dispatch`.
+Four workflows. Three publish to a different shipping surface; one
+ships JS-only updates over-the-air to already-built mobile binaries.
 
-| File               | Surface         | Output                                                          |
-| ------------------ | --------------- | --------------------------------------------------------------- |
-| `server-image.yml` | Rust server     | Docker image at `ghcr.io/<owner>/meeting-companion-server`      |
-| `mac-bundle.yml`   | SwiftUI Mac app | Unsigned `.app` zip as workflow artifact + Release asset on tag |
-| `mobile-ios.yml`   | Expo iOS app    | EAS Build (cloud) — artifact in EAS dashboard                   |
+| File                | Surface         | Output                                                          |
+| ------------------- | --------------- | --------------------------------------------------------------- |
+| `server-image.yml`  | Rust server     | Docker image at `ghcr.io/<owner>/meeting-companion-server`      |
+| `mac-bundle.yml`    | SwiftUI Mac app | Unsigned `.app` zip as workflow artifact + Release asset on tag |
+| `mobile-ios.yml`    | Expo iOS binary | EAS Build (cloud) — artifact in EAS dashboard                   |
+| `mobile-update.yml` | Expo JS bundle  | EAS Update — pushed to deployed binaries on next launch         |
+
+## When to rebuild vs. update (mobile)
+
+- **Rebuild (`mobile-ios.yml`)** — needed when native code or native
+  config changes: new native module, `app.json` permissions /
+  plugins, `eas.json` profiles, anything under `ios/` or `android/`.
+  ~25 minutes; new binary lands in TestFlight / EAS dashboard.
+- **Update (`mobile-update.yml`)** — for JS-only changes: TS, JSX,
+  styles, asset references that don't add new native deps. ~30
+  seconds; phones running a matching build see the new code on next
+  launch.
 
 ## Required secrets / variables
 
@@ -71,6 +83,34 @@ Apple Developer enrollment. Real-device builds (`preview` or
    - `eas account:tokens:create --name "github-actions"` → copy
      token → add as repo secret `EXPO_TOKEN`.
 
+3. **EAS Update / mobile-update.yml** (after step 2)
+   - `cd packages/mobile && pnpm dlx eas-cli update:configure` — adds
+     the `updates.url` and a `runtimeVersion` policy to `app.json`.
+     Commit those changes.
+   - Build the app once for the channel you want to update
+     (`eas build --profile preview --platform ios`) and install on
+     the device. The binary's embedded channel ("preview") tells
+     it which update branch to listen to.
+   - From now on: pushes to main run `mobile-update.yml`, which
+     publishes to the `production` branch. Builds tracking that
+     channel apply on next launch — no App Store round-trip.
+
+### Channel ↔ branch mapping
+
+`eas.json` profiles wire each build to a channel; updates publish
+to a _branch_ of the same name by convention:
+
+| Profile             | Channel       | Branch        | Notes                 |
+| ------------------- | ------------- | ------------- | --------------------- |
+| `development`       | `development` | `development` | dev-client builds     |
+| `preview-simulator` | `preview`     | `preview`     | iOS Simulator         |
+| `preview`           | `preview`     | `preview`     | TestFlight / internal |
+| `production`        | `production`  | `production`  | App Store builds      |
+
+`mobile-update.yml` defaults to the `production` branch on push to
+main. Use `workflow_dispatch` to publish to `preview` or
+`development` for testing OTA changes before promoting to prod.
+
 3. **Mac bundle**
    - No setup needed for unsigned builds. Push to main; the artifact
      appears under **Actions → Mac bundle → <run> → Artifacts**.
@@ -84,6 +124,10 @@ itself is in the path filter so editing the workflow re-triggers it.
   `Dockerfile`, this workflow file.
 - `mac-bundle.yml`: `packages/mac/**`, this workflow file.
 - `mobile-ios.yml`: `packages/mobile/**`, this workflow file.
+- `mobile-update.yml`: `packages/mobile/**` excluding native config
+  paths (`app.json`, `eas.json`, `ios/`, `android/`) — those need a
+  rebuild, not an OTA. Workflow file is in scope so editing the
+  workflow re-triggers it.
 
 A `v*` tag triggers all three. Releases bundle artifacts from each
 surface under the same tag.
