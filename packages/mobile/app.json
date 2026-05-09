@@ -6,14 +6,15 @@
     "orientation": "portrait",
     "scheme": "meetingcompanion",
     "userInterfaceStyle": "automatic",
-    "newArchEnabled": true,
     "assetBundlePatterns": ["**/*"],
     "ios": {
       "supportsTablet": false,
-      "bundleIdentifier": "sh.tiago.meetingcompanion"
+      "bundleIdentifier": "sh.tiago.meetingcompanion",
+      "newArchEnabled": true
     },
     "android": {
-      "package": "sh.tiago.meetingcompanion"
+      "package": "sh.tiago.meetingcompanion",
+      "newArchEnabled": true
     },
     "plugins": ["expo-router"],
     "experiments": {
