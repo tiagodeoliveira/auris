@@ -36,6 +36,18 @@ export default function RootLayout() {
       <Stack>
         <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
         <Stack.Screen name="login" options={{ presentation: "modal", title: "Sign in" }} />
+        <Stack.Screen
+          name="meeting"
+          options={{
+            presentation: "fullScreenModal",
+            title: "Meeting",
+            // gestureEnabled: false so a stray swipe-down doesn't
+            // dismiss the meeting view while it's live. Server-side
+            // stop is the canonical exit — see meeting.tsx's
+            // useEffect on meetingState === "idle".
+            gestureEnabled: false,
+          }}
+        />
       </Stack>
       {!identity && <Redirect href="/login" />}
     </>
