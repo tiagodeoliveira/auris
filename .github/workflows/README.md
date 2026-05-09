@@ -53,8 +53,19 @@ SPARKLE_VERSION=2.6.4
 curl -L -o /tmp/sparkle.tar.xz \
   "https://github.com/sparkle-project/Sparkle/releases/download/$SPARKLE_VERSION/Sparkle-$SPARKLE_VERSION.tar.xz"
 mkdir -p /tmp/sparkle && tar -xf /tmp/sparkle.tar.xz -C /tmp/sparkle
-/tmp/sparkle/bin/generate_keys -p > sparkle_pub.txt    # public key (safe to commit / publish as a repo variable)
-/tmp/sparkle/bin/generate_keys -x sparkle_priv.pem      # private key (NEVER commit; goes in GH secrets)
+
+# 1. Create the EdDSA key pair. Bare `generate_keys` (no flags)
+#    generates a new pair and stores the private key in the macOS
+#    Keychain. Running it again later just prints "Existing signing
+#    key found" — it doesn't overwrite. The `-p` / `-x` flags below
+#    only work after this initial step has been taken.
+/tmp/sparkle/bin/generate_keys
+
+# 2. Export both halves. `-p` prints the public key, `-x <file>`
+#    writes the private key to a file (decrypts from the Keychain
+#    on the way out — your user password may prompt).
+/tmp/sparkle/bin/generate_keys -p > sparkle_pub.txt
+/tmp/sparkle/bin/generate_keys -x sparkle_priv.pem
 ```
 
 Then in **Settings → Secrets and variables → Actions**:

@@ -15,6 +15,14 @@ DerivedData
 xcuserdata
 *.xcworkspace/xcuserdata
 
+# Sparkle EdDSA keys — never commit. Public key lives as a GitHub
+# repo *variable* (SPARKLE_PUBLIC_KEY); private key as a *secret*.
+# These patterns make sure a stray export inside the repo doesn't
+# leak into a commit.
+sparkle_priv.pem
+sparkle_pub.txt
+*.pem
+
 # Editor
 .vscode
 .idea
