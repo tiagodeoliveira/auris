@@ -23,50 +23,81 @@ ships JS-only updates over-the-air to already-built mobile binaries.
 
 ## Required secrets / variables
 
-Configure under repo **Settings → Secrets and variables → Actions**.
-The workflows reference repo-level entries only — no environments
-needed (single deployment target per surface).
+Two different stores depending on which surface needs the value.
+Mobile build-time config lives in **EAS** (Expo's vault) so any
+machine running `eas build` / `eas update` — CI or a dev laptop —
+sees the same values without GitHub being in the loop. Everything
+else lives in **GitHub** repo-level secrets / variables.
 
-### Quick-reference table
+### GitHub side
 
+Configure under **Settings → Secrets and variables → Actions**.
 `secret` = masked in logs, accessed via `${{ secrets.NAME }}`.
-`variable` = visible in logs, accessed via `${{ vars.NAME }}`. Auth0
-client IDs / domains / audiences are _embedded in the public binary
-anyway_, so they live as variables rather than secrets — secrecy is
-meaningless once shipped.
+`variable` = visible in logs, accessed via `${{ vars.NAME }}`.
 
-| Name                           | Kind     | Used by             | Purpose                                                                         |
-| ------------------------------ | -------- | ------------------- | ------------------------------------------------------------------------------- |
-| `GITHUB_TOKEN`                 | built-in | server-image.yml    | GHCR push auth. No setup needed.                                                |
-| `EXPO_TOKEN`                   | secret   | mobile-{ios,update} | EAS Build + EAS Update access token. Generate with `eas account:tokens:create`. |
-| `SPARKLE_PRIVATE_KEY`          | secret   | mac-bundle.yml      | EdDSA private key signing OTA update bundles.                                   |
-| `SPARKLE_PUBLIC_KEY`           | variable | mac-bundle.yml      | Matching public key, embedded in Info.plist via envsubst.                       |
-| `MEETING_COMPANION_SERVER_URL` | variable | mac + mobile        | WebSocket endpoint the bundled apps connect to (`wss://...`).                   |
-| `AUTH0_DOMAIN`                 | variable | mac + mobile        | Auth0 tenant host (e.g., `dev-xyz.us.auth0.com`).                               |
-| `AUTH0_API_AUDIENCE`           | variable | mac + mobile        | Auth0 API identifier (e.g., `https://meeting-companion.api`).                   |
-| `AUTH0_MAC_CLIENT_ID`          | variable | mac-bundle.yml      | Client ID of the **Native** Auth0 application registered for the Mac.           |
-| `AUTH0_MOBILE_CLIENT_ID`       | variable | mobile-{ios,update} | Client ID of the **Native** Auth0 application registered for mobile.            |
+| Name                           | Kind     | Used by             | Purpose                                                                          |
+| ------------------------------ | -------- | ------------------- | -------------------------------------------------------------------------------- |
+| `GITHUB_TOKEN`                 | built-in | server-image.yml    | GHCR push auth. No setup needed.                                                 |
+| `EXPO_TOKEN`                   | secret   | mobile-{ios,update} | EAS access token. Generate with `eas account:tokens:create`.                     |
+| `SPARKLE_PRIVATE_KEY`          | secret   | mac-bundle.yml      | EdDSA private key signing OTA update bundles.                                    |
+| `SPARKLE_PUBLIC_KEY`           | variable | mac-bundle.yml      | Matching public key, embedded in Info.plist via envsubst.                        |
+| `MEETING_COMPANION_SERVER_URL` | variable | mac-bundle.yml      | WebSocket endpoint baked into the Mac bundle (`wss://...`).                      |
+| `AUTH0_DOMAIN`                 | variable | mac-bundle.yml      | Auth0 tenant host for the Mac bundle (e.g., `dev-xyz.us.auth0.com`).             |
+| `AUTH0_API_AUDIENCE`           | variable | mac-bundle.yml      | Auth0 API identifier for the Mac bundle (e.g., `https://meeting-companion.api`). |
+| `AUTH0_MAC_CLIENT_ID`          | variable | mac-bundle.yml      | Client ID of the **Native** Auth0 application registered for the Mac.            |
 
-Missing values are not fatal: bundles ship with empty strings for
-those keys, and the apps fall back to compiled-in defaults
-(localhost server, dev Auth0 tenant). That keeps `swift run` /
-`expo start` development zero-configuration while letting CI swap
-in environment-specific values without code changes.
+### EAS side (mobile only)
 
-### `EXPO_TOKEN` (secret) — for `mobile-ios.yml`
+Configure with `eas env:create --scope project --environment <env>`.
+EAS injects these into the build/update environment for every job
+queued for that channel — from CI, from a dev laptop, anywhere.
+Mirrored to a corresponding `EXPO_PUBLIC_*` var that Expo inlines
+into the JS bundle at build time.
 
-Generate locally with `eas account:tokens:create` after
-`eas-cli login`. Paste the token. Without it, `mobile-ios.yml` fails
-fast at the guard step with a clear error.
+| EAS variable name                    | Env scope                          | Purpose                                                              |
+| ------------------------------------ | ---------------------------------- | -------------------------------------------------------------------- |
+| `EXPO_PUBLIC_SERVER_URL`             | development / preview / production | WebSocket endpoint the mobile app connects to.                       |
+| `EXPO_PUBLIC_AUTH0_DOMAIN`           | "                                  | Auth0 tenant host.                                                   |
+| `EXPO_PUBLIC_AUTH0_MOBILE_CLIENT_ID` | "                                  | Client ID of the **Native** Auth0 application registered for mobile. |
+| `EXPO_PUBLIC_AUTH0_API_AUDIENCE`     | "                                  | Auth0 API identifier.                                                |
 
-### `GITHUB_TOKEN` (built-in)
+Set them once per environment, e.g.:
 
-Auto-provided by Actions; no setup needed. Used by `server-image.yml`
-to push to GHCR. The package's visibility (private vs public)
-inherits from the repo on first push — flip it under **Packages**
-once it exists.
+```sh
+cd packages/mobile
+eas env:create --scope project --environment production --name EXPO_PUBLIC_SERVER_URL --value 'wss://meeting-companion.example.com:7331' --visibility plaintext
+eas env:create --scope project --environment production --name EXPO_PUBLIC_AUTH0_DOMAIN --value 'dev-xyz.us.auth0.com' --visibility plaintext
+eas env:create --scope project --environment production --name EXPO_PUBLIC_AUTH0_MOBILE_CLIENT_ID --value '<client_id>' --visibility plaintext
+eas env:create --scope project --environment production --name EXPO_PUBLIC_AUTH0_API_AUDIENCE --value 'https://meeting-companion.api' --visibility plaintext
+```
 
-### `SPARKLE_PRIVATE_KEY` (secret) + `SPARKLE_PUBLIC_KEY` (variable) — for `mac-bundle.yml`
+For **local dev**, put the same values in `packages/mobile/.env.local`
+(gitignored). Expo's dev server reads it on startup.
+
+### Server side (host VM, not CI)
+
+The deployed server reads its config from `.env.deploy` on the host
+VM, mounted by `docker-compose.deploy.yml`. See `.env.deploy.example`
+for the full list (Auth0 tenant, Postgres password, LLM provider
+creds, mnemo URL/key).
+
+### Fail-soft semantics
+
+Missing values aren't fatal:
+
+- Mac bundle: empty Info.plist string → app falls back to localhost
+  server / hardcoded dev Auth0 tenant.
+- Mobile bundle: empty `EXPO_PUBLIC_*` → `config.ts` returns the
+  fallback URL / `auth0Configured: false`. The auth screen should
+  show "Auth0 not configured" rather than attempt a broken sign-in.
+- Server image: missing optional integrations (mnemo, Soniox, OpenAI)
+  silently disable the corresponding feature; the server still
+  boots and Auth0/Postgres remain mandatory.
+
+Lets `swift run` / `expo start` / `cargo run` development stay
+zero-configuration while CI swaps in environment-specific values.
+
+### Sparkle key generation (one-time)
 
 Sparkle drives the Mac auto-update flow. Each tagged release is
 signed with an EdDSA private key in CI and verified by the bundled
@@ -152,6 +183,10 @@ Apple Developer enrollment. Real-device builds (`preview` or
      `app.json`. Commit that change.
    - `eas account:tokens:create --name "github-actions"` → copy
      token → add as repo secret `EXPO_TOKEN`.
+   - Set the four `EXPO_PUBLIC_*` build-time vars per the EAS-side
+     table above (one `eas env:create` per name per environment).
+     Without them the bundle ships with empty defaults and falls
+     back to localhost / unconfigured Auth0.
 
 3. **EAS Update / mobile-update.yml** (after step 2)
    - `cd packages/mobile && pnpm dlx eas-cli update:configure` — adds

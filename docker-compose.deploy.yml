@@ -69,8 +69,13 @@ services:
       AWS_REGION: ${AWS_REGION:-us-west-2}
       AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
-      MNEMO_URL: ${MNEMO_URL:-}
-      MNEMO_API_KEY: ${MNEMO_API_KEY:-}
+      # Mnemo env names use the MEETING_COMPANION_ prefix per the
+      # server's `mnemo::client` module — passing plain `MNEMO_URL`
+      # silently disables the integration because the server can't
+      # find the expected key.
+      MEETING_COMPANION_MNEMO_URL: ${MEETING_COMPANION_MNEMO_URL:-}
+      MEETING_COMPANION_MNEMO_API_KEY: ${MEETING_COMPANION_MNEMO_API_KEY:-}
+      MEETING_COMPANION_MNEMO_WORKSTATION: ${MEETING_COMPANION_MNEMO_WORKSTATION:-}
     ports:
       # Front this with a reverse proxy for TLS. Don't expose 7331 to
       # the public internet without one — auth tokens travel as a
