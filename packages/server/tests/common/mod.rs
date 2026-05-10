@@ -33,6 +33,13 @@ pub async fn spawn_test_server() -> TestServer {
 }
 
 pub async fn spawn_test_server_with_token(_token: &str) -> TestServer {
+    // Load `.env` so DATABASE_URL etc. are visible to the test
+    // process. The server binary loads this on its own from `main.rs`
+    // via dotenvy; integration tests don't run through main, so they
+    // have to opt in explicitly. Without it the WS handshake resets
+    // on `connect` because db::open_pool() errors and tears down the
+    // listener before the client gets to upgrade.
+    let _ = dotenvy::dotenv();
     // Auth-disabled mode — every request maps to the synthetic
     // `dev|local` user. Removes the JWT validation path from the
     // critical path of these integration tests; the auth-on path is
