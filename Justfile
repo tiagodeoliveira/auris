@@ -85,6 +85,32 @@ smoke-instructions:
     @echo "  {\"type\":\"set_mode\",\"mode\":\"transcript\"}"
     @echo "  {\"type\":\"stop_meeting\"}"
 
+# --- Contract (proto codegen) ---------------------------------------------
+
+# Regenerate TS + Swift contract types from proto sources.
+# Rust regen happens automatically via cargo's build.rs — no separate
+# step needed there. Run this after editing any .proto file.
+contract-gen:
+    cd packages/contract && buf generate
+
+# Lint proto files (style, naming, breaking-change checks).
+contract-lint:
+    cd packages/contract && buf lint
+
+# Format proto files in place + verify against committed shape.
+contract-format:
+    cd packages/contract && buf format --write
+
+# Verify TS + Rust + Swift contract builds compile against the
+# generated types. Useful as a CI canary that proto edits flow through.
+# The Rust crate is standalone (not in the root cargo workspace),
+# so we cd into it instead of using `-p`.
+contract-check:
+    cd packages/contract && buf lint && buf format --diff --exit-code
+    cd packages/contract/rust && cargo build
+    pnpm -F @meeting-companion/contract typecheck
+    cd packages/contract/swift && swift build
+
 # --- LLM -------------------------------------------------------------------
 
 # Smoke-test the LLM extraction with a sample description.
