@@ -244,6 +244,58 @@ struct MeetingsAPI: Sendable {
         }
     }
 
+    /// Attach a past meeting to the active meeting (carry-over
+    /// context). Server is idempotent (`ON CONFLICT DO NOTHING`);
+    /// duplicate attaches are no-ops. Mirrors `ArtifactsAPI.attach`.
+    func attach(parentId: String, attachedId: String) async throws {
+        let url = baseURL.appendingPathComponent("meetings/\(parentId)/attached_meetings")
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        let body = try JSONSerialization.data(withJSONObject: ["attached_meeting_id": attachedId])
+        req.httpBody = body
+        let resp: URLResponse
+        do {
+            (_, resp) = try await URLSession.shared.data(for: req)
+        } catch {
+            throw MeetingsAPIError.transport(error)
+        }
+        guard let http = resp as? HTTPURLResponse else {
+            throw MeetingsAPIError.http(0)
+        }
+        switch http.statusCode {
+        case 200..<300: return
+        case 401: throw MeetingsAPIError.unauthorized
+        case 404: throw MeetingsAPIError.notFound
+        default: throw MeetingsAPIError.http(http.statusCode)
+        }
+    }
+
+    func detach(parentId: String, attachedId: String) async throws {
+        let url = baseURL.appendingPathComponent(
+            "meetings/\(parentId)/attached_meetings/\(attachedId)"
+        )
+        var req = URLRequest(url: url)
+        req.httpMethod = "DELETE"
+        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        let resp: URLResponse
+        do {
+            (_, resp) = try await URLSession.shared.data(for: req)
+        } catch {
+            throw MeetingsAPIError.transport(error)
+        }
+        guard let http = resp as? HTTPURLResponse else {
+            throw MeetingsAPIError.http(0)
+        }
+        switch http.statusCode {
+        case 200..<300: return
+        case 401: throw MeetingsAPIError.unauthorized
+        case 404: throw MeetingsAPIError.notFound
+        default: throw MeetingsAPIError.http(http.statusCode)
+        }
+    }
+
     /// Build `<base>/meetings/:meeting_id/moments/:moment_id/screenshot`
     /// for a given relative `screenshot_url`. Used by the meeting
     /// detail view to render thumbnails (with a Bearer header).

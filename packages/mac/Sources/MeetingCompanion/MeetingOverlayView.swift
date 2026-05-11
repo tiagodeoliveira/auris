@@ -46,6 +46,17 @@ struct MeetingOverlayView: View {
     /// compose-time picker which stages into selectedArtifacts.
     @State private var showLiveArtifactPicker = false
 
+    /// Past meetings selected for attach during compose — mirrors
+    /// `selectedArtifacts`. Drained into
+    /// `AppModel.pendingAttachedMeetings` on Start; the WS event
+    /// handler attaches each once the meeting transitions to active.
+    @State private var selectedMeetings: [MeetingSummary] = []
+    @State private var showMeetingPicker = false
+
+    /// Mid-meeting attach flow (overlay live cluster). Distinct from
+    /// the compose-time picker.
+    @State private var showLiveMeetingPicker = false
+
     /// Chat input state. `chatDraft` mirrors the text-field; `chatBusy`
     /// disables submit while the agent's reply is in flight (cleared
     /// when chat-mode items grow, indicating the round-trip landed).
@@ -282,6 +293,14 @@ struct MeetingOverlayView: View {
                 }
             )
 
+            MeetingChipStrip(
+                attached: selectedMeetings,
+                onPick: { showMeetingPicker = true },
+                onRemove: { id in
+                    selectedMeetings.removeAll { $0.id == id }
+                }
+            )
+
             HStack(spacing: 10) {
                 Button {
                     Task { await model.extractMetadata(description: description) }
@@ -322,6 +341,16 @@ struct MeetingOverlayView: View {
                     // attached items), so the result is the new
                     // canonical set.
                     selectedArtifacts = picked
+                }
+            )
+        }
+        .sheet(isPresented: $showMeetingPicker) {
+            MeetingPickerSheet(
+                model: model,
+                alreadySelectedIds: Set(selectedMeetings.map { $0.id }),
+                excludeMeetingId: model.currentMeetingId,
+                onConfirm: { picked in
+                    selectedMeetings = picked
                 }
             )
         }
@@ -456,6 +485,16 @@ struct MeetingOverlayView: View {
             .help("Attach artifact")
 
             Button {
+                showLiveMeetingPicker = true
+            } label: {
+                Image(systemName: "link.circle.fill")
+                    .font(.system(size: 20))
+            }
+            .buttonStyle(IconCircleButtonStyle(tint: MCTheme.blue))
+            .disabled(!model.auth0.isSignedIn || !model.isMeetingActive)
+            .help("Attach past meeting")
+
+            Button {
                 Task { await model.stopMeeting() }
             } label: {
                 Image(systemName: "stop.circle.fill")
@@ -480,6 +519,17 @@ struct MeetingOverlayView: View {
                 onConfirm: { picked in
                     let ids = picked.map { $0.id }
                     Task { await model.attachArtifactsToCurrentMeeting(ids: ids) }
+                }
+            )
+        }
+        .sheet(isPresented: $showLiveMeetingPicker) {
+            MeetingPickerSheet(
+                model: model,
+                alreadySelectedIds: model.currentMeetingAttachedMeetingIds,
+                excludeMeetingId: model.currentMeetingId,
+                onConfirm: { picked in
+                    let ids = picked.map { $0.id }
+                    Task { await model.attachMeetingsToCurrentMeeting(ids: ids) }
                 }
             )
         }
@@ -776,6 +826,7 @@ struct MeetingOverlayView: View {
         // transitions the meeting to active. Stage *before* sending
         // start_meeting so the active event handler always sees them.
         model.setPendingArtifactAttachments(selectedArtifacts.map { $0.id })
+        model.setPendingAttachedMeetings(selectedMeetings.map { $0.id })
         mode = .starting
         descriptionFocused = false
         Task {
@@ -783,6 +834,7 @@ struct MeetingOverlayView: View {
             if model.isMeetingActive {
                 mode = .live
                 selectedArtifacts = []
+                selectedMeetings = []
             } else {
                 mode = .compose
                 descriptionFocused = true
@@ -1690,5 +1742,255 @@ private struct ArtifactPickerRow: View {
         }
         .buttonStyle(.plain)
         .disabled(!isSelectable && !isSelected)
+    }
+}
+
+// MARK: - Past-meeting compose UI
+
+/// Horizontal strip of past-meeting chips with a trailing "+
+/// Attach meeting" button. Sibling of `ArtifactChipStrip` — same
+/// visual treatment, distinct concept (carry-over context vs.
+/// attached artifacts).
+private struct MeetingChipStrip: View {
+    let attached: [MeetingSummary]
+    let onPick: () -> Void
+    let onRemove: (String) -> Void
+
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 6) {
+                ForEach(attached) { m in
+                    MeetingChip(meeting: m, onRemove: { onRemove(m.id) })
+                }
+                Button(action: onPick) {
+                    HStack(spacing: 4) {
+                        Image(systemName: "plus")
+                            .font(.system(size: 10, weight: .semibold))
+                        Text(attached.isEmpty ? "Attach meeting" : "Add")
+                            .font(.system(size: 11, weight: .medium))
+                    }
+                    .foregroundStyle(MCTheme.blue)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background {
+                        RoundedRectangle(cornerRadius: 6)
+                            .strokeBorder(MCTheme.blue.opacity(0.4), style: StrokeStyle(lineWidth: 1, dash: [3, 2]))
+                    }
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .frame(height: 28)
+    }
+}
+
+private struct MeetingChip: View {
+    let meeting: MeetingSummary
+    let onRemove: () -> Void
+
+    private var label: String {
+        let desc = (meeting.description ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if !desc.isEmpty { return desc.count > 32 ? String(desc.prefix(29)) + "…" : desc }
+        if let t = meeting.metadata["title"]?.trimmingCharacters(in: .whitespacesAndNewlines),
+            !t.isEmpty
+        {
+            return t
+        }
+        return "Meeting"
+    }
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Image(systemName: "calendar")
+                .font(.system(size: 9))
+                .foregroundStyle(MCTheme.muted)
+            Text(label)
+                .font(.system(size: 11, weight: .medium))
+                .lineLimit(1)
+                .foregroundStyle(MCTheme.text)
+            Button(action: onRemove) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 8, weight: .semibold))
+                    .foregroundStyle(MCTheme.muted)
+            }
+            .buttonStyle(.plain)
+            .help("Remove")
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background {
+            RoundedRectangle(cornerRadius: 6)
+                .fill(MCTheme.input)
+        }
+        .overlay(
+            RoundedRectangle(cornerRadius: 6)
+                .strokeBorder(MCTheme.border)
+        )
+    }
+}
+
+/// Modal sheet listing past meetings with a multi-select checkbox
+/// column. Mirrors `ArtifactPickerSheet`. The picker filters out
+/// the active meeting (a meeting can't attach to itself — server
+/// enforces with a CHECK constraint).
+private struct MeetingPickerSheet: View {
+    @Bindable var model: AppModel
+    let alreadySelectedIds: Set<String>
+    /// When non-nil, the active meeting is hidden from the list.
+    let excludeMeetingId: String?
+    let onConfirm: ([MeetingSummary]) -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var library: [MeetingSummary] = []
+    @State private var selectedIds: Set<String> = []
+    @State private var loading = true
+    @State private var loadError: String?
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text("Attach past meetings")
+                    .font(.headline)
+                Spacer()
+                Text("\(selectedIds.count) selected")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+            Divider()
+
+            content
+
+            Divider()
+            HStack {
+                Spacer()
+                Button("Cancel") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+                Button("Attach") {
+                    let picked = library.filter { selectedIds.contains($0.id) }
+                    onConfirm(picked)
+                    dismiss()
+                }
+                .keyboardShortcut(.defaultAction)
+                .buttonStyle(.borderedProminent)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+        }
+        .frame(width: 480, height: 420)
+        .preferredColorScheme(.light)
+        .task { await load() }
+        .onAppear { selectedIds = alreadySelectedIds }
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        if loading && library.isEmpty {
+            VStack { Spacer(); ProgressView(); Spacer() }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if let err = loadError {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Couldn't load meetings").font(.headline)
+                Text(err).font(.caption).foregroundStyle(.secondary)
+                Button("Retry") { Task { await load() } }
+            }
+            .padding(20)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        } else if library.isEmpty {
+            VStack(spacing: 8) {
+                Image(systemName: "calendar").font(.system(size: 28)).foregroundStyle(.secondary)
+                Text("No past meetings yet").foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            ScrollView {
+                LazyVStack(spacing: 4) {
+                    ForEach(library) { m in
+                        MeetingPickerRow(
+                            meeting: m,
+                            isSelected: selectedIds.contains(m.id),
+                            onToggle: {
+                                if selectedIds.contains(m.id) {
+                                    selectedIds.remove(m.id)
+                                } else {
+                                    selectedIds.insert(m.id)
+                                }
+                            }
+                        )
+                    }
+                }
+                .padding(8)
+            }
+        }
+    }
+
+    private func load() async {
+        loading = true
+        defer { loading = false }
+        let api: MeetingsAPI
+        do {
+            api = try await model.makeMeetingsAPI()
+        } catch {
+            loadError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            return
+        }
+        do {
+            let all = try await api.list()
+            library = excludeMeetingId.map { id in all.filter { $0.id != id } } ?? all
+            loadError = nil
+        } catch {
+            loadError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+        }
+    }
+}
+
+private struct MeetingPickerRow: View {
+    let meeting: MeetingSummary
+    let isSelected: Bool
+    let onToggle: () -> Void
+
+    private var title: String {
+        let desc = (meeting.description ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if !desc.isEmpty { return desc }
+        if let t = meeting.metadata["title"]?.trimmingCharacters(in: .whitespacesAndNewlines),
+            !t.isEmpty
+        {
+            return t
+        }
+        return "Meeting"
+    }
+
+    private static let formatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateStyle = .medium
+        f.timeStyle = .short
+        return f
+    }()
+
+    var body: some View {
+        Button(action: onToggle) {
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: isSelected ? "checkmark.square.fill" : "square")
+                    .font(.system(size: 14))
+                    .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(title)
+                        .font(.body)
+                        .fontWeight(.medium)
+                        .lineLimit(1)
+                        .foregroundStyle(Color.primary)
+                    Text(Self.formatter.string(from: meeting.startedAt))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .padding(8)
+            .background(isSelected ? Color.accentColor.opacity(0.08) : Color.clear)
+            .clipShape(RoundedRectangle(cornerRadius: 6))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 }

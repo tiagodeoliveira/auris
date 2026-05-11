@@ -11,7 +11,9 @@ import type { Store } from "../store";
 import type { CtaActions } from "./cta-region";
 import type { AuthBundle } from "../auth";
 import type { Artifact } from "../artifacts-api";
+import type { MeetingSummary } from "../meetings-api";
 import { pickArtifacts } from "./artifact-picker";
+import { pickMeetings } from "./meeting-picker";
 
 export function mountComposeRegion(
   parent: HTMLElement,
@@ -201,6 +203,78 @@ export function mountComposeRegion(
         if (stagedArtifacts.length > 0) {
           stagedArtifacts = [];
           renderArtifactStrip();
+        }
+      }
+    },
+  );
+
+  // Past-meeting chip strip — mirrors the artifact strip above.
+  // Sits below artifacts so the visual order is description → tags
+  // → artifacts → past meetings → start. Optional: zero, one, or
+  // many past meetings can be attached at compose time, and more
+  // can be attached mid-meeting via the modal (when we wire it).
+  const meetingRow = document.createElement("div");
+  meetingRow.className = "compose-artifacts-row";
+  wrap.appendChild(meetingRow);
+  let stagedMeetings: MeetingSummary[] = [];
+
+  function meetingChipLabel(m: MeetingSummary): string {
+    const desc = (m.description ?? "").trim();
+    if (desc) return desc.length > 40 ? desc.slice(0, 37) + "…" : desc;
+    const t = m.metadata?.title;
+    return t && t.trim() ? t.trim() : "Meeting";
+  }
+
+  function renderMeetingStrip(): void {
+    meetingRow.innerHTML = "";
+    for (const m of stagedMeetings) {
+      const chip = document.createElement("span");
+      chip.className = "compose-artifact-chip";
+      const name = document.createElement("span");
+      name.className = "compose-artifact-chip-name";
+      name.textContent = meetingChipLabel(m);
+      chip.appendChild(name);
+      const x = document.createElement("button");
+      x.className = "compose-artifact-chip-x";
+      x.setAttribute("aria-label", "Remove");
+      x.title = "Remove";
+      x.textContent = "×";
+      x.addEventListener("click", () => {
+        stagedMeetings = stagedMeetings.filter((y) => y.id !== m.id);
+        store.update({ pendingAttachedMeetings: stagedMeetings.map((y) => y.id) });
+        renderMeetingStrip();
+      });
+      chip.append(x);
+      meetingRow.appendChild(chip);
+    }
+    const addBtn = document.createElement("button");
+    addBtn.className = "compose-artifact-add";
+    addBtn.type = "button";
+    addBtn.textContent = stagedMeetings.length === 0 ? "+ Attach meeting" : "+ Add";
+    addBtn.addEventListener("click", () => {
+      void (async () => {
+        const picked = await pickMeetings({
+          alreadySelectedIds: stagedMeetings.map((m) => m.id),
+          auth,
+        });
+        if (picked === null) return;
+        stagedMeetings = picked;
+        store.update({ pendingAttachedMeetings: picked.map((p) => p.id) });
+        renderMeetingStrip();
+      })();
+    });
+    meetingRow.appendChild(addBtn);
+  }
+  renderMeetingStrip();
+
+  store.subscribe(
+    (s) => s.meetingState,
+    () => {
+      const s = store.get();
+      if (s.meetingState === "idle" && s.pendingAttachedMeetings.length === 0) {
+        if (stagedMeetings.length > 0) {
+          stagedMeetings = [];
+          renderMeetingStrip();
         }
       }
     },

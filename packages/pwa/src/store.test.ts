@@ -39,6 +39,8 @@ function defaultState(): AppState {
     artifactsModalOpen: false,
     pendingArtifactAttachments: [],
     attachedArtifactIds: [],
+    pendingAttachedMeetings: [],
+    attachedMeetingIds: [],
     currentMeetingId: null,
     toasts: [],
     errorOverlay: null,

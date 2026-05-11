@@ -79,6 +79,12 @@ export type Event =
       prior_context?: PriorContextSummary;
       devices: Device[];
       audio_source_device_id?: string;
+      /** Past meetings attached to this meeting (see
+       * `AttachedMeetingsChanged` for live updates). Snapshot ships
+       * an empty list; the server fires a synthetic
+       * `AttachedMeetingsChanged` immediately after the snapshot
+       * when the active meeting has attachments. */
+      attached_meeting_ids?: string[];
     }
   | { type: "meeting_state_changed"; meeting_state: MeetingState; meeting_id?: string }
   | { type: "prior_context_changed"; summary: PriorContextSummary }
@@ -93,7 +99,8 @@ export type Event =
   | { type: "transcript_interim"; text: string }
   | { type: "status"; status: Status }
   | { type: "error"; code: string; message: string; intent_ref?: string }
-  | { type: "artifacts_changed"; artifact_ids: string[] };
+  | { type: "artifacts_changed"; artifact_ids: string[] }
+  | { type: "attached_meetings_changed"; meeting_ids: string[] };
 
 export type ErrorCode =
   | "bad_json"

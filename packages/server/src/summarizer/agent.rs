@@ -717,12 +717,22 @@ for most ground-truth lookups."
 
     async fn call(&self, args: FetchMeetingArgs) -> Result<String, AgentToolError> {
         let params = crate::mnemo::recall::RecallParams::for_meeting_id(args.id.clone());
+        tracing::info!(meeting_id = %args.id, "agent fetch_meeting_summary: recalling from mnemo");
         let recalled = self
             .0
             .mnemo
             .recall(&params)
             .await
             .map_err(|e| AgentToolError::Internal(format!("mnemo recall: {e}")))?;
+        let s = recalled.summary();
+        tracing::info!(
+            meeting_id = %args.id,
+            preferences = s.preferences,
+            facts = s.facts,
+            episodes = s.episodes,
+            project_memories = s.project_memories,
+            "agent fetch_meeting_summary: recall complete"
+        );
         // Filter to summary_bundle-derived memories (the per-meeting
         // rollup) when present. Empty response = either the meeting
         // wasn't pushed to mnemo, or mnemo is disabled. Either way
@@ -777,12 +787,22 @@ when the rollup answers your question."
         // today; the verbosity difference is on its end. We keep
         // both tools so the agent's prompt can express intent.
         let params = crate::mnemo::recall::RecallParams::for_meeting_id(args.id.clone());
+        tracing::info!(meeting_id = %args.id, "agent fetch_meeting: recalling from mnemo");
         let recalled = self
             .0
             .mnemo
             .recall(&params)
             .await
             .map_err(|e| AgentToolError::Internal(format!("mnemo recall: {e}")))?;
+        let s = recalled.summary();
+        tracing::info!(
+            meeting_id = %args.id,
+            preferences = s.preferences,
+            facts = s.facts,
+            episodes = s.episodes,
+            project_memories = s.project_memories,
+            "agent fetch_meeting: recall complete"
+        );
         let body = recalled.format_for_prompt();
         if body.trim().is_empty() {
             Ok(format!(

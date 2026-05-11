@@ -79,6 +79,19 @@ final class AppModel {
     /// Cleared on idle.
     private(set) var currentMeetingAttachedArtifactIds: Set<String> = []
 
+    /// Past-meeting IDs the user picked during compose. Drained when
+    /// MeetingStateChanged fires with state=active and a non-nil
+    /// `meetingId` — mirrors `pendingArtifactAttachments`. Linking
+    /// a past meeting is optional (zero or more); the server is
+    /// idempotent on attach so re-firing a stale queue is safe.
+    private(set) var pendingAttachedMeetings: [String] = []
+
+    /// Past-meeting IDs we've successfully attached to the current
+    /// active meeting (mirrors `currentMeetingAttachedArtifactIds`).
+    /// Mid-meeting picker reads this to pre-check already-attached
+    /// rows. Cleared on idle.
+    private(set) var currentMeetingAttachedMeetingIds: Set<String> = []
+
     /// Wall-clock time the meeting started locally. Used to compute
     /// the `t` ms-offset when the user marks a moment. `nil` when no
     /// meeting is active or when we connected mid-meeting and the
@@ -288,6 +301,45 @@ final class AppModel {
             return
         }
         await attachArtifacts(ids: ids, toMeeting: mid)
+    }
+
+    /// Stage past-meeting ids to attach once the next start_meeting
+    /// transitions the server to `active`. Mirrors
+    /// `setPendingArtifactAttachments`. Compose UI calls this; the
+    /// active-state handler drains the queue.
+    func setPendingAttachedMeetings(_ ids: [String]) {
+        pendingAttachedMeetings = ids
+    }
+
+    /// Best-effort meeting-attach loop. Per-meeting errors are logged
+    /// independently so one rejection doesn't drop the rest.
+    private func attachMeetings(ids: [String], toMeeting parentId: String) async {
+        let api: MeetingsAPI
+        do {
+            api = try await makeMeetingsAPI()
+        } catch {
+            print("[AppModel] attachMeetings: makeMeetingsAPI failed: \(error)")
+            return
+        }
+        for mid in ids {
+            do {
+                try await api.attach(parentId: parentId, attachedId: mid)
+                currentMeetingAttachedMeetingIds.insert(mid)
+                print("[AppModel] attached meeting \(mid) to meeting \(parentId)")
+            } catch {
+                print("[AppModel] attach meeting \(mid) failed: \(error)")
+            }
+        }
+    }
+
+    /// Mid-meeting attach for past meetings — sibling of
+    /// `attachArtifactsToCurrentMeeting`. Idempotent server-side.
+    func attachMeetingsToCurrentMeeting(ids: [String]) async {
+        guard let mid = currentMeetingId else {
+            print("[AppModel] attachMeetingsToCurrentMeeting: no active meeting")
+            return
+        }
+        await attachMeetings(ids: ids, toMeeting: mid)
     }
 
     /// Open a WS connection using the current settings + a token
@@ -603,12 +655,19 @@ final class AppModel {
                 localMeetingTeardown()
                 pendingArtifactAttachments = []
                 currentMeetingAttachedArtifactIds = []
+                pendingAttachedMeetings = []
+                currentMeetingAttachedMeetingIds = []
                 closeOverlayWindow()
             }
             if state == "active", let mid = meetingId, !pendingArtifactAttachments.isEmpty {
                 let ids = pendingArtifactAttachments
                 pendingArtifactAttachments = []
                 Task { await attachArtifacts(ids: ids, toMeeting: mid) }
+            }
+            if state == "active", let mid = meetingId, !pendingAttachedMeetings.isEmpty {
+                let ids = pendingAttachedMeetings
+                pendingAttachedMeetings = []
+                Task { await attachMeetings(ids: ids, toMeeting: mid) }
             }
         case .deviceRegistered(let device):
             ownDevice = device
@@ -666,6 +725,8 @@ final class AppModel {
             // detached on the OTHER client (PWA), and the overlay's
             // attach picker pre-checks rows against this.
             currentMeetingAttachedArtifactIds = Set(ids)
+        case .attachedMeetingsChanged(let ids):
+            currentMeetingAttachedMeetingIds = Set(ids)
         case .error(let code, let message):
             if extractingMetadata { extractingMetadata = false }
             print("[AppModel] server error \(code): \(message)")

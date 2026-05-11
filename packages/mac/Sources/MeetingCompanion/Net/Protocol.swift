@@ -244,6 +244,11 @@ enum TypedServerEvent: Sendable {
     /// polling. The overlay's mid-meeting picker pre-checks rows
     /// against this set.
     case artifactsChanged(artifactIds: [String])
+    /// Server-authoritative list of past-meeting IDs attached to the
+    /// user's active meeting. Same shape/role as `artifactsChanged`
+    /// — fired whenever a meeting attach/detach happens on either
+    /// client, so all surfaces stay in sync.
+    case attachedMeetingsChanged(meetingIds: [String])
     case error(code: String, message: String)
     case unknown(type: String)
 }
@@ -270,6 +275,12 @@ struct SnapshotPayload: Decodable, Sendable {
     let items: [Item]
     let devices: [Device]
     let audioSourceDeviceId: String?
+    /// IDs of past meetings attached to the active meeting. Snapshot
+    /// itself ships an empty list today; the server fires a synthetic
+    /// `AttachedMeetingsChanged` immediately after the snapshot when
+    /// the active meeting has attachments. Optional decode for
+    /// forward-compat with older server builds.
+    let attachedMeetingIds: [String]?
 
     enum CodingKeys: String, CodingKey {
         case protocolVersion = "protocol_version"
@@ -282,6 +293,7 @@ struct SnapshotPayload: Decodable, Sendable {
         case items
         case devices
         case audioSourceDeviceId = "audio_source_device_id"
+        case attachedMeetingIds = "attached_meeting_ids"
     }
 }
 
@@ -375,6 +387,10 @@ func decodeServerEvent(from text: String) throws -> TypedServerEvent? {
         struct Wrap: Decodable { let artifact_ids: [String] }
         let w = try decoder.decode(Wrap.self, from: data)
         return .artifactsChanged(artifactIds: w.artifact_ids)
+    case "attached_meetings_changed":
+        struct Wrap: Decodable { let meeting_ids: [String] }
+        let w = try decoder.decode(Wrap.self, from: data)
+        return .attachedMeetingsChanged(meetingIds: w.meeting_ids)
     case "error":
         struct Wrap: Decodable {
             let code: String

@@ -61,6 +61,7 @@ export function handleServerEvent(event: ServerEvent, store: Store): void {
         priorContext: event.prior_context ?? null,
         availableDevices: event.devices ?? [],
         audioSourceDeviceId: event.audio_source_device_id ?? null,
+        attachedMeetingIds: event.attached_meeting_ids ?? [],
         glassesView: nextGlassesView,
         highlightIndex: 0,
         viewportStart: 0,
@@ -101,6 +102,8 @@ export function handleServerEvent(event: ServerEvent, store: Store): void {
         // meeting's attached set. The next compose starts fresh.
         update.pendingArtifactAttachments = [];
         update.attachedArtifactIds = [];
+        update.pendingAttachedMeetings = [];
+        update.attachedMeetingIds = [];
       }
       update.meetingStartedAt = meetingStartedAt;
       store.update(update);
@@ -158,6 +161,9 @@ export function handleServerEvent(event: ServerEvent, store: Store): void {
       // attach picker against this. Stays in sync without polling
       // even when the OTHER client (Mac vs PWA) issued the attach.
       store.update({ attachedArtifactIds: event.artifact_ids });
+      return;
+    case "attached_meetings_changed":
+      store.update({ attachedMeetingIds: event.meeting_ids });
       return;
     case "item_updated": {
       // One-row in-place update — used today by the expand_item

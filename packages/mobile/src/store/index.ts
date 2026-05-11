@@ -22,6 +22,7 @@ import type {
   PriorContextSummary,
   Status,
 } from "../wire/contract";
+import { MeetingsApi } from "../wire/meetings-api";
 import { ReconnectingSocket, type WsStatus } from "../wire/ws";
 
 interface AppState {
@@ -45,6 +46,16 @@ interface AppState {
   liveTranscriptInterim: string;
   metadata: Record<string, string>;
   attachedArtifactIds: string[];
+  /// Past-meeting IDs staged for attach during compose. Drained
+  /// once the meeting transitions to `active` and we have a
+  /// `currentMeetingId` to attach against.
+  pendingAttachedMeetings: string[];
+  /// Past-meeting IDs attached to the active meeting (server-
+  /// authoritative via `attached_meetings_changed`). Cleared on
+  /// idle. The mid-meeting picker pre-checks rows against this.
+  attachedMeetingIds: string[];
+  /// Setter the compose surface calls before sending `start_meeting`.
+  setPendingAttachedMeetings: (ids: string[]) => void;
   status: Status;
   priorContext: PriorContextSummary | null;
   devices: Device[];
@@ -82,6 +93,9 @@ export const useAppStore = create<AppState>((set, get) => ({
   liveTranscriptInterim: "",
   metadata: {},
   attachedArtifactIds: [],
+  pendingAttachedMeetings: [],
+  attachedMeetingIds: [],
+  setPendingAttachedMeetings: (ids: string[]) => set({ pendingAttachedMeetings: ids }),
   status: { listening: false, paused: false },
   priorContext: null,
   devices: [],
@@ -153,14 +167,51 @@ function handleEvent(
         priorContext: event.prior_context ?? null,
         devices: event.devices,
         audioSourceDeviceId: event.audio_source_device_id ?? null,
+        attachedMeetingIds: event.attached_meeting_ids ?? [],
       });
       return;
     }
-    case "meeting_state_changed":
-      set({
+    case "meeting_state_changed": {
+      const partial: Partial<AppState> = {
         meetingState: event.meeting_state,
         currentMeetingId: event.meeting_id ?? null,
-      });
+      };
+      if (event.meeting_state === "idle") {
+        partial.pendingAttachedMeetings = [];
+        partial.attachedMeetingIds = [];
+      }
+      set(partial);
+      // Drain compose-time staged meeting attachments. Best-effort
+      // POSTs — server is idempotent so a re-fire is safe. We
+      // atomically clear the queue here (rather than inside the
+      // async) so transient state churn doesn't double-attach.
+      if (
+        event.meeting_state === "active" &&
+        event.meeting_id &&
+        get().pendingAttachedMeetings.length > 0
+      ) {
+        const ids = get().pendingAttachedMeetings;
+        const parentId = event.meeting_id;
+        set({ pendingAttachedMeetings: [] });
+        void (async () => {
+          const api = MeetingsApi.from(serverUrl, () => auth0.getAccessToken());
+          if (!api) return;
+          for (const mid of ids) {
+            try {
+              await api.attach(parentId, mid);
+              set({
+                attachedMeetingIds: [...get().attachedMeetingIds.filter((x) => x !== mid), mid],
+              });
+            } catch (e) {
+              console.warn(`[store] attach meeting ${mid} failed:`, e);
+            }
+          }
+        })();
+      }
+      return;
+    }
+    case "attached_meetings_changed":
+      set({ attachedMeetingIds: event.meeting_ids });
       return;
     case "mode_changed":
       set({

@@ -94,6 +94,15 @@ export interface AppState {
   /// Cleared on idle. The mid-meeting picker reads this to
   /// pre-check rows already in the meeting's set.
   attachedArtifactIds: string[];
+  /// IDs of past meetings staged for attach during compose. Same
+  /// shape as `pendingArtifactAttachments` — the meeting-start
+  /// dispatcher drains these into `attachedMeetingIds` after firing
+  /// one POST per id against `/meetings/:id/attached_meetings`.
+  pendingAttachedMeetings: string[];
+  /// IDs of past meetings attached to the active meeting (from the
+  /// server's `AttachedMeetingsChanged` event). Cleared on idle.
+  /// The picker reads this to pre-check rows already attached.
+  attachedMeetingIds: string[];
   /// Server-assigned id of the active meeting (mirrors Mac's
   /// `currentMeetingId`). `null` when idle. Carried on snapshot
   /// + meeting_state_changed events; used to target attach POSTs.
@@ -151,6 +160,8 @@ export function defaultAppState(): AppState {
     artifactsModalOpen: false,
     pendingArtifactAttachments: [],
     attachedArtifactIds: [],
+    pendingAttachedMeetings: [],
+    attachedMeetingIds: [],
     currentMeetingId: null,
     toasts: [],
     errorOverlay: null,

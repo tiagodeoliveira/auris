@@ -108,6 +108,55 @@ export class MeetingsApi {
     throw new Error("fetchScreenshot not yet implemented on mobile — see MOBILE-PLAN Phase 5");
   }
 
+  /// Attach a past meeting to the active meeting. Server is
+  /// idempotent (`ON CONFLICT DO NOTHING`); duplicate attaches are
+  /// no-ops. Mirrors the PWA/Mac clients.
+  async attach(parentId: string, attachedId: string): Promise<void> {
+    const token = await this.tokenProvider();
+    let resp: Response;
+    try {
+      resp = await fetch(
+        this.baseUrl + "/meetings/" + encodeURIComponent(parentId) + "/attached_meetings",
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({ attached_meeting_id: attachedId }),
+        },
+      );
+    } catch (e) {
+      throw new MeetingsApiError(e instanceof Error ? e.message : "Network error", 0);
+    }
+    if (!resp.ok) {
+      throw new MeetingsApiError(`Attach failed (HTTP ${resp.status})`, resp.status);
+    }
+  }
+
+  async detach(parentId: string, attachedId: string): Promise<void> {
+    const token = await this.tokenProvider();
+    let resp: Response;
+    try {
+      resp = await fetch(
+        this.baseUrl +
+          "/meetings/" +
+          encodeURIComponent(parentId) +
+          "/attached_meetings/" +
+          encodeURIComponent(attachedId),
+        {
+          method: "DELETE",
+          headers: { Authorization: `Bearer ${token}` },
+        },
+      );
+    } catch (e) {
+      throw new MeetingsApiError(e instanceof Error ? e.message : "Network error", 0);
+    }
+    if (!resp.ok) {
+      throw new MeetingsApiError(`Detach failed (HTTP ${resp.status})`, resp.status);
+    }
+  }
+
   private async request<T>(path: string): Promise<T> {
     const token = await this.tokenProvider();
     let resp: Response;

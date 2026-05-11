@@ -9,6 +9,7 @@ import { ReconnectingSocket } from "./ws";
 import { handleServerEvent } from "./ws-handlers";
 import { mountUI } from "./ui";
 import { ArtifactsApi } from "./artifacts-api";
+import { MeetingsApi } from "./meetings-api";
 import type { CtaActions } from "./ui/cta-region";
 import { ListeningSession } from "./listening";
 import { initAuth, readAuth0Config, type AuthBundle } from "./auth";
@@ -180,6 +181,36 @@ function bootAuthenticated(
             console.log(`[artifacts] attached ${aid} to meeting ${meetingId}`);
           } catch (e) {
             console.warn(`[artifacts] attach ${aid} failed:`, e);
+          }
+        }
+      })();
+    },
+  );
+
+  // Drain compose-time staged meeting attachments. Same shape as the
+  // artifact drainer above; server-side attach is idempotent so a
+  // re-fire is harmless.
+  store.subscribe(
+    (s) => `${s.meetingState}|${s.currentMeetingId}|${s.pendingAttachedMeetings.length}`,
+    () => {
+      const s = store.get();
+      if (s.meetingState !== "active" || !s.currentMeetingId) return;
+      if (s.pendingAttachedMeetings.length === 0) return;
+      const ids = s.pendingAttachedMeetings;
+      const parentId = s.currentMeetingId;
+      store.update({ pendingAttachedMeetings: [] });
+      void (async () => {
+        const api = MeetingsApi.from(SERVER_URL, () => auth.getAccessToken());
+        if (!api) return;
+        for (const mid of ids) {
+          try {
+            await api.attach(parentId, mid);
+            store.update({
+              attachedMeetingIds: [...store.get().attachedMeetingIds.filter((x) => x !== mid), mid],
+            });
+            console.log(`[meetings] attached ${mid} to meeting ${parentId}`);
+          } catch (e) {
+            console.warn(`[meetings] attach ${mid} failed:`, e);
           }
         }
       })();

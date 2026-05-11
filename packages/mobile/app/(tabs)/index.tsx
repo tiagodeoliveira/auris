@@ -17,13 +17,17 @@ import {
 
 import { serverUrl } from "@/src/config";
 import { useAppStore } from "@/src/store";
+import { MeetingAttachStrip } from "@/src/ui/MeetingAttachStrip";
+import type { MeetingSummary } from "@/src/wire/meetings-api";
 
 export default function ComposeScreen() {
   const wsStatus = useAppStore((s) => s.wsStatus);
   const meetingState = useAppStore((s) => s.meetingState);
   const send = useAppStore((s) => s.send);
+  const setPendingAttachedMeetings = useAppStore((s) => s.setPendingAttachedMeetings);
 
   const [description, setDescription] = useState("");
+  const [stagedMeetings, setStagedMeetings] = useState<MeetingSummary[]>([]);
 
   // Auto-navigate into the active-meeting modal whenever a meeting
   // is/becomes active. Covers both "we just started one" and "the
@@ -63,15 +67,21 @@ export default function ComposeScreen() {
             editable={meetingState === "idle"}
           />
 
+          <MeetingAttachStrip selected={stagedMeetings} onChange={setStagedMeetings} />
+
           <Pressable
             style={[styles.startButton, !canStart && styles.startButtonDisabled]}
             disabled={!canStart}
             onPress={() => {
               const trimmed = description.trim();
+              // Stage before sending start_meeting so the active
+              // transition handler always sees them.
+              setPendingAttachedMeetings(stagedMeetings.map((m) => m.id));
               send({
                 type: "start_meeting",
                 description: trimmed.length > 0 ? trimmed : undefined,
               });
+              setStagedMeetings([]);
             }}
           >
             <Text style={styles.startButtonText}>
