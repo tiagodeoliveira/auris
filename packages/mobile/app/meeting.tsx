@@ -24,6 +24,8 @@ import {
   View,
 } from "react-native";
 
+import Markdown from "react-native-markdown-display";
+
 import { requestMicPermission, useAudioCapture } from "@/src/audio/audio-capture";
 import { useAppStore } from "@/src/store";
 import type { Item, ModeOption } from "@/src/wire/contract";
@@ -303,6 +305,10 @@ function ChatBubble({ item }: { item: Item }) {
   const role = (item.meta?.role as string | undefined) ?? "assistant";
   const isUser = role === "user";
   const pending = role === "assistant-pending";
+  // Agent answers are markdown. User bubbles and the pending
+  // placeholder stay plain text (the placeholder doesn't carry
+  // real markdown yet — just a label).
+  const isAssistant = role === "assistant";
   return (
     <View style={[styles.bubbleRow, isUser ? styles.bubbleRowUser : styles.bubbleRowAssistant]}>
       <View
@@ -312,11 +318,37 @@ function ChatBubble({ item }: { item: Item }) {
           pending && styles.bubblePending,
         ]}
       >
-        <Text style={[styles.bubbleText, isUser && styles.bubbleTextUser]}>{item.text}</Text>
+        {isAssistant ? (
+          <Markdown style={markdownStyles}>{item.text}</Markdown>
+        ) : (
+          <Text style={[styles.bubbleText, isUser && styles.bubbleTextUser]}>{item.text}</Text>
+        )}
       </View>
     </View>
   );
 }
+
+/// Styling for `react-native-markdown-display`. Keeps the assistant
+/// bubble visually close to the plain-Text variant — same font size,
+/// same color, no extra margins on the outer `body`. Inline-only
+/// elements (`strong`, `em`, `code`, `link`) get the conventional
+/// treatments; block elements we don't actively want (headings,
+/// blockquotes, etc.) get left at default since the agent rarely
+/// emits them in chat answers.
+const markdownStyles = {
+  body: { fontSize: 15, color: "#17212e", lineHeight: 21, margin: 0 },
+  paragraph: { marginTop: 0, marginBottom: 0 },
+  strong: { fontWeight: "700" as const },
+  em: { fontStyle: "italic" as const },
+  code_inline: {
+    backgroundColor: "rgba(0,0,0,0.06)",
+    paddingHorizontal: 4,
+    borderRadius: 3,
+    fontFamily: "Menlo",
+    fontSize: 14,
+  },
+  link: { color: "#2563eb", textDecorationLine: "underline" as const },
+};
 
 function renderMeta(mode: string, item: Item): React.ReactNode {
   const meta = item.meta as Record<string, unknown> | undefined;

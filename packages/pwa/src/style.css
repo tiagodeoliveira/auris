@@ -1022,6 +1022,30 @@ button.cta:disabled {
   white-space: pre-wrap;
   word-break: break-word;
 }
+/* Markdown-rendered assistant bubbles emit <p>/<br>/<code>/<a>; we
+   drop pre-wrap on those because marked already normalizes spacing
+   into block elements. Without this override, every soft newline
+   inside a paragraph doubles up. */
+.chat-bubble-assistant .chat-bubble-body {
+  white-space: normal;
+}
+.chat-bubble-assistant .chat-bubble-body p {
+  margin: 0;
+}
+.chat-bubble-assistant .chat-bubble-body p + p {
+  margin-top: 0.5em;
+}
+.chat-bubble-assistant .chat-bubble-body code {
+  background: rgba(0, 0, 0, 0.06);
+  padding: 0 0.25em;
+  border-radius: 3px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.92em;
+}
+.chat-bubble-assistant .chat-bubble-body a {
+  color: var(--mc-blue, #2563eb);
+  text-decoration: underline;
+}
 /* Pending placeholder ("Thinking…") — italic + slow-pulse so the
    user can tell the agent is still working vs. a real reply. */
 .chat-bubble-pending .chat-bubble-body {

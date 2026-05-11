@@ -10,6 +10,7 @@
 import type { Store } from "../store";
 import type { Item, Intent } from "../types";
 import { activeItems } from "../types";
+import { renderChatMarkdown } from "./markdown";
 
 function fmtTime(ms: number): string {
   const total = Math.max(0, Math.floor(ms / 1000));
@@ -178,7 +179,15 @@ export function mountItemsMirror(
     row.className = `chat-bubble chat-bubble-${role}${pending ? " chat-bubble-pending" : ""}`;
     const body = document.createElement("div");
     body.className = "chat-bubble-body";
-    body.textContent = item.text;
+    // Agent answers are markdown; user questions are plain text.
+    // `assistant-pending` is the optimistic-echo placeholder and
+    // doesn't carry real markdown content yet, so we treat it as
+    // plain too — no markdown work wasted on a transient label.
+    if (role === "assistant") {
+      body.innerHTML = renderChatMarkdown(item.text);
+    } else {
+      body.textContent = item.text;
+    }
     row.appendChild(body);
     return row;
   }

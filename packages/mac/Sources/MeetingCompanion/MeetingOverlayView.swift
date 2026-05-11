@@ -1171,12 +1171,31 @@ private struct ChatBubbleRow: View {
         item.meta?.role ?? ""
     }
     private var isUser: Bool { role == "user" }
+    private var isAssistant: Bool { role == "assistant" }
     private var isPending: Bool { role == "assistant-pending" }
+
+    /// Agent answers are markdown — render bold/italic/code-spans/
+    /// links/line-breaks via AttributedString. Conservative inline-only
+    /// parsing (`.inlineOnlyPreservingWhitespace`) intentionally
+    /// ignores headers/lists/blockquotes so the rendering matches the
+    /// PWA's strict-allowlist approach. User bubbles and the pending
+    /// placeholder stay plain text.
+    private var rendered: Text {
+        if isAssistant {
+            if let attr = try? AttributedString(
+                markdown: item.text,
+                options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)
+            ) {
+                return Text(attr)
+            }
+        }
+        return Text(item.text)
+    }
 
     var body: some View {
         HStack {
             if isUser { Spacer(minLength: 32) }
-            Text(item.text)
+            rendered
                 .italic(isPending)
                 .foregroundStyle(isUser ? Color.white : MCTheme.text)
                 .padding(.horizontal, 12)

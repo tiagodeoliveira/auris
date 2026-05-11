@@ -20,5 +20,10 @@
   },
   "lint-staged": {
     "*.{ts,tsx,js,json,md,yml,yaml}": "prettier --write"
+  },
+  "pnpm": {
+    "patchedDependencies": {
+      "expo-dev-menu@5.0.23": "patches/expo-dev-menu@5.0.23.patch"
+    }
   }
 }
