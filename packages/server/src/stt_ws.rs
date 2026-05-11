@@ -84,7 +84,7 @@ async fn run_stt_socket(
     // we can do server-side to recover.
     let provider_name = std::env::var("MEETING_COMPANION_STT_PROVIDER")
         .or_else(|_| {
-            if std::env::var("MEETING_COMPANION_STT_MOCK").is_ok() {
+            if crate::env::flag("MEETING_COMPANION_STT_MOCK") {
                 Ok("mock".to_string())
             } else {
                 Err(std::env::VarError::NotPresent)

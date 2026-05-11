@@ -67,11 +67,20 @@ services:
       MEETING_COMPANION_HEARTBEAT_MS: ${MEETING_COMPANION_HEARTBEAT_MS:-10000}
 
       # ─── Toggles (1 = enable, unset = off) ──────────────────────────
-      MEETING_COMPANION_AUTH_DISABLED: ${MEETING_COMPANION_AUTH_DISABLED:-}
-      MEETING_COMPANION_LLM_DISABLED: ${MEETING_COMPANION_LLM_DISABLED:-}
-      MEETING_COMPANION_AUDIO_DISABLED: ${MEETING_COMPANION_AUDIO_DISABLED:-}
-      MEETING_COMPANION_SKIP_BOOT_RECOVERY: ${MEETING_COMPANION_SKIP_BOOT_RECOVERY:-}
-      AGENT_LOG_PROMPT: ${AGENT_LOG_PROMPT:-}
+      # Intentionally listed without `${VAR:-}` defaults. The previous
+      # `${VAR:-}` form expanded to an empty string when unset, and
+      # the container env then carried `MEETING_COMPANION_AUDIO_DISABLED=""`
+      # — which the Rust side's `std::env::var(...).is_ok()` check
+      # treated as "set" → audio capture silently disabled in prod.
+      # Listing the raw `${VAR}` causes docker-compose to forward the
+      # variable only when the host actually defines it, and the
+      # crate's `env::flag()` helper now also rejects empty values
+      # defensively. Add to `.env.deploy` to enable.
+      MEETING_COMPANION_AUTH_DISABLED: ${MEETING_COMPANION_AUTH_DISABLED}
+      MEETING_COMPANION_LLM_DISABLED: ${MEETING_COMPANION_LLM_DISABLED}
+      MEETING_COMPANION_AUDIO_DISABLED: ${MEETING_COMPANION_AUDIO_DISABLED}
+      MEETING_COMPANION_SKIP_BOOT_RECOVERY: ${MEETING_COMPANION_SKIP_BOOT_RECOVERY}
+      AGENT_LOG_PROMPT: ${AGENT_LOG_PROMPT}
 
       # ─── LLM provider ───────────────────────────────────────────────
       MEETING_COMPANION_LLM_PROVIDER: ${MEETING_COMPANION_LLM_PROVIDER:-bedrock}

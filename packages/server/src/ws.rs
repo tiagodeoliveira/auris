@@ -710,7 +710,7 @@ async fn recover_active_meetings(
 ) -> Vec<RecoveredUserMeeting> {
     // Test escape hatch: integration tests share a process and would
     // resurrect each other's leftover meetings without this gate.
-    if std::env::var("MEETING_COMPANION_SKIP_BOOT_RECOVERY").is_ok() {
+    if crate::env::flag("MEETING_COMPANION_SKIP_BOOT_RECOVERY") {
         return Vec::new();
     }
     let rows = match crate::db::find_active_meetings_per_user(db).await {
@@ -1177,7 +1177,7 @@ fn spawn_extraction(
 ) {
     tokio::spawn(async move {
         // Dev escape hatch.
-        if std::env::var("MEETING_COMPANION_LLM_DISABLED").is_ok() {
+        if crate::env::flag("MEETING_COMPANION_LLM_DISABLED") {
             tracing::info!("LLM extraction disabled by env var; skipping");
             return;
         }
@@ -1254,7 +1254,7 @@ async fn spawn_live_pipeline(handle: ServerHandle, user_id: String, cancel: Canc
     // user_id can forward incoming PCM into it. Nothing here ever
     // crosses user boundaries.
     // -------------------------------------------------------------------
-    let audio_disabled = std::env::var("MEETING_COMPANION_AUDIO_DISABLED").is_ok();
+    let audio_disabled = crate::env::flag("MEETING_COMPANION_AUDIO_DISABLED");
     let audio_rx = if audio_disabled {
         tracing::info!("audio capture disabled by env var");
         None
@@ -1271,7 +1271,7 @@ async fn spawn_live_pipeline(handle: ServerHandle, user_id: String, cancel: Canc
     // -------------------------------------------------------------------
     let provider_name = std::env::var("MEETING_COMPANION_STT_PROVIDER")
         .or_else(|_| {
-            if std::env::var("MEETING_COMPANION_STT_MOCK").is_ok() {
+            if crate::env::flag("MEETING_COMPANION_STT_MOCK") {
                 Ok("mock".to_string())
             } else {
                 Err(std::env::VarError::NotPresent)

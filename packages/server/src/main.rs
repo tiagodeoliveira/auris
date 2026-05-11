@@ -30,7 +30,7 @@ async fn main() -> Result<()> {
 
     let args = Args::parse();
     let addr: SocketAddr = format!("{}:{}", args.bind, args.port).parse()?;
-    let auth_disabled = std::env::var("MEETING_COMPANION_AUTH_DISABLED").is_ok();
+    let auth_disabled = meeting_companion_server::env::flag("MEETING_COMPANION_AUTH_DISABLED");
     info!(
         ?addr,
         version = env!("CARGO_PKG_VERSION"),

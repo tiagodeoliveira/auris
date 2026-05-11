@@ -114,7 +114,7 @@ async fn process_one(
     events_tx: &tokio::sync::broadcast::Sender<crate::contract::UserEvent>,
     req: &MomentCreated,
 ) -> anyhow::Result<()> {
-    if std::env::var("MEETING_COMPANION_LLM_DISABLED").is_ok() {
+    if crate::env::flag("MEETING_COMPANION_LLM_DISABLED") {
         debug!(moment_id = %req.moment_id, "LLM disabled; skipping moment summary");
         return Ok(());
     }

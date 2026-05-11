@@ -6,6 +6,7 @@ pub mod audio;
 pub mod auth;
 pub mod contract;
 pub mod db;
+pub mod env;
 pub mod extraction;
 pub mod llm;
 pub mod mnemo;
