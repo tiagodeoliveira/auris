@@ -64,19 +64,24 @@ pub type IngestRequest = IngestEvent;
 /// Build the context block that's sent with every push for a meeting.
 /// Reused for sentence / chat / moment / summary-bundle events.
 ///
-/// `meeting_id` and `mode` (when set) ride along in `attributes` so
-/// mnemo's recall layer can filter by them. `meeting_id` keeps the
-/// door open for per-meeting recall ("what did I record in
-/// meeting X?") and the per-user mnemo identity work flagged in
-/// PLAN.md §4.2. `mode` distinguishes the source pipeline of each
-/// turn (transcript / chat / moment / summary_bundle) — useful for
-/// "show me chat-derived memories specifically" kinds of recall.
+/// `meeting_id`, `mode`, and `meeting_ended` (when set) ride along in
+/// `attributes` so mnemo's recall layer can filter by them.
+/// - `meeting_id` keeps the door open for per-meeting recall ("what
+///   did I record in meeting X?") and the per-user mnemo identity
+///   work flagged in PLAN.md §4.2.
+/// - `mode` distinguishes the source pipeline of each turn
+///   (transcript / chat / moment / summary_bundle).
+/// - `meeting_ended` is only set on the summary-bundle event fired at
+///   stop_meeting — mid-meeting pushes can't carry it because the
+///   end time isn't known yet. Recall can use this to find "meetings
+///   that ended after X" by filtering summary_bundle events.
 pub fn build_context(
     workstation: &str,
     metadata: &HashMap<String, String>,
     started_at: chrono::DateTime<chrono::Utc>,
     meeting_id: Option<&str>,
     mode: Option<&str>,
+    meeting_ended: Option<chrono::DateTime<chrono::Utc>>,
 ) -> IngestContext {
     let project = metadata.get("project").cloned();
     let date = Some(started_at.format("%Y-%m-%d").to_string());
@@ -86,6 +91,9 @@ pub fn build_context(
     }
     if let Some(m) = mode {
         attributes.insert("mode".to_string(), m.to_string());
+    }
+    if let Some(end) = meeting_ended {
+        attributes.insert("meeting_ended".to_string(), end.to_rfc3339());
     }
     IngestContext {
         workstation: workstation.to_string(),
@@ -119,6 +127,7 @@ pub fn build_sentence_event(
             started_at,
             meeting_id,
             Some("transcript"),
+            None,
         ),
     }
 }
@@ -148,7 +157,14 @@ pub fn build_chat_event(
                 content: answer.to_string(),
             },
         ],
-        context: build_context(workstation, metadata, started_at, meeting_id, Some("chat")),
+        context: build_context(
+            workstation,
+            metadata,
+            started_at,
+            meeting_id,
+            Some("chat"),
+            None,
+        ),
     }
 }
 
@@ -186,6 +202,7 @@ pub fn build_moment_event(
             started_at,
             meeting_id,
             Some("moment"),
+            None,
         ),
     }
 }
@@ -199,6 +216,7 @@ pub fn build_summary_event(
     metadata: &HashMap<String, String>,
     started_at: chrono::DateTime<chrono::Utc>,
     meeting_id: Option<&str>,
+    meeting_ended: Option<chrono::DateTime<chrono::Utc>>,
     items_by_mode: &HashMap<String, Vec<Item>>,
 ) -> Option<IngestEvent> {
     let mut turns = Vec::new();
@@ -236,6 +254,7 @@ pub fn build_summary_event(
             started_at,
             meeting_id,
             Some("summary_bundle"),
+            meeting_ended,
         ),
     })
 }
@@ -325,8 +344,8 @@ mod tests {
         // Transcript items must be skipped.
         by_mode.insert("transcript".into(), vec![item("t1", "We talked.")]);
 
-        let ev =
-            build_summary_event("s", "h", &meta(&[]), ts(), None, &by_mode).expect("non-empty");
+        let ev = build_summary_event("s", "h", &meta(&[]), ts(), None, None, &by_mode)
+            .expect("non-empty");
         assert_eq!(ev.turns.len(), 3);
         assert!(ev.turns[0].content.starts_with("Action items:"));
         assert!(ev.turns[0].content.contains("- Send recap"));
@@ -342,16 +361,57 @@ mod tests {
         let mut by_mode = HashMap::new();
         by_mode.insert("actions".into(), vec![item("a1", "Only this")]);
         by_mode.insert("highlights".into(), vec![]); // empty
-        let ev =
-            build_summary_event("s", "h", &meta(&[]), ts(), None, &by_mode).expect("non-empty");
+        let ev = build_summary_event("s", "h", &meta(&[]), ts(), None, None, &by_mode)
+            .expect("non-empty");
         assert_eq!(ev.turns.len(), 1);
         assert!(ev.turns[0].content.starts_with("Action items:"));
     }
 
     #[test]
     fn summary_event_returns_none_when_nothing_to_push() {
-        let ev = build_summary_event("s", "h", &meta(&[]), ts(), None, &HashMap::new());
+        let ev = build_summary_event("s", "h", &meta(&[]), ts(), None, None, &HashMap::new());
         assert!(ev.is_none());
+    }
+
+    #[test]
+    fn summary_event_carries_meeting_ended_attribute_when_provided() {
+        let mut by_mode = HashMap::new();
+        by_mode.insert("actions".into(), vec![item("a1", "follow up")]);
+        let end = chrono::DateTime::parse_from_rfc3339("2026-05-04T13:30:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        let ev = build_summary_event(
+            "s",
+            "h",
+            &meta(&[]),
+            ts(),
+            Some("m-42"),
+            Some(end),
+            &by_mode,
+        )
+        .expect("non-empty");
+        assert_eq!(
+            ev.context.attributes.get("meeting_ended"),
+            Some(&end.to_rfc3339()),
+            "meeting_ended should land in attributes when set"
+        );
+        // meeting_id rides along too.
+        assert_eq!(
+            ev.context.attributes.get("meeting_id"),
+            Some(&"m-42".to_string()),
+        );
+    }
+
+    #[test]
+    fn sentence_event_omits_meeting_ended_attribute() {
+        // Mid-meeting events don't know the end time yet; meeting_ended
+        // must NOT appear on those, otherwise recall would return
+        // stale rows when filtering by end-time ranges.
+        let ev = build_sentence_event("s", "h", &meta(&[]), ts(), Some("m-1"), "hi");
+        assert!(
+            !ev.context.attributes.contains_key("meeting_ended"),
+            "meeting_ended must not leak onto mid-meeting events"
+        );
     }
 
     #[test]

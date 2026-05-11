@@ -225,6 +225,26 @@ fn push_moment(
     });
 }
 
+/// Format a transcript Item's content for mnemo, prefixing the
+/// speaker tag when Soniox identified one. mnemo only sees strings,
+/// so we inline the speaker as `"[Speaker N] <text>"` rather than
+/// pushing it as a separate attribute — that way recall composes
+/// memories back into the agent's context with the speaker
+/// attribution intact. Items without a `meta.speaker` field
+/// pass through unchanged.
+fn format_transcript_content(item: &Item) -> String {
+    let speaker = item
+        .meta
+        .as_ref()
+        .and_then(|m| m.get("speaker"))
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty());
+    match speaker {
+        Some(s) => format!("[Speaker {s}] {}", item.text),
+        None => item.text.clone(),
+    }
+}
+
 fn push_new_transcript(client: &MnemoClient, state: &mut PusherState, items: &[Item]) {
     let (Some(session_id), Some(started_at)) = (state.session_id.as_deref(), state.started_at)
     else {
@@ -240,13 +260,14 @@ fn push_new_transcript(client: &MnemoClient, state: &mut PusherState, items: &[I
     let session_id = session_id.to_string();
     let meeting_id = state.meeting_id.clone();
     for item in &items[state.transcript_pushed..] {
+        let content = format_transcript_content(item);
         let payload = build_sentence_event(
             &session_id,
             &workstation,
             &metadata,
             started_at,
             meeting_id.as_deref(),
-            &item.text,
+            &content,
         );
         let client = client.clone();
         tokio::spawn(async move {
@@ -263,12 +284,18 @@ async fn flush_summary(client: &MnemoClient, state: &PusherState) {
     else {
         return;
     };
+    // `flush_summary` fires from the MeetingStateChanged → Idle
+    // handler, so `now` IS the meeting end time. Captured here
+    // rather than threaded through the broader state so it's
+    // unambiguously the stop-time wall clock.
+    let meeting_ended = Utc::now();
     let Some(payload) = build_summary_event(
         session_id,
         client.workstation(),
         &state.metadata,
         started_at,
         state.meeting_id.as_deref(),
+        Some(meeting_ended),
         &state.items_by_mode,
     ) else {
         debug!(session_id = %session_id, "mnemo: nothing to summarize, skipping final push");
@@ -294,6 +321,39 @@ mod tests {
             t: 0,
             meta: None,
         }
+    }
+
+    #[test]
+    fn format_transcript_keeps_text_when_no_speaker_meta() {
+        let it = item("i1", "We talked about the demo.");
+        assert_eq!(format_transcript_content(&it), "We talked about the demo.");
+    }
+
+    #[test]
+    fn format_transcript_prefixes_speaker_when_present() {
+        let mut it = item("i1", "We talked about the demo.");
+        it.meta = Some(serde_json::json!({"speaker": "2"}));
+        assert_eq!(
+            format_transcript_content(&it),
+            "[Speaker 2] We talked about the demo.",
+        );
+    }
+
+    #[test]
+    fn format_transcript_ignores_non_string_speaker() {
+        // Defensive: Soniox emits strings, but if upstream ever
+        // produces a number/bool/null, fall through to plain text
+        // instead of crashing or stringifying with quotes around.
+        let mut it = item("i1", "hello");
+        it.meta = Some(serde_json::json!({"speaker": 7}));
+        assert_eq!(format_transcript_content(&it), "hello");
+    }
+
+    #[test]
+    fn format_transcript_ignores_empty_speaker_string() {
+        let mut it = item("i1", "hello");
+        it.meta = Some(serde_json::json!({"speaker": ""}));
+        assert_eq!(format_transcript_content(&it), "hello");
     }
 
     fn meta(pairs: &[(&str, &str)]) -> HashMap<String, String> {
