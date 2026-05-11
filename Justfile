@@ -25,9 +25,14 @@ db-shell:
 # Run the server with real Auth0 JWT validation (port 7331).
 # Both Mac and PWA must present a valid access token for the
 # `https://meeting-companion.api` audience.
+#
+# Injects `DATABASE_URL` matching the `just db-up` container so a
+# stray `.env` pointing at a hosted DB doesn't get picked up by
+# dotenvy.
 server-run:
     AUTH0_DOMAIN=dev-jrva0wzk3qkdxcar.us.auth0.com \
     AUTH0_API_AUDIENCE=https://meeting-companion.api \
+    DATABASE_URL=postgres://meeting_companion:dev@localhost:5432/meeting_companion \
     cargo run -p meeting-companion-server -- --port 7331
 
 # Run the server with auth disabled — every request is attributed to a
@@ -35,14 +40,28 @@ server-run:
 # `curl` without launching a browser flow.
 server-run-noauth:
     MEETING_COMPANION_AUTH_DISABLED=1 \
+    DATABASE_URL=postgres://meeting_companion:dev@localhost:5432/meeting_companion \
     cargo run -p meeting-companion-server -- --port 7331
 
-# Run the PWA dev server (port 5173).
+# Run the PWA dev server (port 5173). Injects local-targeted
+# `VITE_*` vars so a `.env.local` with a remote URL doesn't redirect
+# the dev bundle. Auth0 still points at the shared dev tenant; flip
+# to `server-run-noauth` + remove the Auth0 vars below if you want
+# a fully-offline path.
 pwa-dev:
+    VITE_SERVER_URL=ws://localhost:7331 \
+    VITE_AUTH0_DOMAIN=dev-jrva0wzk3qkdxcar.us.auth0.com \
+    VITE_AUTH0_PWA_CLIENT_ID=IPKnV1gX91eYYnX5Uc6142bQpnuA9n3G \
+    VITE_AUTH0_API_AUDIENCE=https://meeting-companion.api \
     pnpm -F @meeting-companion/pwa dev
 
 # Run the PWA dev server + the EvenHub simulator pointed at it.
+# Same local-dev env injection as `pwa-dev`.
 pwa-sim:
+    VITE_SERVER_URL=ws://localhost:7331 \
+    VITE_AUTH0_DOMAIN=dev-jrva0wzk3qkdxcar.us.auth0.com \
+    VITE_AUTH0_PWA_CLIENT_ID=IPKnV1gX91eYYnX5Uc6142bQpnuA9n3G \
+    VITE_AUTH0_API_AUDIENCE=https://meeting-companion.api \
     pnpm -F @meeting-companion/pwa dev:sim
 
 # Print integrated-stack run instructions (three terminals).
@@ -62,8 +81,20 @@ mac-build:
     cd packages/mac && swift build
 
 # Run the Mac app (build + launch). Menu bar icon appears top-right.
+#
+# Injects local-dev env vars that `AppSettings` and `Auth0Client`
+# read at runtime — same precedence order as the bundled Info.plist
+# values, but env wins so this recipe overrides any prior bundle.
+# Without them an unbundled `swift run` would fall back to the
+# hardcoded dev-tenant defaults (which happen to point at the same
+# tenant today, but being explicit makes the recipe self-contained).
 mac-run:
-    cd packages/mac && swift run
+    cd packages/mac && \
+    MEETING_COMPANION_SERVER_URL=ws://localhost:7331 \
+    AUTH0_DOMAIN=dev-jrva0wzk3qkdxcar.us.auth0.com \
+    AUTH0_MAC_CLIENT_ID=YDK0XoDAIRhp2uORlfk8TijQkcqRzjsi \
+    AUTH0_API_AUDIENCE=https://meeting-companion.api \
+    swift run
 
 # --- Test ------------------------------------------------------------------
 

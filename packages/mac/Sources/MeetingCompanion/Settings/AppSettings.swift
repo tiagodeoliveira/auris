@@ -28,10 +28,19 @@ final class AppSettings {
     /// repo variable (see .github/workflows/mac-bundle.yml).
     static let serverURLDefault = "ws://localhost:7331"
 
-    /// WebSocket server URL. Reads the bundled Info.plist value
-    /// first; falls back to localhost so unbundled `swift run`
-    /// development keeps working without any env config.
+    /// WebSocket server URL. Resolution order:
+    ///   1. `MEETING_COMPANION_SERVER_URL` env var — lets `just mac-run`
+    ///      force a localhost target regardless of what's bundled.
+    ///   2. The bundled Info.plist value — used by the signed CI build
+    ///      where envsubst baked the production URL in.
+    ///   3. Hardcoded `ws://localhost:7331` so an unbundled `swift run`
+    ///      with no env config still finds a local server.
     var serverURL: String {
+        if let env = ProcessInfo.processInfo.environment["MEETING_COMPANION_SERVER_URL"],
+           !env.isEmpty
+        {
+            return env
+        }
         if let bundled = Bundle.main.object(forInfoDictionaryKey: "MeetingCompanionServerURL") as? String,
            !bundled.isEmpty
         {

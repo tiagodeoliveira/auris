@@ -48,21 +48,33 @@ final class Auth0Client: NSObject {
         }
     }
 
-    // Auth0 dashboard config. CI builds populate Info.plist via
-    // envsubst from the AUTH0_DOMAIN / AUTH0_MAC_CLIENT_ID /
-    // AUTH0_API_AUDIENCE repo variables; `swift run` development
-    // falls back to the hardcoded dev-tenant values.
-    private let domain = Auth0Client.bundled("Auth0Domain") ?? "dev-jrva0wzk3qkdxcar.us.auth0.com"
-    private let clientId = Auth0Client.bundled("Auth0ClientID") ?? "YDK0XoDAIRhp2uORlfk8TijQkcqRzjsi"
-    private let audience = Auth0Client.bundled("Auth0Audience") ?? "https://meeting-companion.api"
+    // Auth0 dashboard config. Resolution order per field:
+    //   1. Environment variable — `just mac-run` injects these so a
+    //      local dev session can target a non-default tenant without
+    //      editing source.
+    //   2. Bundled Info.plist — CI builds populate this via envsubst
+    //      from the AUTH0_DOMAIN / AUTH0_MAC_CLIENT_ID /
+    //      AUTH0_API_AUDIENCE repo variables.
+    //   3. Hardcoded dev-tenant fallback — keeps `swift run` working
+    //      with no env or bundle at all.
+    private let domain = Auth0Client.configured("AUTH0_DOMAIN", "Auth0Domain")
+        ?? "dev-jrva0wzk3qkdxcar.us.auth0.com"
+    private let clientId = Auth0Client.configured("AUTH0_MAC_CLIENT_ID", "Auth0ClientID")
+        ?? "YDK0XoDAIRhp2uORlfk8TijQkcqRzjsi"
+    private let audience = Auth0Client.configured("AUTH0_API_AUDIENCE", "Auth0Audience")
+        ?? "https://meeting-companion.api"
     private let redirectScheme = "meetingcompanion"
     private var redirectURI: String { "\(redirectScheme)://callback" }
 
-    /// Read a non-empty string from `Info.plist`. Returns nil for
-    /// missing keys AND for empty values — covers both "not bundled"
-    /// (local dev) and "bundled but envsubst saw an empty repo var".
-    private static func bundled(_ key: String) -> String? {
-        guard let v = Bundle.main.object(forInfoDictionaryKey: key) as? String,
+    /// Resolve a config value from (env var → Info.plist key → nil).
+    /// Empty strings are treated as missing in both sources so a
+    /// blank repo variable or unset env var falls through to the next
+    /// layer of the resolution chain.
+    private static func configured(_ envKey: String, _ plistKey: String) -> String? {
+        if let env = ProcessInfo.processInfo.environment[envKey], !env.isEmpty {
+            return env
+        }
+        guard let v = Bundle.main.object(forInfoDictionaryKey: plistKey) as? String,
               !v.isEmpty
         else { return nil }
         return v
