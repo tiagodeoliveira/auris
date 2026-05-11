@@ -1374,10 +1374,37 @@ textarea {
   flex-direction: column;
   gap: 12px;
 }
+.meetings-detail-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
 .meetings-detail-title {
   margin: 0;
   font-size: 18px;
   color: var(--text-light);
+  flex: 1;
+}
+.meetings-detail-download {
+  padding: 6px 12px;
+  font-size: 12px;
+  font-family: var(--font-mono);
+  letter-spacing: 0.3px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-light);
+  border-radius: 6px;
+  color: var(--text-primary);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.meetings-detail-download:hover:not(:disabled) {
+  border-color: var(--brand-blue);
+  color: var(--brand-blue);
+}
+.meetings-detail-download:disabled {
+  opacity: 0.6;
+  cursor: progress;
 }
 .meetings-detail-timing {
   display: flex;

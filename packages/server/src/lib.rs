@@ -9,6 +9,7 @@ pub mod db;
 pub mod extraction;
 pub mod llm;
 pub mod mnemo;
+pub mod pdf;
 pub mod persistence;
 pub mod state;
 pub mod stt;

@@ -132,6 +132,7 @@ pub fn make_router(state: ApiState) -> Router {
     Router::new()
         .route("/meetings", get(list_meetings))
         .route("/meetings/:id", get(get_meeting).delete(delete_meeting))
+        .route("/meetings/:id/export.pdf", get(export_meeting_pdf))
         .route(
             "/meetings/:id/moments/:moment_id/screenshot",
             get(get_moment_screenshot).post(upload_moment_screenshot),
@@ -342,6 +343,162 @@ async fn get_meeting(
         items_by_mode,
         llm_usage,
     }))
+}
+
+/// `GET /meetings/:id/export.pdf` — render the meeting as a PDF
+/// document. Same data the detail view shows, plus larger moment
+/// screenshots interleaved with the transcript. Returns
+/// `application/pdf` with a `Content-Disposition: attachment;
+/// filename="..."` so a plain `<a download>` on the client works.
+///
+/// The PDF render itself is synchronous (printpdf is sync); we wrap
+/// in `spawn_blocking` so a large meeting (long transcript + many
+/// moments) doesn't park the async runtime thread.
+async fn export_meeting_pdf(
+    State(state): State<ApiState>,
+    Path(meeting_id): Path<String>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    let user_id = require_user(&headers, &state).await?;
+    // Reuse the same fetch path as get_meeting — keeps the PDF
+    // contents in lockstep with the JSON detail view.
+    let row: Option<MeetingRow> = sqlx::query_as(
+        r#"SELECT id, description, metadata, started_at, ended_at
+           FROM meetings WHERE id = $1 AND user_id = $2"#,
+    )
+    .bind(&meeting_id)
+    .bind(&user_id)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(ApiError::Db)?;
+    let Some(row) = row else {
+        return Err(ApiError::NotFound);
+    };
+    let usage_row: Option<(i64, i64, i64, i64, Option<String>, Option<String>)> = sqlx::query_as(
+        r#"SELECT llm_calls, llm_input_tokens, llm_output_tokens,
+                  llm_cached_input_tokens, llm_provider, llm_model_id
+             FROM meetings WHERE id = $1"#,
+    )
+    .bind(&row.id)
+    .fetch_optional(&state.db)
+    .await
+    .map_err(ApiError::Db)?;
+    let (calls, input_tokens, output_tokens, cached_input_tokens, provider, model_id) =
+        usage_row.unwrap_or((0, 0, 0, 0, None, None));
+
+    let transcript = read_transcript(&row.id).await;
+    let moments = crate::db::list_moments_for_meeting(&state.db, &row.id)
+        .await
+        .map_err(|e| ApiError::Db(downcast_db(e)))?;
+    let data_dir = crate::db::data_dir().map_err(|e| ApiError::Internal(e.to_string()))?;
+
+    // Load screenshots from disk for each moment that has one.
+    // Failures (deleted file, IO error) degrade to "no image" —
+    // moment header + summary still render.
+    let renderable_moments: Vec<crate::pdf::RenderableMoment> = moments
+        .into_iter()
+        .map(|m| {
+            let bytes = m.asset_path.as_ref().and_then(|asset| {
+                let abs = data_dir.join(asset);
+                match std::fs::read(&abs) {
+                    Ok(b) => Some(b),
+                    Err(e) => {
+                        tracing::warn!(moment = %m.id, path = ?abs, error = %e, "moment screenshot read failed");
+                        None
+                    }
+                }
+            });
+            crate::pdf::RenderableMoment {
+                id: m.id,
+                t: m.t,
+                note: m.note,
+                summary: m.summary,
+                screenshot_bytes: bytes,
+            }
+        })
+        .collect();
+
+    // Build the metadata vec (sorted by key for stable ordering).
+    let metadata_obj: serde_json::Value =
+        serde_json::from_str(&row.metadata).unwrap_or(serde_json::json!({}));
+    let mut metadata: Vec<(String, String)> = metadata_obj
+        .as_object()
+        .map(|o| {
+            o.iter()
+                .map(|(k, v)| {
+                    let v_str = match v {
+                        serde_json::Value::String(s) => s.clone(),
+                        other => other.to_string(),
+                    };
+                    (k.clone(), v_str)
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    metadata.sort_by(|a, b| a.0.cmp(&b.0));
+
+    // Title fallback chain mirrors `pickMeetingTitle` in the clients.
+    let title = pick_title(&row.description, &metadata);
+
+    let input = crate::pdf::PdfInput {
+        id: row.id.clone(),
+        title,
+        description: row.description.clone(),
+        started_at: row.started_at,
+        ended_at: row.ended_at,
+        metadata,
+        transcript,
+        moments: renderable_moments,
+        llm_calls: calls,
+        llm_input_tokens: input_tokens,
+        llm_output_tokens: output_tokens,
+        llm_cached_input_tokens: cached_input_tokens,
+        llm_provider: provider,
+        llm_model_id: model_id,
+    };
+
+    // Spawn the blocking render — printpdf + image-decoding can run
+    // for hundreds of ms on a big meeting, and we don't want to park
+    // the async runtime thread.
+    let pdf_bytes = tokio::task::spawn_blocking(move || crate::pdf::render(&input))
+        .await
+        .map_err(|e| ApiError::Internal(format!("pdf render task panicked: {e}")))?
+        .map_err(|e| ApiError::Internal(format!("pdf render failed: {e}")))?;
+
+    let filename = format!("meeting-{}.pdf", &meeting_id);
+    Ok(Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "application/pdf")
+        .header(
+            header::CONTENT_DISPOSITION,
+            format!("attachment; filename=\"{filename}\""),
+        )
+        .header(header::CACHE_CONTROL, "private, max-age=0, must-revalidate")
+        .body(Body::from(pdf_bytes))
+        .unwrap())
+}
+
+/// Pick a human-readable title for the PDF — mirrors the
+/// `pickMeetingTitle` helper used on every client so the export
+/// title matches what the user saw in the detail view.
+fn pick_title(description: &Option<String>, metadata: &[(String, String)]) -> String {
+    if let Some((_, v)) = metadata.iter().find(|(k, _)| k == "title") {
+        let t = v.trim();
+        if !t.is_empty() {
+            return t.to_string();
+        }
+    }
+    if let Some(desc) = description {
+        let first_line = desc.lines().find(|l| !l.trim().is_empty()).unwrap_or("");
+        let trimmed = first_line.trim();
+        if !trimmed.is_empty() {
+            if trimmed.len() <= 80 {
+                return trimmed.to_string();
+            }
+            return format!("{}…", &trimmed[..79]);
+        }
+    }
+    "Untitled meeting".to_string()
 }
 
 /// `DELETE /meetings/:id` — remove a meeting plus its moments

@@ -10,6 +10,8 @@ import { useLocalSearchParams } from "expo-router";
 import { useCallback, useState } from "react";
 import { useFocusEffect } from "expo-router";
 import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import * as FileSystem from "expo-file-system";
+import * as Sharing from "expo-sharing";
 
 import * as auth0 from "@/src/auth/auth0";
 import { serverUrl } from "@/src/config";
@@ -72,7 +74,10 @@ export default function MeetingDetailScreen() {
 
   return (
     <ScrollView style={styles.root} contentContainerStyle={styles.content}>
-      <Text style={styles.title}>{title}</Text>
+      <View style={styles.titleRow}>
+        <Text style={styles.title}>{title}</Text>
+        <DownloadPdfButton meetingId={id} />
+      </View>
 
       <View style={styles.timingRow}>
         <TimingCell label="Started" value={formatDateLong(detail.started_at)} />
@@ -93,6 +98,57 @@ export default function MeetingDetailScreen() {
 
       <TranscriptBlock items={detail.transcript} />
     </ScrollView>
+  );
+}
+
+/// Download the PDF export, then hand off to the native share sheet
+/// so the user can save it to Files / iCloud / Drive / etc. The
+/// server's `/meetings/:id/export.pdf` route requires the Auth0
+/// bearer token, so we use FileSystem.downloadAsync with explicit
+/// headers (a vanilla URL handoff to Sharing wouldn't carry auth).
+function DownloadPdfButton({ meetingId }: { meetingId: string }) {
+  const [state, setState] = useState<"idle" | "working" | "failed">("idle");
+  const label = state === "working" ? "↓ generating…" : state === "failed" ? "↓ failed" : "↓ PDF";
+
+  async function onPress() {
+    if (state === "working") return;
+    setState("working");
+    try {
+      const token = await auth0.getAccessToken();
+      const restBase = serverUrl.replace(/^ws/, "http").replace(/\/$/, "");
+      const url = `${restBase}/meetings/${encodeURIComponent(meetingId)}/export.pdf`;
+      // expo-file-system writes to a cache path; expo-sharing then
+      // points the share sheet at that file. Cache lives until the
+      // OS evicts — fine for an export the user reviews once.
+      const target = `${FileSystem.cacheDirectory}meeting-${meetingId}.pdf`;
+      const result = await FileSystem.downloadAsync(url, target, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (result.status !== 200) {
+        throw new Error(`server returned ${result.status}`);
+      }
+      if (await Sharing.isAvailableAsync()) {
+        await Sharing.shareAsync(target, {
+          mimeType: "application/pdf",
+          dialogTitle: "Meeting export",
+          UTI: "com.adobe.pdf",
+        });
+      }
+      setState("idle");
+    } catch (e) {
+      console.warn("[meeting/detail] pdf download failed:", e);
+      setState("failed");
+      setTimeout(() => setState("idle"), 2500);
+    }
+  }
+
+  return (
+    <Pressable
+      style={[styles.downloadBtn, state === "working" && styles.downloadBtnDisabled]}
+      onPress={onPress}
+    >
+      <Text style={styles.downloadBtnText}>{label}</Text>
+    </Pressable>
   );
 }
 
@@ -229,7 +285,24 @@ const styles = StyleSheet.create({
   center: { flex: 1, justifyContent: "center", alignItems: "center", padding: 24 },
   errorText: { color: "#e5484d", fontSize: 14, textAlign: "center" },
 
-  title: { fontSize: 22, fontWeight: "600", color: "#17212e" },
+  titleRow: { flexDirection: "row", alignItems: "center", gap: 12 },
+  title: { fontSize: 22, fontWeight: "600", color: "#17212e", flex: 1 },
+
+  downloadBtn: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    backgroundColor: "#fff",
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "#d5dee9",
+    borderRadius: 6,
+  },
+  downloadBtnDisabled: { opacity: 0.6 },
+  downloadBtnText: {
+    fontFamily: "Menlo",
+    fontSize: 12,
+    color: "#17212e",
+    letterSpacing: 0.3,
+  },
 
   timingRow: { flexDirection: "row", gap: 24 },
   timingCell: { flexDirection: "column", gap: 1 },

@@ -213,10 +213,27 @@ export function mountMeetingsModal(parent: HTMLElement, store: Store, auth: Auth
     // placeholder. Previously the title cell got the *entire*
     // description, which sprawled across the pane when the user
     // pasted a multi-page job posting.
+    // Header row: title on the left, "Download PDF" on the right.
+    // The download button piggybacks on the existing detail fetch —
+    // when the user clicks it, we fetch the server's
+    // `/meetings/:id/export.pdf` with the same Auth0 bearer token
+    // and trigger a blob-download. A plain `<a href download>` won't
+    // work because it can't carry the auth header.
+    const headRow = document.createElement("div");
+    headRow.className = "meetings-detail-header";
     const head = document.createElement("h3");
     head.className = "meetings-detail-title";
     head.textContent = pickDetailTitle(detail);
-    root.appendChild(head);
+    headRow.appendChild(head);
+    const downloadBtn = document.createElement("button");
+    downloadBtn.className = "btn-secondary meetings-detail-download";
+    downloadBtn.textContent = "↓ PDF";
+    downloadBtn.title = "Download this meeting as a PDF";
+    downloadBtn.addEventListener("click", () => {
+      void downloadMeetingPdf(detail, auth, downloadBtn);
+    });
+    headRow.appendChild(downloadBtn);
+    root.appendChild(headRow);
 
     // Timing row
     const timing = document.createElement("div");
@@ -665,6 +682,54 @@ function formatDuration(startedAt: string, endedAt: string | null): string {
   if (mins < 60) return `${mins}m ${rem}s`;
   const hours = Math.floor(mins / 60);
   return `${hours}h ${mins % 60}m`;
+}
+
+/// Fetch `GET /meetings/:id/export.pdf` with the current Auth0
+/// bearer token and trigger a browser download via an object URL.
+/// We can't use a plain `<a download>` because the route requires
+/// an `Authorization` header — `<a>` only sets cookies.
+///
+/// The button is disabled + relabeled while in flight so a double-
+/// click doesn't fire two simultaneous renders on the server.
+async function downloadMeetingPdf(
+  detail: MeetingDetail,
+  auth: AuthBundle,
+  button: HTMLButtonElement,
+): Promise<void> {
+  const restBase = SERVER_URL.replace(/^ws/, "http").replace(/\/$/, "");
+  const originalLabel = button.textContent;
+  button.disabled = true;
+  button.textContent = "↓ generating…";
+  try {
+    const token = await auth.getAccessToken();
+    const resp = await fetch(`${restBase}/meetings/${encodeURIComponent(detail.id)}/export.pdf`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!resp.ok) {
+      throw new Error(`server returned ${resp.status}`);
+    }
+    const blob = await resp.blob();
+    const objectUrl = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = objectUrl;
+    a.download = `meeting-${detail.id}.pdf`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    // Revoke after the click handler has settled — Safari can
+    // otherwise interrupt the download.
+    setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+  } catch (e) {
+    console.warn("[meetings-modal] download failed:", e);
+    button.textContent = "↓ failed";
+    setTimeout(() => {
+      button.textContent = originalLabel ?? "↓ PDF";
+      button.disabled = false;
+    }, 2500);
+    return;
+  }
+  button.textContent = originalLabel ?? "↓ PDF";
+  button.disabled = false;
 }
 
 function timingCell(label: string, value: string, cls?: "in-progress"): HTMLElement {

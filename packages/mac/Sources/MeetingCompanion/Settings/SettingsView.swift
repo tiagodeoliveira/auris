@@ -370,14 +370,23 @@ private struct MeetingDetailView: View {
     @Bindable var model: AppModel
 
     @State private var descriptionExpanded = false
+    @State private var pdfState: PdfDownloadState = .idle
+
+    private enum PdfDownloadState: Equatable {
+        case idle, working, failed
+    }
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
-                Text(pickMeetingTitle(description: detail.description, metadata: detail.metadata))
-                    .font(.title2)
-                    .fontWeight(.semibold)
-                    .textSelection(.enabled)
+                HStack(alignment: .firstTextBaseline, spacing: 12) {
+                    Text(pickMeetingTitle(description: detail.description, metadata: detail.metadata))
+                        .font(.title2)
+                        .fontWeight(.semibold)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    downloadPdfButton
+                }
 
                 timingRow
 
@@ -429,6 +438,58 @@ private struct MeetingDetailView: View {
         }
         .scrollContentBackground(.hidden)
         .background(SettingsTheme.background)
+    }
+
+    /// "↓ PDF" button + NSSavePanel handoff. We use AppKit's save
+    /// panel directly because SwiftUI's `.fileExporter` requires a
+    /// `FileDocument` shape (it'd serialize to bytes synchronously
+    /// off the main actor), and the PDF render lives on the server
+    /// behind an authenticated GET — easier to fetch the bytes
+    /// imperatively and write them at the user-chosen path.
+    private var downloadPdfButton: some View {
+        Button {
+            Task { await downloadPdf() }
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: pdfState == .working ? "arrow.down.circle" : "arrow.down.circle")
+                    .imageScale(.small)
+                Text(pdfState == .working ? "generating…" : pdfState == .failed ? "failed" : "PDF")
+                    .font(.system(.caption, design: .monospaced))
+            }
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.small)
+        .disabled(pdfState == .working)
+    }
+
+    @MainActor
+    private func downloadPdf() async {
+        pdfState = .working
+        do {
+            let api = try await model.makeMeetingsAPI()
+            let data = try await api.exportPdf(meetingId: detail.id)
+            // NSSavePanel.runModal blocks until the user picks. We
+            // wrap in a MainActor await so callers stay async-clean;
+            // the panel itself is synchronous AppKit.
+            let panel = NSSavePanel()
+            panel.allowedContentTypes = [.pdf]
+            panel.nameFieldStringValue = "meeting-\(detail.id).pdf"
+            panel.canCreateDirectories = true
+            let resp = panel.runModal()
+            guard resp == .OK, let url = panel.url else {
+                pdfState = .idle
+                return
+            }
+            try data.write(to: url)
+            pdfState = .idle
+        } catch {
+            print("[MeetingDetailView] pdf download failed:", error)
+            pdfState = .failed
+            // Auto-revert the "failed" label after a couple of
+            // seconds so the user can retry without a manual reset.
+            try? await Task.sleep(nanoseconds: 2_500_000_000)
+            pdfState = .idle
+        }
     }
 
     @ViewBuilder

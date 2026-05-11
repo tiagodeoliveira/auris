@@ -159,6 +159,32 @@ struct MeetingsAPI: Sendable {
         try await fetch(path: "meetings/\(id)")
     }
 
+    /// Fetch the server-rendered PDF export. Returns the raw bytes;
+    /// the caller decides whether to write to disk via NSSavePanel,
+    /// hand off to the share sheet, or stream into a Quick Look
+    /// preview.
+    func exportPdf(meetingId: String) async throws -> Data {
+        let url = baseURL.appendingPathComponent("meetings/\(meetingId)/export.pdf")
+        var req = URLRequest(url: url)
+        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        req.cachePolicy = .reloadIgnoringLocalCacheData
+        let data: Data
+        let resp: URLResponse
+        do {
+            (data, resp) = try await URLSession.shared.data(for: req)
+        } catch {
+            throw MeetingsAPIError.transport(error)
+        }
+        let http = resp as? HTTPURLResponse
+        switch http?.statusCode {
+        case .some(200..<300): return data
+        case .some(401): throw MeetingsAPIError.unauthorized
+        case .some(404): throw MeetingsAPIError.notFound
+        case .some(let code): throw MeetingsAPIError.http(code)
+        case .none: throw MeetingsAPIError.http(0)
+        }
+    }
+
     /// Delete a meeting and all of its moments (FK cascade
     /// server-side). The server also wipes the per-meeting blob
     /// directory holding the transcript JSONL and screenshots.
