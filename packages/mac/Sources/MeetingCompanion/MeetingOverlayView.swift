@@ -118,6 +118,15 @@ struct MeetingOverlayView: View {
             window.backgroundColor = .clear
             window.hasShadow = true
             window.isMovableByWindowBackground = true
+            // Hide the overlay from screen-sharing tools (Zoom,
+            // Meet, Teams, macOS native screen capture). The
+            // moment-screenshot path goes through ScreenCaptureKit
+            // with a self-exclusion filter, but third-party
+            // screen-share readers go through `CGWindowList…`
+            // APIs that honor `sharingType` instead. Setting this
+            // to `.none` means the window simply isn't visible to
+            // any external recorder.
+            window.sharingType = .none
             // Keep `.titled` in the style mask — borderless windows
             // return `canBecomeKey == false` by default, which means
             // SwiftUI TextField inside the overlay silently refuses

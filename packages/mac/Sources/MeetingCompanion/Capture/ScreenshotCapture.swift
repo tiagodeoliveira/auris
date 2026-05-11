@@ -52,9 +52,23 @@ enum ScreenshotCapture {
             throw ScreenshotCaptureError.noDisplay
         }
 
+        // Exclude Meeting Companion's own windows from the capture
+        // (the floating meeting overlay, the menu-bar dropdown,
+        // settings, etc.) so the moment screenshot shows whatever
+        // the user is actually working on underneath. PID match is
+        // the bulletproof identifier — bundle id is nil under
+        // `swift run`, and matching on the bundle would miss the
+        // dev-loop case.
+        let ownPID = ProcessInfo.processInfo.processIdentifier
+        let ownBundleId = Bundle.main.bundleIdentifier
+        let selfApps = content.applications.filter { app in
+            app.processID == ownPID
+                || (ownBundleId != nil && app.bundleIdentifier == ownBundleId)
+        }
+
         let filter = SCContentFilter(
             display: display,
-            excludingApplications: [],
+            excludingApplications: selfApps,
             exceptingWindows: []
         )
 
