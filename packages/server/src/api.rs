@@ -374,19 +374,15 @@ async fn export_meeting_pdf(
     let Some(row) = row else {
         return Err(ApiError::NotFound);
     };
-    let usage_row: Option<(i64, i64, i64, i64, Option<String>, Option<String>)> = sqlx::query_as(
-        r#"SELECT llm_calls, llm_input_tokens, llm_output_tokens,
-                  llm_cached_input_tokens, llm_provider, llm_model_id
-             FROM meetings WHERE id = $1"#,
-    )
-    .bind(&row.id)
-    .fetch_optional(&state.db)
-    .await
-    .map_err(ApiError::Db)?;
-    let (calls, input_tokens, output_tokens, cached_input_tokens, provider, model_id) =
-        usage_row.unwrap_or((0, 0, 0, 0, None, None));
 
     let transcript = read_transcript(&row.id).await;
+    // Per-mode items (highlights / actions / open_questions /
+    // summary / chat). The detail JSON endpoint pulls this same set;
+    // PDF renders each non-empty mode as its own section before the
+    // transcript.
+    let items_by_mode = crate::db::list_items_for_meeting_grouped(&state.db, &row.id)
+        .await
+        .map_err(|e| ApiError::Db(downcast_db(e)))?;
     let moments = crate::db::list_moments_for_meeting(&state.db, &row.id)
         .await
         .map_err(|e| ApiError::Db(downcast_db(e)))?;
@@ -448,13 +444,8 @@ async fn export_meeting_pdf(
         ended_at: row.ended_at,
         metadata,
         transcript,
+        items_by_mode,
         moments: renderable_moments,
-        llm_calls: calls,
-        llm_input_tokens: input_tokens,
-        llm_output_tokens: output_tokens,
-        llm_cached_input_tokens: cached_input_tokens,
-        llm_provider: provider,
-        llm_model_id: model_id,
     };
 
     // Spawn the blocking render — printpdf + image-decoding can run

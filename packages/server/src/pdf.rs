@@ -2,8 +2,8 @@
 //!
 //! Consumed by the `GET /meetings/:id/export.pdf` endpoint in
 //! `api.rs`. Takes a [`PdfInput`] (slimmed-down meeting detail +
-//! preloaded JPEG bytes for each moment) and produces a complete PDF
-//! as a byte vec ready to write to the wire.
+//! preloaded screenshot bytes for each moment) and produces a
+//! complete PDF as a byte vec ready to write to the wire.
 //!
 //! Layout is intentionally simple: A4 portrait, single text column
 //! with a margin, top-down cursor model. The renderer paginates by
@@ -23,29 +23,47 @@ use printpdf::{
     BuiltinFont, Image, ImageTransform, IndirectFontRef, Mm, PdfDocument, PdfDocumentReference,
     PdfLayerReference,
 };
-use std::io::Cursor;
 
 // ─── Geometry (A4 portrait, mm) ──────────────────────────────────────────
 const PAGE_W: f32 = 210.0;
 const PAGE_H: f32 = 297.0;
-const MARGIN: f32 = 18.0;
+const MARGIN: f32 = 12.0; // tight margins — denser pages
 const BODY_W: f32 = PAGE_W - 2.0 * MARGIN;
 const BODY_BOTTOM: f32 = MARGIN; // last legal y before we paginate
+/// Indent applied to "block" content (description, mode items) so
+/// they read as visually distinct from headings.
+const BLOCK_INDENT: f32 = 4.0;
 
-// ─── Type sizes (pt) ─────────────────────────────────────────────────────
-const SIZE_TITLE: f32 = 22.0;
-const SIZE_H2: f32 = 13.0;
-const SIZE_BODY: f32 = 10.0;
-const SIZE_SMALL: f32 = 8.5;
-const SIZE_MONO: f32 = 9.0;
+// ─── Type sizes (pt) — biased toward density ─────────────────────────────
+const SIZE_TITLE: f32 = 18.0;
+const SIZE_BODY: f32 = 9.0;
+/// Description body is one notch smaller than transcript body so
+/// the description-block feels visually contained, mirroring the
+/// UI's gray-tinted description card.
+const SIZE_DESC: f32 = 8.5;
+const SIZE_SMALL: f32 = 7.5;
+const SIZE_MONO: f32 = 8.0;
 
-// Empirical mm-per-character for Helvetica at SIZE_BODY (10pt).
+// Empirical mm-per-character for Helvetica at SIZE_BODY (9pt).
 // Used by the greedy word-wrapper. Helvetica is variable-width, so
 // this overestimates skinny chars and underestimates wide chars; the
 // wrapper biases toward more wrapping rather than overflow. Fine for
 // transcript prose, where exact column fit doesn't matter much.
-const BODY_CHAR_MM: f32 = 1.95;
-const MONO_CHAR_MM: f32 = 1.95;
+const BODY_CHAR_MM: f32 = 1.75;
+const DESC_CHAR_MM: f32 = 1.65;
+const MONO_CHAR_MM: f32 = 1.75;
+
+/// (mode id, section title) pairs, rendered in this order if the
+/// meeting has any items for that mode. Transcript is intentionally
+/// excluded — it owns its own section at the bottom that
+/// interleaves with moments.
+const MODE_SECTIONS: &[(&str, &str)] = &[
+    ("highlights", "HIGHLIGHTS"),
+    ("actions", "ACTIONS"),
+    ("open_questions", "OPEN QUESTIONS"),
+    ("summary", "SUMMARY"),
+    ("chat", "CHAT"),
+];
 
 /// Input to the renderer. Decouples the PDF module from `api.rs`'s
 /// MeetingDetail so future changes to the wire shape don't ripple
@@ -68,14 +86,16 @@ pub struct PdfInput {
     pub metadata: Vec<(String, String)>,
     /// Transcript items in chronological order (by `t`).
     pub transcript: Vec<crate::contract::Item>,
-    /// Moments to interleave, with their bytes already loaded.
+    /// Persisted per-mode items keyed by mode id (highlights /
+    /// actions / open_questions / summary / chat). Rendered as
+    /// their own labeled sections before the transcript, matching
+    /// what the Mac detail view shows. Missing modes simply
+    /// produce no section. Transcript is intentionally NOT in here
+    /// (it has its own field above + interleaves with moments).
+    pub items_by_mode: std::collections::HashMap<String, Vec<crate::contract::Item>>,
+    /// Moments to interleave with the transcript, with their bytes
+    /// already loaded.
     pub moments: Vec<RenderableMoment>,
-    pub llm_calls: i64,
-    pub llm_input_tokens: i64,
-    pub llm_output_tokens: i64,
-    pub llm_cached_input_tokens: i64,
-    pub llm_provider: Option<String>,
-    pub llm_model_id: Option<String>,
 }
 
 pub struct RenderableMoment {
@@ -123,20 +143,23 @@ pub fn render(input: &PdfInput) -> Result<Vec<u8>> {
 
     // ── Header ─────────────────────────────────────────────────────
     ctx.heading(&input.title, SIZE_TITLE, FontStyle::Bold);
-    ctx.gap(2.0);
+    ctx.gap(1.5);
 
     let timing = format_timing(input.started_at, input.ended_at);
     ctx.text_small(&timing);
-    ctx.gap(3.0);
+    ctx.gap(2.5);
 
     // ── Description ────────────────────────────────────────────────
+    // Smaller font + left-indent gives it a "block" feel without
+    // requiring background-fill primitives. Mirrors the UI's
+    // gray-tinted description card.
     if let Some(desc) = input
         .description
         .as_deref()
         .filter(|s| !s.trim().is_empty())
     {
         ctx.section_label("DESCRIPTION");
-        ctx.paragraph(desc, FontStyle::Regular, SIZE_BODY);
+        ctx.indented_paragraph(desc, SIZE_DESC, DESC_CHAR_MM);
         ctx.gap(2.0);
     }
 
@@ -149,29 +172,17 @@ pub fn render(input: &PdfInput) -> Result<Vec<u8>> {
         ctx.gap(2.0);
     }
 
-    // ── LLM usage ──────────────────────────────────────────────────
-    if input.llm_calls > 0 {
-        ctx.section_label("LLM USAGE");
-        ctx.key_value("calls", &input.llm_calls.to_string());
-        ctx.key_value(
-            "input (billable)",
-            &format_int_with_commas(input.llm_input_tokens),
-        );
-        ctx.key_value(
-            "cached read (0.10×)",
-            &format_int_with_commas(input.llm_cached_input_tokens),
-        );
-        ctx.key_value(
-            "output tokens",
-            &format_int_with_commas(input.llm_output_tokens),
-        );
-        if let Some(model) = input.llm_model_id.as_deref() {
-            ctx.key_value("model", model);
+    // ── Per-mode sections ──────────────────────────────────────────
+    // Order matches the agent's emission priority: Highlights (the
+    // 5-item Replace digest) → Actions → Open Questions →
+    // Summary (single rolling paragraph) → Chat (Q+A pair).
+    // Modes with no items produce no section.
+    for (mode_id, label) in MODE_SECTIONS {
+        if let Some(items) = input.items_by_mode.get(*mode_id) {
+            if !items.is_empty() {
+                ctx.mode_section(label, mode_id, items);
+            }
         }
-        if let Some(prov) = input.llm_provider.as_deref() {
-            ctx.key_value("provider", prov);
-        }
-        ctx.gap(2.0);
     }
 
     // ── Transcript with interleaved moments ────────────────────────
@@ -232,6 +243,10 @@ struct Fonts {
 }
 
 #[derive(Copy, Clone)]
+#[allow(dead_code)] // Mono is reserved for future callers that
+                    // want a styled mono block; today the only
+                    // mono usages go through `self.fonts.mono`
+                    // directly (key_value, transcript timestamp).
 enum FontStyle {
     Regular,
     Bold,
@@ -326,7 +341,7 @@ impl RenderCtx {
     /// Key is mono-styled to read like a label; value is regular.
     fn key_value(&mut self, key: &str, value: &str) {
         let key_w_mm: f32 = 38.0;
-        let line_h = pt_to_mm(SIZE_BODY) * 1.35;
+        let line_h = pt_to_mm(SIZE_BODY) * 1.25;
         self.ensure_room(line_h);
         let baseline_y = self.y - pt_to_mm(SIZE_BODY) * 0.85;
         self.layer()
@@ -349,7 +364,7 @@ impl RenderCtx {
     fn paragraph(&mut self, text: &str, style: FontStyle, size_pt: f32) {
         let (font, char_w) = self.font_for(style);
         let max_chars = (BODY_W / char_w) as usize;
-        let line_h = pt_to_mm(size_pt) * 1.35;
+        let line_h = pt_to_mm(size_pt) * 1.25;
         for src_line in text.lines() {
             let wrapped = wrap_text(src_line, max_chars.max(20));
             for l in wrapped {
@@ -367,12 +382,122 @@ impl RenderCtx {
         }
     }
 
+    /// Description-style paragraph: indented from the left margin
+    /// and rendered at a smaller body size. Mirrors the UI's
+    /// gray-tinted DESCRIPTION card visually (without needing fill
+    /// primitives — printpdf's rect drawing would be a separate
+    /// path; indentation + a smaller font is good enough).
+    fn indented_paragraph(&mut self, text: &str, size_pt: f32, char_w: f32) {
+        let avail_w = BODY_W - BLOCK_INDENT;
+        let max_chars = (avail_w / char_w) as usize;
+        let line_h = pt_to_mm(size_pt) * 1.3;
+        let font = self.fonts.regular.clone();
+        for src_line in text.lines() {
+            let wrapped = wrap_text(src_line, max_chars.max(20));
+            for l in wrapped {
+                self.ensure_room(line_h);
+                let baseline = self.y - pt_to_mm(size_pt) * 0.85;
+                self.layer().use_text(
+                    l.as_str(),
+                    size_pt,
+                    Mm(MARGIN + BLOCK_INDENT),
+                    Mm(baseline),
+                    &font,
+                );
+                self.y -= line_h;
+            }
+            if src_line.is_empty() {
+                self.y -= line_h * 0.5;
+            }
+        }
+    }
+
+    /// Render a per-mode block (HIGHLIGHTS / ACTIONS / OPEN
+    /// QUESTIONS / SUMMARY / CHAT). The bullet style varies by mode:
+    /// summary is a single prose paragraph, chat alternates user /
+    /// assistant Q-and-A, everything else is a "• bullet" list.
+    fn mode_section(&mut self, label: &str, mode_id: &str, items: &[crate::contract::Item]) {
+        self.section_label(label);
+        match mode_id {
+            "summary" => {
+                // Summary mode has a single Replace item — render
+                // its body straight up as an indented paragraph.
+                for item in items {
+                    self.indented_paragraph(item.text.trim(), SIZE_BODY, BODY_CHAR_MM);
+                }
+            }
+            "chat" => {
+                // Chat items carry `meta.role` = "user" | "assistant".
+                // Show user prompts bold, assistant replies regular.
+                for item in items {
+                    let role = item
+                        .meta
+                        .as_ref()
+                        .and_then(|m| m.get("role").and_then(|v| v.as_str()))
+                        .unwrap_or("");
+                    let prefix = if role == "user" { "Q:" } else { "A:" };
+                    let style = if role == "user" {
+                        FontStyle::Bold
+                    } else {
+                        FontStyle::Regular
+                    };
+                    self.prefixed_paragraph(prefix, &item.text, style);
+                    self.gap(1.0);
+                }
+            }
+            _ => {
+                // Highlights / actions / open_questions: bullet list.
+                for item in items {
+                    self.prefixed_paragraph("•", &item.text, FontStyle::Regular);
+                }
+            }
+        }
+        self.gap(1.5);
+    }
+
+    /// Bullet- or "Q:" / "A:"-prefixed paragraph. The prefix sits in
+    /// a fixed-width gutter, the body wraps to the right and stays
+    /// indented on continuation lines.
+    fn prefixed_paragraph(&mut self, prefix: &str, text: &str, style: FontStyle) {
+        let gutter_w = 5.0;
+        let avail_w = BODY_W - BLOCK_INDENT - gutter_w;
+        let max_chars = (avail_w / BODY_CHAR_MM) as usize;
+        let line_h = pt_to_mm(SIZE_BODY) * 1.3;
+        let wrapped = wrap_text(text.trim(), max_chars.max(20));
+        if wrapped.is_empty() {
+            return;
+        }
+        self.ensure_room(line_h * (wrapped.len() as f32));
+        let baseline_y = self.y - pt_to_mm(SIZE_BODY) * 0.85;
+        // Prefix on the first line only.
+        let (body_font, _) = self.font_for(style);
+        self.layer().use_text(
+            prefix,
+            SIZE_BODY,
+            Mm(MARGIN + BLOCK_INDENT),
+            Mm(baseline_y),
+            &self.fonts.bold,
+        );
+        // Body text, possibly multi-line.
+        for (i, l) in wrapped.iter().enumerate() {
+            let baseline = baseline_y - (i as f32) * line_h;
+            self.layer().use_text(
+                l.as_str(),
+                SIZE_BODY,
+                Mm(MARGIN + BLOCK_INDENT + gutter_w),
+                Mm(baseline),
+                &body_font,
+            );
+        }
+        self.y -= line_h * (wrapped.len() as f32);
+    }
+
     /// One transcript row: `[mm:ss]` timestamp in mono on the left,
     /// body text wrapped on the right.
     fn transcript_item(&mut self, item: &crate::contract::Item) {
         let ts = format_t(item.t);
         let ts_w_mm = 14.0;
-        let line_h = pt_to_mm(SIZE_BODY) * 1.35;
+        let line_h = pt_to_mm(SIZE_BODY) * 1.25;
         let body_w = BODY_W - ts_w_mm;
         let max_chars = (body_w / BODY_CHAR_MM) as usize;
         let wrapped = wrap_text(item.text.trim(), max_chars.max(20));
@@ -460,12 +585,24 @@ impl RenderCtx {
         // resulting `DynamicImage` to `ImageXObject::from_dynamic_image`
         // — single code path regardless of source format.
         use printpdf::image_crate;
+        use printpdf::image_crate::DynamicImage;
         use printpdf::ImageXObject;
         let dyn_img = image_crate::load_from_memory(bytes)
             .context("load_from_memory: not a recognized image format")?;
         let px_w = image_crate::GenericImageView::width(&dyn_img) as f32;
         let px_h = image_crate::GenericImageView::height(&dyn_img) as f32;
-        let xobj = ImageXObject::from_dynamic_image(&dyn_img);
+        // Flatten to RGB8 unconditionally. printpdf 0.7's
+        // `from_dynamic_image` builds an SMask for any RGBA source,
+        // and `From<ImageXObject> for lopdf::Stream` then constructs
+        // that mask with `(width, width)` instead of `(width, height)`
+        // (printpdf-0.7 src/xobject.rs:267) — so the alpha geometry
+        // is wrong and the image renders blank in most readers.
+        // Compositing onto white here is the simplest fix; PDF
+        // background is always white anyway, so any visible RGBA
+        // pixel collapses to its on-white appearance.
+        let rgb = dyn_img.to_rgb8();
+        let flat = DynamicImage::ImageRgb8(rgb);
+        let xobj = ImageXObject::from_dynamic_image(&flat);
         let img = Image::from(xobj);
         // mm = (px / dpi) * 25.4. We want px_w → target_width_mm,
         // so dpi = px_w * 25.4 / target_width_mm.
@@ -533,6 +670,9 @@ fn format_duration(seconds: i64) -> String {
     format!("{}h {}m", hours, mins % 60)
 }
 
+#[allow(dead_code)] // Kept for future callers — its test pins
+                    // the negative/zero edge cases so we don't have
+                    // to redo them next time we need this helper.
 fn format_int_with_commas(n: i64) -> String {
     let s = n.abs().to_string();
     let bytes = s.as_bytes();
@@ -639,13 +779,8 @@ mod tests {
             ended_at: Some(started_at + chrono::Duration::minutes(30)),
             metadata: vec![("project".into(), "helix".into())],
             transcript: vec![item],
+            items_by_mode: std::collections::HashMap::new(),
             moments: vec![],
-            llm_calls: 4,
-            llm_input_tokens: 1234,
-            llm_output_tokens: 567,
-            llm_cached_input_tokens: 100,
-            llm_provider: Some("anthropic".to_string()),
-            llm_model_id: Some("claude-opus-4-7".to_string()),
         };
         let bytes = render(&input).expect("render ok");
         assert!(
