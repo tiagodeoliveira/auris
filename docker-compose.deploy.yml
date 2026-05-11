@@ -20,8 +20,11 @@
 #       echo $GHCR_TOKEN | docker login ghcr.io -u <user> --password-stdin
 #   - Postgres is bound to the docker network only — no host port
 #     exposure. The server reaches it as `postgres:5432`.
-#   - The server's `:7331` port IS exposed on the host. Front it with
-#     a reverse proxy (caddy / nginx / traefik) for TLS termination.
+#   - The server's `:7331` port is bound to 127.0.0.1 only — public
+#     traffic must go through the `caddy` service below, which
+#     terminates TLS using a Cloudflare Origin Certificate and reverse-
+#     proxies to the server over the docker network. See
+#     `docs/deploy-cloudflare.md` for the full runbook.
 
 services:
   postgres:
@@ -127,10 +130,12 @@ services:
       MEETING_COMPANION_MNEMO_API_KEY: ${MEETING_COMPANION_MNEMO_API_KEY:-}
       MEETING_COMPANION_MNEMO_WORKSTATION: ${MEETING_COMPANION_MNEMO_WORKSTATION:-}
     ports:
-      # Front this with a reverse proxy for TLS. Don't expose 7331 to
-      # the public internet without one — auth tokens travel as a
-      # query parameter on the WebSocket upgrade.
-      - "${SERVER_PORT:-7331}:7331"
+      # Bound to loopback only: public traffic comes through the
+      # `caddy` service which terminates TLS and reverse-proxies
+      # over the docker network. Keeping a host port at all (vs.
+      # `expose:` only) makes `curl http://127.0.0.1:7331/...` on
+      # the VM possible for debugging without going through Caddy.
+      - "127.0.0.1:${SERVER_PORT:-7331}:7331"
     volumes:
       - server-data:/data
     # No server-side healthcheck yet — `/healthz` endpoint doesn't
@@ -138,6 +143,32 @@ services:
     # alongside this and re-enable. depends_on already waits for
     # postgres's own healthcheck.
 
+  caddy:
+    # TLS terminator + reverse proxy. Serves the Cloudflare Origin
+    # Certificate (bind-mounted from ./certs/) and forwards traffic
+    # to the server container over the docker network. WebSocket
+    # upgrades pass through transparently — no special config needed
+    # in Caddy v2.
+    image: caddy:2-alpine
+    container_name: meeting-companion-caddy
+    restart: unless-stopped
+    depends_on:
+      - server
+    environment:
+      # The Caddyfile reads `{$DOMAIN}` at runtime.
+      DOMAIN: ${PUBLIC_DOMAIN:?Set PUBLIC_DOMAIN in .env.deploy (e.g. auris.tiago.tools)}
+    ports:
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # Drop the Cloudflare Origin Certificate + key here as
+      # `cert.pem` and `key.pem`. The directory is gitignored.
+      - ./certs:/etc/caddy/origin:ro
+      - caddy-data:/data
+      - caddy-config:/config
+
 volumes:
   pg-data:
   server-data:
+  caddy-data:
+  caddy-config:

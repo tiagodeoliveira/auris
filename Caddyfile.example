@@ -1,0 +1,20 @@
+# Reverse proxy in front of the meeting-companion server.
+#
+# TLS is terminated here using a Cloudflare Origin Certificate. The
+# Origin Cert is signed by Cloudflare's internal CA and is therefore
+# only trusted when traffic comes via Cloudflare's proxy (orange-cloud
+# DNS record + SSL/TLS mode = Full (strict)). Direct connections to
+# the origin IP will fail TLS validation — that's intentional.
+#
+# Domain comes from the $DOMAIN env var (set in .env.deploy via the
+# PUBLIC_DOMAIN variable). Cert/key are bind-mounted from ./certs/
+# into the container — see docker-compose.deploy.yml.
+#
+# Caddy v2 forwards WebSocket Upgrade headers transparently, so no
+# special directive is needed for the WS upgrade path.
+
+{$DOMAIN}:443 {
+    tls /etc/caddy/origin/cert.pem /etc/caddy/origin/key.pem
+
+    reverse_proxy server:7331
+}

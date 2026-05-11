@@ -46,3 +46,9 @@ sparkle_pub.txt
 .env
 .env*
 !.env.*example
+
+# Deployment — Cloudflare Origin Certificate (bind-mounted into the
+# caddy container) and the active Caddyfile (copied from
+# Caddyfile.example, may be locally customized).
+certs/
+Caddyfile
