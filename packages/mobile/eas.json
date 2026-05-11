@@ -19,6 +19,9 @@
     "preview-simulator": {
       "distribution": "internal",
       "channel": "preview",
+      "env": {
+        "EXPO_PUBLIC_SERVER_URL": "wss://auris.tiago.tools"
+      },
       "ios": {
         "simulator": true
       }
@@ -26,6 +29,9 @@
     "preview": {
       "distribution": "internal",
       "channel": "preview",
+      "env": {
+        "EXPO_PUBLIC_SERVER_URL": "wss://auris.tiago.tools"
+      },
       "ios": {
         "simulator": false
       },
@@ -36,6 +42,9 @@
     "production": {
       "channel": "production",
       "autoIncrement": true,
+      "env": {
+        "EXPO_PUBLIC_SERVER_URL": "wss://auris.tiago.tools"
+      },
       "android": {
         "buildType": "apk"
       }
