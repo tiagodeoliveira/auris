@@ -28,7 +28,7 @@ use tracing::info;
 /// it doesn't exist yet. Hosts `blobs/` for transcript JSONL and
 /// moment screenshots; the relational store lives in Postgres.
 pub fn data_dir() -> Result<PathBuf> {
-    let raw = std::env::var("MEETING_COMPANION_DATA_DIR").unwrap_or_else(|_| "./data".to_string());
+    let raw = crate::env::var_or("MEETING_COMPANION_DATA_DIR", "./data");
     let expanded = if let Some(stripped) = raw.strip_prefix("~/") {
         let home = std::env::var("HOME").context("HOME not set; cannot expand ~")?;
         PathBuf::from(home).join(stripped)

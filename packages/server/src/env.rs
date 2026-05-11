@@ -21,6 +21,27 @@ pub fn flag(key: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Read an env var, returning `default` if it's unset OR an empty
+/// string. The empty-string case matters because docker-compose's
+/// `${VAR:-}` substitution lands in the container as `KEY=""` which
+/// `std::env::var().unwrap_or_else(|_| ...)` treats as "set" — that
+/// silently took an empty `MEETING_COMPANION_LLM_MODEL_ID` straight
+/// to the Anthropic API, which rejected with "model: String should
+/// have at least 1 character". Use this helper for any "stringly-
+/// typed knob with a sensible default" — model ids, regions, file
+/// paths, etc.
+pub fn var_or(key: &str, default: &str) -> String {
+    var_opt(key).unwrap_or_else(|| default.to_string())
+}
+
+/// Read an env var as `Some(value)` if it's set AND non-empty.
+/// Use for optional credentials / endpoints where empty means
+/// "operator chose not to configure this" (e.g., Soniox API key
+/// absent → STT disabled; mnemo URL absent → memory layer off).
+pub fn var_opt(key: &str) -> Option<String> {
+    std::env::var(key).ok().filter(|v| !v.is_empty())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

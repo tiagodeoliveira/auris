@@ -82,15 +82,14 @@ async fn run_stt_socket(
     // Pick the configured provider. If init fails (e.g., missing
     // SONIOX_API_KEY), tell the client and bail — there's nothing
     // we can do server-side to recover.
-    let provider_name = std::env::var("MEETING_COMPANION_STT_PROVIDER")
-        .or_else(|_| {
+    let provider_name =
+        crate::env::var_opt("MEETING_COMPANION_STT_PROVIDER").unwrap_or_else(|| {
             if crate::env::flag("MEETING_COMPANION_STT_MOCK") {
-                Ok("mock".to_string())
+                "mock".to_string()
             } else {
-                Err(std::env::VarError::NotPresent)
+                "soniox".to_string()
             }
-        })
-        .unwrap_or_else(|_| "soniox".to_string());
+        });
 
     let (mut sink, mut stream) = socket.split();
 

@@ -46,16 +46,15 @@ impl MnemoClient {
     /// `Disabled` and logs a one-line debug message so it's visible in
     /// dev logs.
     pub fn from_env() -> Self {
-        let url = std::env::var("MEETING_COMPANION_MNEMO_URL").ok();
-        let api_key = std::env::var("MEETING_COMPANION_MNEMO_API_KEY").ok();
+        let url = crate::env::var_opt("MEETING_COMPANION_MNEMO_URL");
+        let api_key = crate::env::var_opt("MEETING_COMPANION_MNEMO_API_KEY");
         match (url, api_key) {
-            (Some(url), Some(api_key)) if !url.is_empty() && !api_key.is_empty() => {
+            (Some(url), Some(api_key)) => {
                 let http = reqwest::Client::builder()
                     .timeout(PUSH_TIMEOUT)
                     .build()
                     .expect("reqwest client builder");
-                let workstation = std::env::var("MEETING_COMPANION_MNEMO_WORKSTATION")
-                    .ok()
+                let workstation = crate::env::var_opt("MEETING_COMPANION_MNEMO_WORKSTATION")
                     .unwrap_or_else(default_workstation);
                 tracing::info!(%url, %workstation, "mnemo client enabled");
                 Self::Enabled(EnabledClient {

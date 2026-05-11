@@ -1269,15 +1269,14 @@ async fn spawn_live_pipeline(handle: ServerHandle, user_id: String, cancel: Canc
     // -------------------------------------------------------------------
     // STT task — dispatch via trait so future providers slot in cleanly.
     // -------------------------------------------------------------------
-    let provider_name = std::env::var("MEETING_COMPANION_STT_PROVIDER")
-        .or_else(|_| {
+    let provider_name =
+        crate::env::var_opt("MEETING_COMPANION_STT_PROVIDER").unwrap_or_else(|| {
             if crate::env::flag("MEETING_COMPANION_STT_MOCK") {
-                Ok("mock".to_string())
+                "mock".to_string()
             } else {
-                Err(std::env::VarError::NotPresent)
+                "soniox".to_string()
             }
-        })
-        .unwrap_or_else(|_| "soniox".to_string());
+        });
 
     match crate::stt::make_provider(&provider_name) {
         Ok(provider) => {

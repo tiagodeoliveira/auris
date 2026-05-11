@@ -40,8 +40,7 @@ impl SonioxStt {
                 "SONIOX_API_KEY is empty".to_string(),
             ));
         }
-        let model = std::env::var("MEETING_COMPANION_SONIOX_MODEL")
-            .unwrap_or_else(|_| MODEL_DEFAULT.to_string());
+        let model = crate::env::var_or("MEETING_COMPANION_SONIOX_MODEL", MODEL_DEFAULT);
         Ok(Self {
             api_key,
             url: SONIOX_URL.to_string(),

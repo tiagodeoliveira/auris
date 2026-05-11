@@ -299,16 +299,22 @@ impl LlmClient {
     /// Does **not** make an API call. Credential validation happens at first
     /// `extract` invocation.
     pub async fn from_env() -> Result<Self, LlmInitError> {
-        let provider_str = std::env::var("MEETING_COMPANION_LLM_PROVIDER")
-            .unwrap_or_else(|_| "bedrock".to_string());
+        // All env reads go through `crate::env::var_or` so that a
+        // docker-compose-passed empty string (`MEETING_COMPANION_*=""`)
+        // is treated as "unset" rather than "explicit empty". The
+        // previous `std::env::var(...).unwrap_or_else(...)` shape
+        // accepted empty values straight into the HTTP request,
+        // which Anthropic rejected with
+        // "model: String should have at least 1 character".
+        let provider_str = crate::env::var_or("MEETING_COMPANION_LLM_PROVIDER", "bedrock");
         let provider = parse_provider(&provider_str)?;
 
         let (extractor, backend) = match provider {
             Provider::Bedrock => {
-                let region = std::env::var("MEETING_COMPANION_LLM_REGION")
-                    .unwrap_or_else(|_| DEFAULT_BEDROCK_REGION.to_string());
-                let model_id = std::env::var("MEETING_COMPANION_LLM_MODEL_ID")
-                    .unwrap_or_else(|_| DEFAULT_BEDROCK_MODEL_ID.to_string());
+                let region =
+                    crate::env::var_or("MEETING_COMPANION_LLM_REGION", DEFAULT_BEDROCK_REGION);
+                let model_id =
+                    crate::env::var_or("MEETING_COMPANION_LLM_MODEL_ID", DEFAULT_BEDROCK_MODEL_ID);
 
                 let bedrock_client: BedrockClient = rig_bedrock::client::ClientBuilder::default()
                     .region(&region)
@@ -330,14 +336,14 @@ impl LlmClient {
             }
 
             Provider::OpenAI => {
-                let api_key = std::env::var("OPENAI_API_KEY").map_err(|_| {
+                let api_key = crate::env::var_opt("OPENAI_API_KEY").ok_or_else(|| {
                     LlmInitError::MissingProviderCredentials(
                         "OPENAI_API_KEY is required when MEETING_COMPANION_LLM_PROVIDER=openai"
                             .to_string(),
                     )
                 })?;
-                let model_id = std::env::var("MEETING_COMPANION_LLM_MODEL_ID")
-                    .unwrap_or_else(|_| DEFAULT_OPENAI_MODEL_ID.to_string());
+                let model_id =
+                    crate::env::var_or("MEETING_COMPANION_LLM_MODEL_ID", DEFAULT_OPENAI_MODEL_ID);
 
                 let openai_client = rig::providers::openai::Client::new(&api_key)
                     .map_err(|e| LlmInitError::Provider(e.to_string()))?;
@@ -357,14 +363,16 @@ impl LlmClient {
             }
 
             Provider::Anthropic => {
-                let api_key = std::env::var("ANTHROPIC_API_KEY").map_err(|_| {
+                let api_key = crate::env::var_opt("ANTHROPIC_API_KEY").ok_or_else(|| {
                     LlmInitError::MissingProviderCredentials(
                         "ANTHROPIC_API_KEY is required when MEETING_COMPANION_LLM_PROVIDER=anthropic"
                             .to_string(),
                     )
                 })?;
-                let model_id = std::env::var("MEETING_COMPANION_LLM_MODEL_ID")
-                    .unwrap_or_else(|_| DEFAULT_ANTHROPIC_MODEL_ID.to_string());
+                let model_id = crate::env::var_or(
+                    "MEETING_COMPANION_LLM_MODEL_ID",
+                    DEFAULT_ANTHROPIC_MODEL_ID,
+                );
 
                 let anthropic_client = rig::providers::anthropic::Client::new(&api_key)
                     .map_err(|e| LlmInitError::Provider(e.to_string()))?;
