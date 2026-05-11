@@ -45,7 +45,20 @@ Given a short spoken description of a meeting (transcribed by an STT system, \
 may contain disfluencies and filler words), extract concise structured \
 metadata. If a field cannot be confidently extracted from the description, \
 return an empty string for that field — do not guess.";
-pub const EXTRACTION_TIMEOUT: Duration = Duration::from_secs(8);
+/// Per-call ceiling for text extraction (metadata, summary,
+/// highlights, etc.). Two shapes feed this path:
+///   1. Metadata extraction — small input, sub-second on a hot
+///      cache.
+///   2. Summary loop — full transcript context (sometimes 5k+
+///      tokens) + caching; Opus 4.7 routinely lands at 5-15s,
+///      occasionally bumps into 20s+ under load.
+/// 8s was the original ceiling, set when only (1) existed. Once
+/// the summary loop started using this path, the 8s wall produced
+/// flaky timeouts on otherwise-healthy calls. 30s gives summary
+/// generation comfortable headroom while still bounding a hung
+/// API so the worker doesn't deadlock. Vision (`VISION_TIMEOUT`)
+/// and PDF (`PDF_TIMEOUT`) keep their own larger budgets below.
+pub const EXTRACTION_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Output-token ceiling for every extractor call. Anthropic-direct
 /// *requires* this be set (rig surfaces a `max_tokens must be set`
