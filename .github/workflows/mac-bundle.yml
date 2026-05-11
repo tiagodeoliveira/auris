@@ -212,3 +212,64 @@ jobs:
             packages/mac/MeetingCompanion-${{ steps.version.outputs.version }}.zip
             packages/mac/appcast.xml
           fail_on_unmatched_files: true
+
+      # ──────────  Rolling nightly (main pushes only)  ──────────
+      # Replaces the previous `nightly` release on every push to
+      # main so the repo's Releases sidebar always shows the latest
+      # bundle with a stable download URL (instead of asking users
+      # to hunt through Actions artifacts). Sparkle stays driven by
+      # real `v*` tags — the Mac app's appcast feed never points at
+      # `nightly` and won't auto-install these.
+      - name: Publish rolling nightly release
+        if: |
+          github.event_name == 'push'
+          && github.ref == 'refs/heads/main'
+        working-directory: packages/mac
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.version.outputs.version }}
+          COMMIT: ${{ github.sha }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          # Stable filename for a copy-pasteable download URL. The
+          # versioned file ships alongside it on the same release
+          # so people can still pin to a known build.
+          cp "MeetingCompanion-${VERSION}.zip" "MeetingCompanion-nightly.zip"
+
+          # Drop the previous nightly + force-recreate the tag at
+          # the current commit. `--cleanup-tag` removes the git
+          # tag so the next `release create` lands cleanly. The
+          # `|| true` covers the first-run case when nothing's
+          # there to delete.
+          gh release delete nightly --yes --cleanup-tag || true
+
+          BODY=$(cat <<EOF
+          Auto-generated nightly build from the latest main push.
+
+          - **Commit**: \`${COMMIT}\`
+          - **Bundle version**: \`${VERSION}\`
+          - **Built**: $(date -u +"%Y-%m-%d %H:%M UTC")
+
+          This release rolls forward with every push to main. The
+          \`nightly\` tag is force-updated on each build; the previous
+          bundle is overwritten in place.
+
+          Stable download URL (always the newest):
+          \`\`\`
+          https://github.com/${REPO}/releases/download/nightly/MeetingCompanion-nightly.zip
+          \`\`\`
+
+          For Sparkle-managed auto-updates, install a tagged \`vX.Y.Z\`
+          release instead — those carry an EdDSA-signed appcast that
+          this nightly intentionally does not.
+          EOF
+          )
+
+          gh release create nightly \
+            "MeetingCompanion-nightly.zip" \
+            "MeetingCompanion-${VERSION}.zip" \
+            --title "Nightly build (main)" \
+            --notes "$BODY" \
+            --prerelease \
+            --target "${COMMIT}"
