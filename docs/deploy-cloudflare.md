@@ -99,6 +99,47 @@ Do **not** forward `:80`. Caddy here doesn't need it (we provide the
 cert manually — no ACME HTTP challenge), so forwarding `:80` only
 adds attack surface.
 
+### 4a. Using a non-default port (`:443` already taken on the host)
+
+If `:443` on the VM (or the WAN) is already in use by another app,
+Caddy can listen on a different port. Pick from Cloudflare's HTTPS
+origin-port allowlist (the only ports CF's proxy will connect to over
+HTTPS):
+
+> `443, 2053, 2083, 2087, 2096, 8443`
+
+Reference: <https://developers.cloudflare.com/fundamentals/reference/network-ports/#network-ports-compatible-with-cloudflares-proxy>
+
+`8443` is conventional. Two steps:
+
+1. **In `.env.deploy`**, set:
+
+   ```bash
+   PUBLIC_PORT=8443
+   ```
+
+   The compose file now publishes `8443:8443` and Caddy binds the
+   same port (the Caddyfile reads `{$PORT}`).
+
+2. **In Cloudflare dashboard** → **Rules → Origin Rules → Create rule**:
+   - Name: `meeting-companion origin port`
+   - When incoming requests match → **Hostname equals** `auris.tiago.tools`
+   - Then → **Override origin destination port** → `8443`
+   - Deploy.
+
+   This tells CF's proxy: keep terminating user TLS on the public
+   `:443` like normal, but when forwarding the request to your
+   origin, talk to `:8443` instead of `:443`. The browser still hits
+   `https://auris.tiago.tools/` (no port in the URL).
+
+3. **Port-forward** at the home router: WAN `:8443` → VM `:8443`.
+   (Or, if your router supports port translation, WAN `:443` →
+   VM `:8443` works too — but then the router rewrites the
+   destination port and the WAN side stays on `:443`.)
+
+4. **Firewall**: the rule from §5 below stays the same — just allow
+   CF IPs on `:8443` instead of `:443`.
+
 ---
 
 ## 5. Lock the VM firewall to Cloudflare's IPs

@@ -155,10 +155,15 @@ services:
     depends_on:
       - server
     environment:
-      # The Caddyfile reads `{$DOMAIN}` at runtime.
+      # The Caddyfile reads `{$DOMAIN}` and `{$PORT}` at runtime.
       DOMAIN: ${PUBLIC_DOMAIN:?Set PUBLIC_DOMAIN in .env.deploy (e.g. auris.tiago.tools)}
+      PORT: ${PUBLIC_PORT:-443}
     ports:
-      - "443:443"
+      # Default 443. Override via PUBLIC_PORT in .env.deploy when the
+      # host already has something on :443. If you change this you
+      # ALSO need a Cloudflare Origin Rule to send proxied traffic to
+      # the new port — see docs/deploy-cloudflare.md.
+      - "${PUBLIC_PORT:-443}:${PUBLIC_PORT:-443}"
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       # Drop the Cloudflare Origin Certificate + key here as

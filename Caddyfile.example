@@ -7,13 +7,15 @@
 # the origin IP will fail TLS validation — that's intentional.
 #
 # Domain comes from the $DOMAIN env var (set in .env.deploy via the
-# PUBLIC_DOMAIN variable). Cert/key are bind-mounted from ./certs/
-# into the container — see docker-compose.deploy.yml.
+# PUBLIC_DOMAIN variable). The TLS port comes from $PORT (defaults to
+# 443; override via PUBLIC_PORT in .env.deploy when 443 is already
+# taken on the host). Cert/key are bind-mounted from ./certs/ into
+# the container — see docker-compose.deploy.yml.
 #
 # Caddy v2 forwards WebSocket Upgrade headers transparently, so no
 # special directive is needed for the WS upgrade path.
 
-{$DOMAIN}:443 {
+{$DOMAIN}:{$PORT:443} {
     tls /etc/caddy/origin/cert.pem /etc/caddy/origin/key.pem
 
     reverse_proxy server:7331
