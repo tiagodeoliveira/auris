@@ -227,6 +227,15 @@ impl UserState {
             prior_context: self.recalled_context.as_ref().map(|c| c.summary()),
             devices: self.devices_by_connection.values().cloned().collect(),
             audio_source_device_id: self.audio_source_device_id.clone(),
+            // Attached past meetings live in the meeting_attachments
+            // table; the snapshot ships an empty list and the REST
+            // attach/detach endpoints broadcast
+            // `Event::AttachedMeetingsChanged` with the canonical
+            // set when the wire state needs to update. On reconnect,
+            // the server fires one synthetic AttachedMeetingsChanged
+            // immediately after the snapshot if any attachments
+            // exist (see ws.rs).
+            attached_meeting_ids: Vec::new(),
         }
     }
 
@@ -968,6 +977,7 @@ mod tests {
                 prior_context,
                 devices,
                 audio_source_device_id,
+                attached_meeting_ids: _,
             } => {
                 assert_eq!(protocol_version, PROTOCOL_VERSION);
                 assert!(matches!(meeting_state, MeetingState::Idle));

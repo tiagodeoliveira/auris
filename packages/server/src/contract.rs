@@ -206,6 +206,13 @@ pub enum Event {
         /// active (e.g., Phase 1 local meeting with no Mac client).
         #[serde(skip_serializing_if = "Option::is_none", default)]
         audio_source_device_id: Option<String>,
+        /// Past meetings attached to the active meeting via the
+        /// meeting-picker UI. Each entry is a past meeting's id; the
+        /// agent can recall the past meeting's mnemo-stored summary
+        /// on demand via the `fetch_meeting_summary` tool. Empty
+        /// list during idle / a fresh meeting with nothing attached.
+        #[serde(default)]
+        attached_meeting_ids: Vec<String>,
     },
     MeetingStateChanged {
         meeting_state: MeetingState,
@@ -284,6 +291,13 @@ pub enum Event {
     /// pre-check rows in their attach picker against this set.
     ArtifactsChanged {
         artifact_ids: Vec<String>,
+    },
+    /// Broadcast whenever the attached-past-meetings set for the
+    /// user's active meeting changes (attach or detach). Same
+    /// "full current set" shape as ArtifactsChanged so clients
+    /// overwrite their local mirror without diff bookkeeping.
+    AttachedMeetingsChanged {
+        meeting_ids: Vec<String>,
     },
     /// Sent after a WS-initiated `mark_moment` lands, asking the
     /// recipient to capture a screenshot and upload it via
@@ -420,6 +434,7 @@ mod tests {
             prior_context: None,
             devices: vec![],
             audio_source_device_id: None,
+            attached_meeting_ids: vec![],
         };
         assert_eq!(round_trip(&e), e);
     }

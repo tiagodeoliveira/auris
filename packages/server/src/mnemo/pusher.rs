@@ -159,6 +159,7 @@ async fn handle_event(client: &MnemoClient, state: &mut PusherState, event: Even
         | Event::AudioSourceDeviceChanged { .. }
         | Event::CaptureMomentScreenshot { .. }
         | Event::ArtifactsChanged { .. }
+        | Event::AttachedMeetingsChanged { .. }
         | Event::ItemUpdated { .. } => {}
     }
 }

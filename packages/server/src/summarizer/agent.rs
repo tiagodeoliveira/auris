@@ -173,7 +173,17 @@ references it (\"per the agenda…\", \"as the design doc says…\"):\n\
 The short summary in the [event] block is enough for ~70-80% of references; only fetch when you need \
 specific facts the short summary doesn't capture.\n\
 \n\
-6. Speak in the same language as the transcript. Don't translate.";
+6. ATTACHED MEETINGS. The [meeting] block lists past meetings the user attached to the current one \
+(their titles + ids). The transcript may refer back to them (\"like we talked about last sync…\", \
+\"following up on the recruiter call…\"). Use the meeting-recall tools to pull context:\n\
+- fetch_meeting_summary(id): scoped recall against an attached meeting — returns its action items, \
+highlights, open_questions, plus moment summaries. Cheap; use when a reference is clearly to that \
+meeting.\n\
+- fetch_meeting(id): broader scoped recall (same scoping; mnemo decides verbosity). Use sparingly.\n\
+\n\
+Don't fetch a meeting just because it's attached — only when the transcript references it.\n\
+\n\
+7. Speak in the same language as the transcript. Don't translate.";
 
 // ─── Tool surface ───────────────────────────────────────────────────────
 
@@ -184,16 +194,18 @@ pub enum AgentToolError {
 }
 
 /// Shared dependencies every tool needs. `events_tx` is only used
-/// by the push/replace tools; `db` is only used by the fetch tools;
-/// keeping them on one struct keeps the per-tool wiring uniform
-/// at the (small) cost of unused fields per tool. Cloning is cheap
-/// (Arc + Sender + String + PgPool clone).
+/// by the push/replace tools; `db` is only used by the fetch-artifact
+/// tools; `mnemo` is only used by the fetch-meeting tools. Keeping
+/// them on one struct keeps the per-tool wiring uniform at the
+/// (small) cost of unused fields per tool. Cloning is cheap
+/// (Arc + Sender + String + PgPool + reqwest::Client clones).
 #[derive(Clone)]
 struct ToolCtx {
     state: Arc<Mutex<ServerState>>,
     events_tx: broadcast::Sender<UserEvent>,
     db: sqlx::PgPool,
     user_id: String,
+    mnemo: crate::mnemo::MnemoClient,
 }
 
 /// Guard against tool calls landing after the meeting has already
@@ -655,6 +667,135 @@ when the long summary suffices."
     }
 }
 
+// ─── Meeting-recall tools ──────────────────────────────────────────────
+//
+// Per-meeting recall against mnemo. The user attaches past meetings
+// to the current one (see `Snapshot.attached_meeting_ids` and the
+// REST `/meetings/:id/attached_meetings` endpoints); each attached
+// meeting becomes a meeting_id the agent can recall against
+// on-demand. Filters mnemo's `/recall` by `attributes.meeting_id`,
+// which every meeting's push events carry (see `mnemo/payload.rs`).
+
+#[derive(Debug, Deserialize, Serialize, JsonSchema)]
+struct FetchMeetingArgs {
+    /// The meeting id of an attached past meeting (from the
+    /// "# Attached meetings" block in the working context).
+    id: String,
+}
+
+/// `fetch_meeting_summary` — recall the curated summary-bundle of
+/// an attached meeting. mnemo's summary_bundle events are pushed at
+/// stop_meeting and contain the per-mode rollup (actions / highlights
+/// / open_questions). Cheap when prompt caching is hot.
+struct FetchMeetingSummary(ToolCtx);
+
+impl Tool for FetchMeetingSummary {
+    const NAME: &'static str = "fetch_meeting_summary";
+    type Args = FetchMeetingArgs;
+    type Output = String;
+    type Error = AgentToolError;
+
+    async fn definition(&self, _: String) -> ToolDefinition {
+        ToolDefinition {
+            name: Self::NAME.to_string(),
+            description:
+                "Fetch the curated SUMMARY of an attached past meeting (its action items, \
+highlights, and open questions, plus any moment summaries). Use this when an attached meeting \
+is the natural source of context for the current chunk — e.g. the user references \"last \
+week's sync\" and the meeting is in the attached list. Cheap; prefer this over fetch_meeting \
+for most ground-truth lookups."
+                    .to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "id": { "type": "string", "description": "Meeting id from the # Attached meetings list." }
+                },
+                "required": ["id"]
+            }),
+        }
+    }
+
+    async fn call(&self, args: FetchMeetingArgs) -> Result<String, AgentToolError> {
+        let params = crate::mnemo::recall::RecallParams::for_meeting_id(args.id.clone());
+        let recalled = self
+            .0
+            .mnemo
+            .recall(&params)
+            .await
+            .map_err(|e| AgentToolError::Internal(format!("mnemo recall: {e}")))?;
+        // Filter to summary_bundle-derived memories (the per-meeting
+        // rollup) when present. Empty response = either the meeting
+        // wasn't pushed to mnemo, or mnemo is disabled. Either way
+        // we say so in plain text so the agent doesn't loop retrying.
+        let body = recalled.format_for_prompt();
+        if body.trim().is_empty() {
+            Ok(format!(
+                "No mnemo memories found for meeting {} (it may have ended before mnemo was \
+                 enabled, or the attached id is unknown).",
+                args.id
+            ))
+        } else {
+            Ok(format!("Recall for meeting {}:\n\n{body}", args.id))
+        }
+    }
+}
+
+/// `fetch_meeting` — same shape as the summary tool but conceptually
+/// "give me everything you have on this meeting" (including raw
+/// transcript sentences that streamed in during the meeting, not
+/// just the curated bundle). On mnemo's side this is the same scoped
+/// recall — mnemo decides how much to return per dimension; we don't
+/// filter further on the client side today.
+struct FetchMeeting(ToolCtx);
+
+impl Tool for FetchMeeting {
+    const NAME: &'static str = "fetch_meeting";
+    type Args = FetchMeetingArgs;
+    type Output = String;
+    type Error = AgentToolError;
+
+    async fn definition(&self, _: String) -> ToolDefinition {
+        ToolDefinition {
+            name: Self::NAME.to_string(),
+            description: "Fetch the FULL recall of an attached past meeting — same scoping as \
+fetch_meeting_summary but mnemo will return more verbose context (e.g. raw transcript snippets \
+in addition to the rollup). Use sparingly; the response can be large. Prefer fetch_meeting_summary \
+when the rollup answers your question."
+                .to_string(),
+            parameters: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "id": { "type": "string", "description": "Meeting id from the # Attached meetings list." }
+                },
+                "required": ["id"]
+            }),
+        }
+    }
+
+    async fn call(&self, args: FetchMeetingArgs) -> Result<String, AgentToolError> {
+        // mnemo treats summary and full as the same scoped recall
+        // today; the verbosity difference is on its end. We keep
+        // both tools so the agent's prompt can express intent.
+        let params = crate::mnemo::recall::RecallParams::for_meeting_id(args.id.clone());
+        let recalled = self
+            .0
+            .mnemo
+            .recall(&params)
+            .await
+            .map_err(|e| AgentToolError::Internal(format!("mnemo recall: {e}")))?;
+        let body = recalled.format_for_prompt();
+        if body.trim().is_empty() {
+            Ok(format!(
+                "No mnemo memories found for meeting {} (it may have ended before mnemo was \
+                 enabled, or the attached id is unknown).",
+                args.id
+            ))
+        } else {
+            Ok(format!("Full recall for meeting {}:\n\n{body}", args.id))
+        }
+    }
+}
+
 // ─── Trigger loop ───────────────────────────────────────────────────────
 
 /// Spawn the agent task. Runs for the meeting's lifetime; cancels
@@ -668,6 +809,7 @@ pub fn spawn_meeting_agent(
     events_tx: broadcast::Sender<UserEvent>,
     user_id: String,
     llm: Arc<LlmClient>,
+    mnemo: crate::mnemo::MnemoClient,
     cancel: CancellationToken,
 ) {
     let token_threshold = env_usize("AGENT_TRIGGER_TOKENS", AGENT_TRIGGER_TOKENS_DEFAULT);
@@ -722,7 +864,7 @@ pub fn spawn_meeting_agent(
                                 .sum();
                             if approx_tokens >= token_threshold || sentences >= sentence_threshold {
                                 fire(
-                                    &state, &db, &events_tx, &user_id, &llm,
+                                    &state, &db, &events_tx, &user_id, &llm, &mnemo,
                                     &mut buffer, &mut history, &mut bootstrapped, None,
                                 ).await;
                                 last_fire_at = Instant::now();
@@ -744,7 +886,7 @@ pub fn spawn_meeting_agent(
                             info!(user_id = %user_id, reason = ?kick.reason, "agent loop kicked");
                             let kick_block = format_kick_event(&db, &kick).await;
                             fire(
-                                &state, &db, &events_tx, &user_id, &llm,
+                                &state, &db, &events_tx, &user_id, &llm, &mnemo,
                                 &mut buffer, &mut history, &mut bootstrapped, kick_block,
                             ).await;
                             last_fire_at = Instant::now();
@@ -768,7 +910,7 @@ pub fn spawn_meeting_agent(
                     let aged = now.duration_since(last_fire_at) >= Duration::from_millis(max_ms);
                     if silent || aged {
                         fire(
-                            &state, &db, &events_tx, &user_id, &llm,
+                            &state, &db, &events_tx, &user_id, &llm, &mnemo,
                             &mut buffer, &mut history, &mut bootstrapped, None,
                         ).await;
                         last_fire_at = now;
@@ -793,6 +935,7 @@ async fn fire(
     events_tx: &broadcast::Sender<UserEvent>,
     user_id: &str,
     llm: &Arc<LlmClient>,
+    mnemo: &crate::mnemo::MnemoClient,
     buffer: &mut Vec<TranscriptChunk>,
     history: &mut Vec<rig::completion::Message>,
     bootstrapped: &mut bool,
@@ -856,6 +999,7 @@ async fn fire(
         events_tx: events_tx.clone(),
         db: db.clone(),
         user_id: user_id.to_string(),
+        mnemo: mnemo.clone(),
     };
 
     // Provider dispatch. Three near-identical arms — rig's
@@ -883,7 +1027,9 @@ async fn fire(
                 .tool(PushAction(ctx.clone()))
                 .tool(PushOpenQuestion(ctx.clone()))
                 .tool(FetchArtifactSummary(ctx.clone()))
-                .tool(FetchArtifact(ctx))
+                .tool(FetchArtifact(ctx.clone()))
+                .tool(FetchMeetingSummary(ctx.clone()))
+                .tool(FetchMeeting(ctx))
                 .build();
             agent
                 .prompt(user_message.clone())
@@ -902,7 +1048,9 @@ async fn fire(
                 .tool(PushAction(ctx.clone()))
                 .tool(PushOpenQuestion(ctx.clone()))
                 .tool(FetchArtifactSummary(ctx.clone()))
-                .tool(FetchArtifact(ctx))
+                .tool(FetchArtifact(ctx.clone()))
+                .tool(FetchMeetingSummary(ctx.clone()))
+                .tool(FetchMeeting(ctx))
                 .build();
             agent
                 .prompt(user_message.clone())
@@ -928,7 +1076,9 @@ async fn fire(
                 .tool(PushAction(ctx.clone()))
                 .tool(PushOpenQuestion(ctx.clone()))
                 .tool(FetchArtifactSummary(ctx.clone()))
-                .tool(FetchArtifact(ctx))
+                .tool(FetchArtifact(ctx.clone()))
+                .tool(FetchMeetingSummary(ctx.clone()))
+                .tool(FetchMeeting(ctx))
                 .build();
             agent
                 .prompt(user_message.clone())
@@ -1165,14 +1315,23 @@ async fn build_bootstrap_section(
             None => (Default::default(), None, None),
         }
     };
-    let attached = if let Some(mid) = current_meeting_id.as_deref() {
-        crate::db::list_artifacts_for_meeting(db, mid)
+    let (attached_artifacts, attached_meetings) = if let Some(mid) = current_meeting_id.as_deref() {
+        let a = crate::db::list_artifacts_for_meeting(db, mid)
             .await
-            .unwrap_or_default()
+            .unwrap_or_default();
+        let m = crate::db::list_attached_meetings_for_agent(db, mid, user_id)
+            .await
+            .unwrap_or_default();
+        (a, m)
     } else {
-        Vec::new()
+        (Vec::new(), Vec::new())
     };
-    format_bootstrap_section(&metadata, description.as_deref(), &attached)
+    format_bootstrap_section(
+        &metadata,
+        description.as_deref(),
+        &attached_artifacts,
+        &attached_meetings,
+    )
 }
 
 /// Pure formatter for the agent's first-fire bootstrap message.
@@ -1190,6 +1349,7 @@ fn format_bootstrap_section(
     metadata: &std::collections::HashMap<String, String>,
     description: Option<&str>,
     attached: &[crate::db::ArtifactRow],
+    attached_meetings: &[crate::db::AttachedMeetingMeta],
 ) -> Option<String> {
     use std::fmt::Write;
     let mut sections: Vec<String> = Vec::new();
@@ -1221,6 +1381,18 @@ fn format_bootstrap_section(
                 "  id={} name={} mime={} summary={}",
                 a.id, a.name, a.mime_type, summary,
             );
+        }
+        sections.push(s.trim_end().to_string());
+    }
+
+    if !attached_meetings.is_empty() {
+        let mut s = String::from("[attached meetings]\n");
+        for m in attached_meetings {
+            let ended = m
+                .ended_at
+                .map(|d| d.format("%Y-%m-%d").to_string())
+                .unwrap_or_else(|| "(in progress)".to_string());
+            let _ = writeln!(s, "  id={} ended={} title={:?}", m.id, ended, m.title);
         }
         sections.push(s.trim_end().to_string());
     }
@@ -1328,6 +1500,32 @@ async fn format_kick_event(db: &sqlx::PgPool, kick: &AgentKick) -> Option<KickBl
                 "Moment at {ts} summarized (id={moment_id}): {summary}"
             )))
         }
+        AgentKickReason::MeetingAttached {
+            attached_meeting_id,
+        } => {
+            // Resolve the attached meeting's title so the agent's
+            // [event] block reads naturally ("meeting 'Q1 review'"
+            // rather than "meeting 49388fb8-…"). Falls back to id
+            // alone if the row is missing or the user doesn't own it.
+            let body = match crate::db::get_meeting_summary_for_user(
+                db,
+                attached_meeting_id,
+                &kick.user_id,
+            )
+            .await
+            {
+                Ok(Some(s)) => format!(
+                    "User attached past meeting: id={} title={:?}. You can recall its summary \
+                     via fetch_meeting_summary(id) when the transcript references it.",
+                    s.id, s.title,
+                ),
+                _ => format!(
+                    "User attached past meeting: id={attached_meeting_id} (details unavailable). \
+                     You can still recall via fetch_meeting_summary(id) if it's referenced.",
+                ),
+            };
+            Some(KickBlock::Event(body))
+        }
     }
 }
 
@@ -1390,6 +1588,13 @@ pub enum AgentKickReason {
         item_id: String,
         item_text: String,
     },
+    /// User attached a past meeting to the active meeting. The agent
+    /// receives the attached meeting's id + title in the [event]
+    /// block; it should NOT auto-fetch on attach, just absorb the
+    /// fact that the meeting is now available via the
+    /// `fetch_meeting_summary` / `fetch_meeting` tools when the
+    /// transcript references it.
+    MeetingAttached { attached_meeting_id: String },
 }
 
 // ─── Helpers ────────────────────────────────────────────────────────────
@@ -1480,7 +1685,7 @@ mod tests {
     #[test]
     fn format_bootstrap_section_returns_none_when_all_empty() {
         let metadata = HashMap::new();
-        assert!(format_bootstrap_section(&metadata, None, &[]).is_none());
+        assert!(format_bootstrap_section(&metadata, None, &[], &[]).is_none());
     }
 
     #[test]
@@ -1488,7 +1693,7 @@ mod tests {
         let mut metadata = HashMap::new();
         metadata.insert("project".into(), "helix".into());
         metadata.insert("host".into(), "Susan".into());
-        let out = format_bootstrap_section(&metadata, None, &[]).unwrap();
+        let out = format_bootstrap_section(&metadata, None, &[], &[]).unwrap();
         assert!(out.contains("[meeting]"), "got: {out}");
         assert!(out.contains("host: Susan"));
         assert!(out.contains("project: helix"));
@@ -1505,6 +1710,7 @@ mod tests {
             &metadata,
             Some("Quarterly review with Acme. Susan + 2 engineers."),
             &[],
+            &[],
         )
         .unwrap();
         assert!(out.contains("[context]"), "got: {out}");
@@ -1515,7 +1721,7 @@ mod tests {
     fn format_bootstrap_section_omits_context_when_description_none() {
         let mut metadata = HashMap::new();
         metadata.insert("project".into(), "helix".into());
-        let out = format_bootstrap_section(&metadata, None, &[]).unwrap();
+        let out = format_bootstrap_section(&metadata, None, &[], &[]).unwrap();
         assert!(!out.contains("[context]"));
     }
 
@@ -1524,9 +1730,13 @@ mod tests {
         let mut metadata = HashMap::new();
         metadata.insert("host".into(), "Susan".into());
         let attached = vec![artifact("a1", "spec.pdf", Some("Q3 plan"))];
-        let out =
-            format_bootstrap_section(&metadata, Some("Discussion of Q3 incident."), &attached)
-                .unwrap();
+        let out = format_bootstrap_section(
+            &metadata,
+            Some("Discussion of Q3 incident."),
+            &attached,
+            &[],
+        )
+        .unwrap();
         let meeting_pos = out.find("[meeting]").unwrap();
         let context_pos = out.find("[context]").unwrap();
         let artifacts_pos = out.find("[attached artifacts]").unwrap();
@@ -1538,7 +1748,7 @@ mod tests {
     fn format_bootstrap_section_indents_multiline_description() {
         let metadata = HashMap::new();
         let out =
-            format_bootstrap_section(&metadata, Some("first line\nsecond line"), &[]).unwrap();
+            format_bootstrap_section(&metadata, Some("first line\nsecond line"), &[], &[]).unwrap();
         // Each prose line should be indented to match the block's
         // visual style — the agent reads the block by looking for
         // `[context]` and the indented body underneath.

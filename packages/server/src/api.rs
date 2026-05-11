@@ -145,6 +145,14 @@ pub fn make_router(state: ApiState) -> Router {
             "/meetings/:meeting_id/artifacts/:artifact_id",
             axum::routing::delete(detach_artifact),
         )
+        .route(
+            "/meetings/:meeting_id/attached_meetings",
+            post(attach_meeting),
+        )
+        .route(
+            "/meetings/:meeting_id/attached_meetings/:attached_meeting_id",
+            axum::routing::delete(detach_meeting),
+        )
         .layer(DefaultBodyLimit::max(SCREENSHOT_BODY_LIMIT))
         .layer(CorsLayer::permissive())
         .with_state(state)
@@ -950,6 +958,120 @@ async fn detach_artifact(
         .await
         .map_err(|e| ApiError::Db(downcast_db(e)))?;
     broadcast_artifacts_changed(&state, &meeting_id, &user_id).await;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+// ─── Meeting-to-meeting attachment ─────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+struct AttachMeetingBody {
+    attached_meeting_id: String,
+}
+
+/// `POST /meetings/:id/attached_meetings` — attach a past meeting to
+/// the parent so the agent's `fetch_meeting_summary` / `fetch_meeting`
+/// tools can recall scoped to that past meeting's mnemo namespace.
+/// Both meetings must belong to the caller. Self-attach is rejected.
+/// Idempotent — re-attaching the same pair is a silent no-op.
+async fn attach_meeting(
+    State(state): State<ApiState>,
+    Path(parent_meeting_id): Path<String>,
+    headers: HeaderMap,
+    Json(body): Json<AttachMeetingBody>,
+) -> Result<StatusCode, ApiError> {
+    let user_id = require_user(&headers, &state).await?;
+    if parent_meeting_id == body.attached_meeting_id {
+        return Err(ApiError::BadRequest(
+            "a meeting cannot attach itself".into(),
+        ));
+    }
+    // Ownership: both parent and attached must belong to the caller.
+    // Two separate lookups so a 404 doesn't leak which side missed.
+    let parent_owned: Option<(String,)> =
+        sqlx::query_as(r#"SELECT id FROM meetings WHERE id = $1 AND user_id = $2"#)
+            .bind(&parent_meeting_id)
+            .bind(&user_id)
+            .fetch_optional(&state.db)
+            .await
+            .map_err(ApiError::Db)?;
+    if parent_owned.is_none() {
+        return Err(ApiError::NotFound);
+    }
+    let attached_owned: Option<(String,)> =
+        sqlx::query_as(r#"SELECT id FROM meetings WHERE id = $1 AND user_id = $2"#)
+            .bind(&body.attached_meeting_id)
+            .bind(&user_id)
+            .fetch_optional(&state.db)
+            .await
+            .map_err(ApiError::Db)?;
+    if attached_owned.is_none() {
+        return Err(ApiError::NotFound);
+    }
+    crate::db::attach_meeting_to_meeting(&state.db, &parent_meeting_id, &body.attached_meeting_id)
+        .await
+        .map_err(|e| ApiError::Db(downcast_db(e)))?;
+    // Kick the agent so it picks up the attached meeting on its next
+    // fire (same UX as artifact attach).
+    let _ = state
+        .agent_kick_tx
+        .send(crate::summarizer::agent::AgentKick {
+            user_id: user_id.clone(),
+            reason: crate::summarizer::agent::AgentKickReason::MeetingAttached {
+                attached_meeting_id: body.attached_meeting_id.clone(),
+            },
+        });
+    broadcast_attached_meetings_changed(&state, &parent_meeting_id, &user_id).await;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Read the canonical attached-meetings set from DB and broadcast
+/// `Event::AttachedMeetingsChanged` to the user's WS clients. Same
+/// best-effort shape as the artifact mirror.
+async fn broadcast_attached_meetings_changed(
+    state: &ApiState,
+    parent_meeting_id: &str,
+    user_id: &str,
+) {
+    let ids = match crate::db::list_attached_meeting_ids(&state.db, parent_meeting_id).await {
+        Ok(v) => v,
+        Err(e) => {
+            tracing::warn!(
+                error = ?e,
+                parent_meeting_id,
+                "broadcast_attached_meetings_changed: list failed",
+            );
+            return;
+        }
+    };
+    let _ = state.events_tx.send(crate::contract::UserEvent::new(
+        user_id.to_string(),
+        crate::contract::Event::AttachedMeetingsChanged { meeting_ids: ids },
+    ));
+}
+
+/// `DELETE /meetings/:id/attached_meetings/:attached_id` — drop the
+/// attachment row + broadcast the new set. No agent kick on detach
+/// (matches the artifact detach shape).
+async fn detach_meeting(
+    State(state): State<ApiState>,
+    Path((parent_meeting_id, attached_meeting_id)): Path<(String, String)>,
+    headers: HeaderMap,
+) -> Result<StatusCode, ApiError> {
+    let user_id = require_user(&headers, &state).await?;
+    let parent_owned: Option<(String,)> =
+        sqlx::query_as(r#"SELECT id FROM meetings WHERE id = $1 AND user_id = $2"#)
+            .bind(&parent_meeting_id)
+            .bind(&user_id)
+            .fetch_optional(&state.db)
+            .await
+            .map_err(ApiError::Db)?;
+    if parent_owned.is_none() {
+        return Err(ApiError::NotFound);
+    }
+    crate::db::detach_meeting_from_meeting(&state.db, &parent_meeting_id, &attached_meeting_id)
+        .await
+        .map_err(|e| ApiError::Db(downcast_db(e)))?;
+    broadcast_attached_meetings_changed(&state, &parent_meeting_id, &user_id).await;
     Ok(StatusCode::NO_CONTENT)
 }
 

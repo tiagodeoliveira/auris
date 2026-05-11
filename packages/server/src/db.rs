@@ -615,6 +615,189 @@ pub async fn list_artifacts_for_meeting(
     Ok(rows)
 }
 
+// ─── Meeting attachments (parent meeting ↔ past meetings) ────────────
+
+/// Attach a past meeting to a parent meeting so the agent's
+/// `fetch_meeting_summary` / `fetch_meeting` tools can recall against
+/// it. Idempotent (re-attach is a no-op). The DB schema's CHECK
+/// constraint rejects self-attaches; callers should validate
+/// `parent != attached` higher up for a nicer error message.
+pub async fn attach_meeting_to_meeting(
+    pool: &PgPool,
+    parent_meeting_id: &str,
+    attached_meeting_id: &str,
+) -> Result<()> {
+    sqlx::query(
+        r#"INSERT INTO meeting_attachments (parent_meeting_id, attached_meeting_id)
+           VALUES ($1, $2)
+           ON CONFLICT (parent_meeting_id, attached_meeting_id) DO NOTHING"#,
+    )
+    .bind(parent_meeting_id)
+    .bind(attached_meeting_id)
+    .execute(pool)
+    .await
+    .with_context(|| {
+        format!("attach_meeting_to_meeting({parent_meeting_id}, {attached_meeting_id})")
+    })?;
+    Ok(())
+}
+
+/// Detach one attached meeting from a parent. No-op if not attached.
+pub async fn detach_meeting_from_meeting(
+    pool: &PgPool,
+    parent_meeting_id: &str,
+    attached_meeting_id: &str,
+) -> Result<()> {
+    sqlx::query(
+        r#"DELETE FROM meeting_attachments
+            WHERE parent_meeting_id = $1 AND attached_meeting_id = $2"#,
+    )
+    .bind(parent_meeting_id)
+    .bind(attached_meeting_id)
+    .execute(pool)
+    .await
+    .with_context(|| {
+        format!("detach_meeting_from_meeting({parent_meeting_id}, {attached_meeting_id})")
+    })?;
+    Ok(())
+}
+
+/// Slim meeting metadata used by the agent's `[attached meetings]`
+/// bootstrap block. Title is computed server-side via the same
+/// fallback chain the clients apply (`pickMeetingTitle`).
+#[derive(Debug, Clone)]
+pub struct AttachedMeetingMeta {
+    pub id: String,
+    pub title: String,
+    pub ended_at: Option<DateTime<Utc>>,
+}
+
+/// Single-meeting variant of `list_attached_meetings_for_agent` —
+/// used by the kick handler for `MeetingAttached` to format the
+/// [event] block when one meeting gets attached mid-fire.
+pub async fn get_meeting_summary_for_user(
+    pool: &PgPool,
+    meeting_id: &str,
+    user_id: &str,
+) -> Result<Option<AttachedMeetingMeta>> {
+    let row: Option<(
+        String,
+        Option<String>,
+        sqlx::types::Json<serde_json::Value>,
+        Option<DateTime<Utc>>,
+    )> = sqlx::query_as(
+        r#"SELECT id, description, metadata, ended_at
+                 FROM meetings WHERE id = $1 AND user_id = $2"#,
+    )
+    .bind(meeting_id)
+    .bind(user_id)
+    .fetch_optional(pool)
+    .await
+    .with_context(|| format!("get_meeting_summary_for_user({meeting_id})"))?;
+    Ok(row.map(|(id, description, metadata, ended_at)| {
+        let metadata_obj: std::collections::HashMap<String, String> =
+            serde_json::from_value(metadata.0).unwrap_or_default();
+        let title = pick_meeting_title(description.as_deref(), &metadata_obj);
+        AttachedMeetingMeta {
+            id,
+            title,
+            ended_at,
+        }
+    }))
+}
+
+/// Load slim metadata for each attached meeting. Returns rows in
+/// attach order (matching `list_attached_meeting_ids`) joined to
+/// the meetings table so the agent context can include human titles
+/// without a second roundtrip per id.
+pub async fn list_attached_meetings_for_agent(
+    pool: &PgPool,
+    parent_meeting_id: &str,
+    user_id: &str,
+) -> Result<Vec<AttachedMeetingMeta>> {
+    // Belt-and-suspenders ownership join: only return attached
+    // meetings the user actually owns. A malicious attach attempt
+    // would have failed at REST, but the join keeps invariants
+    // local to the read path too.
+    let rows: Vec<(
+        String,
+        Option<String>,
+        sqlx::types::Json<serde_json::Value>,
+        Option<DateTime<Utc>>,
+    )> = sqlx::query_as(
+        r#"SELECT m.id, m.description, m.metadata, m.ended_at
+                 FROM meeting_attachments ma
+                 JOIN meetings m ON m.id = ma.attached_meeting_id
+                WHERE ma.parent_meeting_id = $1 AND m.user_id = $2
+                ORDER BY ma.attached_at ASC"#,
+    )
+    .bind(parent_meeting_id)
+    .bind(user_id)
+    .fetch_all(pool)
+    .await
+    .with_context(|| format!("list_attached_meetings_for_agent({parent_meeting_id})"))?;
+    Ok(rows
+        .into_iter()
+        .map(|(id, description, metadata, ended_at)| {
+            let metadata_obj: std::collections::HashMap<String, String> =
+                serde_json::from_value(metadata.0).unwrap_or_default();
+            let title = pick_meeting_title(description.as_deref(), &metadata_obj);
+            AttachedMeetingMeta {
+                id,
+                title,
+                ended_at,
+            }
+        })
+        .collect())
+}
+
+/// Server-side mirror of the clients' `pickMeetingTitle` fallback
+/// chain: metadata.title → first non-empty description line clipped
+/// to 80 chars → "Untitled meeting".
+fn pick_meeting_title(
+    description: Option<&str>,
+    metadata: &std::collections::HashMap<String, String>,
+) -> String {
+    if let Some(title) = metadata
+        .get("title")
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+    {
+        return title.to_string();
+    }
+    if let Some(desc) = description {
+        if let Some(first_line) = desc.lines().find(|l| !l.trim().is_empty()) {
+            let trimmed = first_line.trim();
+            if trimmed.len() <= 80 {
+                return trimmed.to_string();
+            }
+            return format!("{}…", &trimmed[..79]);
+        }
+    }
+    "Untitled meeting".to_string()
+}
+
+/// Attached past-meeting ids for one parent, attach order. Returns
+/// just the ids — the snapshot and `AttachedMeetingsChanged` wire
+/// shape carries strings only (clients hydrate to full meetings via
+/// the existing `GET /meetings/:id` if they need title / timing).
+pub async fn list_attached_meeting_ids(
+    pool: &PgPool,
+    parent_meeting_id: &str,
+) -> Result<Vec<String>> {
+    let rows: Vec<(String,)> = sqlx::query_as(
+        r#"SELECT attached_meeting_id
+             FROM meeting_attachments
+            WHERE parent_meeting_id = $1
+            ORDER BY attached_at ASC"#,
+    )
+    .bind(parent_meeting_id)
+    .fetch_all(pool)
+    .await
+    .with_context(|| format!("list_attached_meeting_ids({parent_meeting_id})"))?;
+    Ok(rows.into_iter().map(|(id,)| id).collect())
+}
+
 // ─── Items (per-meeting persisted modes) ────────────────────────────
 
 /// Append one item to its meeting's persisted history. Used by the

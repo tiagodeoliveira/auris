@@ -108,6 +108,12 @@ pub struct ServerHandle {
     /// transcript-driven trigger (today: artifact attach to a
     /// running meeting). Subscribed by the agent task.
     pub agent_kick_tx: broadcast::Sender<crate::summarizer::agent::AgentKick>,
+    /// Mnemo client (shared with the pusher + recaller). Held on the
+    /// handle so the agent's per-meeting fetch tools can recall
+    /// scoped to a specific attached meeting's `meeting_id`. Stays
+    /// `Disabled` (no-op) when `MEETING_COMPANION_MNEMO_*` env vars
+    /// are unset.
+    pub mnemo: crate::mnemo::MnemoClient,
 }
 
 impl ServerHandle {
@@ -195,11 +201,13 @@ pub async fn run_server_with_listener(
     // Memory layer: spin up the ingestion pusher and the start-of-meeting
     // recaller. Each gets its own broadcast subscription. No-op if mnemo
     // env vars are not set.
-    crate::mnemo::spawn_tasks(
-        crate::mnemo::MnemoClient::from_env(),
-        state.clone(),
-        &events_tx,
-    );
+    //
+    // Construct once + clone for each consumer: pusher, recaller, and
+    // the ServerHandle (so the agent's per-meeting fetch tools can
+    // recall against attached meetings). MnemoClient is `Clone` and
+    // cheap — reqwest::Client clones share the underlying pool.
+    let mnemo_client = crate::mnemo::MnemoClient::from_env();
+    crate::mnemo::spawn_tasks(mnemo_client.clone(), state.clone(), &events_tx);
     // Transcript persistence: writes one JSONL line per committed
     // transcript item to <DATA_DIR>/blobs/meetings/<id>/transcription.jsonl.
     // Other modes' items are not persisted (they're derived from
@@ -223,6 +231,7 @@ pub async fn run_server_with_listener(
         moment_created_tx,
         artifact_created_tx,
         agent_kick_tx,
+        mnemo: mnemo_client,
     };
 
     // Async LLM worker that fills in moment summaries. Subscribes
@@ -458,6 +467,34 @@ async fn run_control_socket(
     };
     if sink.send(Message::Text(snapshot_json)).await.is_err() {
         return;
+    }
+
+    // Synthetic follow-up: the snapshot ships an empty
+    // `attached_meeting_ids` (state machine doesn't cache them in
+    // memory). If the user actually has an active meeting with
+    // attachments, replay the current set right after the snapshot
+    // so the picker UI gets canonical state on reconnect. Best
+    // effort — DB miss is logged and skipped (next attach/detach
+    // will re-broadcast anyway).
+    let active_meeting_id: Option<String> = {
+        let s = handle.state.lock().await;
+        s.user(&user_id).and_then(|u| u.current_meeting_id.clone())
+    };
+    if let Some(mid) = active_meeting_id {
+        match crate::db::list_attached_meeting_ids(&handle.db, &mid).await {
+            Ok(ids) if !ids.is_empty() => {
+                let evt = crate::contract::Event::AttachedMeetingsChanged { meeting_ids: ids };
+                if let Ok(json) = serde_json::to_string(&evt) {
+                    if sink.send(Message::Text(json)).await.is_err() {
+                        return;
+                    }
+                }
+            }
+            Ok(_) => {}
+            Err(e) => {
+                warn!(?peer, error = ?e, "post-snapshot attached_meetings list failed");
+            }
+        }
     }
 
     loop {
@@ -1323,6 +1360,7 @@ async fn spawn_live_pipeline(handle: ServerHandle, user_id: String, cancel: Canc
         handle.events_tx.clone(),
         user_id.clone(),
         Arc::clone(&handle.llm),
+        handle.mnemo.clone(),
         cancel.child_token(),
     );
 

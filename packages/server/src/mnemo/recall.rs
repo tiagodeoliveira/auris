@@ -14,17 +14,38 @@ pub struct RecallParams {
     pub facts: bool,
     pub episodes: bool,
     pub project: Option<String>,
+    /// Scope the recall to memories pushed under a specific meeting.
+    /// Set on the `attributes.meeting_id` of every push (per the
+    /// `mnemo/payload.rs` builder); mnemo's `/recall` route uses it
+    /// to filter. None = recall ignores the meeting dimension.
+    pub meeting_id: Option<String>,
 }
 
 impl RecallParams {
     /// Defaults for an in-meeting recall: generic dimensions on, optional
-    /// project scope when the meeting's metadata has one.
+    /// project scope when the meeting's metadata has one. Meeting-scoped
+    /// recall is opt-in per call site (see `for_meeting_id`).
     pub fn for_meeting(project: Option<String>) -> Self {
         Self {
             preferences: true,
             facts: true,
             episodes: true,
             project,
+            meeting_id: None,
+        }
+    }
+
+    /// Targeted recall against a specific past meeting. Disables the
+    /// generic-dimension flags so the response is *just* memories
+    /// pushed under that meeting's id — the caller (agent tool) wants
+    /// a focused answer, not a kitchen-sink mix.
+    pub fn for_meeting_id(meeting_id: String) -> Self {
+        Self {
+            preferences: false,
+            facts: false,
+            episodes: false,
+            project: None,
+            meeting_id: Some(meeting_id),
         }
     }
 
@@ -45,12 +66,21 @@ impl RecallParams {
                 parts.push(format!("project={}", urlencode(p)));
             }
         }
+        if let Some(id) = &self.meeting_id {
+            if !id.is_empty() {
+                parts.push(format!("meeting_id={}", urlencode(id)));
+            }
+        }
         parts.join("&")
     }
 
     /// True if at least one dimension is requested.
     pub fn has_any(&self) -> bool {
-        self.preferences || self.facts || self.episodes || self.project.is_some()
+        self.preferences
+            || self.facts
+            || self.episodes
+            || self.project.is_some()
+            || self.meeting_id.is_some()
     }
 }
 
@@ -186,6 +216,7 @@ mod tests {
             facts: true,
             episodes: false,
             project: Some("helix project".into()),
+            meeting_id: None,
         };
         let q = p.to_query();
         assert!(q.contains("preferences=true"));
@@ -201,9 +232,39 @@ mod tests {
             facts: false,
             episodes: false,
             project: Some(String::new()),
+            meeting_id: None,
         };
         let q = p.to_query();
         assert_eq!(q, "preferences=true");
+    }
+
+    #[test]
+    fn for_meeting_id_scopes_query() {
+        let p = RecallParams::for_meeting_id("m-42".into());
+        let q = p.to_query();
+        assert_eq!(q, "meeting_id=m-42");
+        // Generic dimensions stay off — targeted recall = focused answer.
+        assert!(!q.contains("facts=true"));
+        assert!(!q.contains("preferences=true"));
+        assert!(!q.contains("episodes=true"));
+    }
+
+    #[test]
+    fn meeting_id_with_special_chars_encoded() {
+        let p = RecallParams::for_meeting_id("uuid with/slash".into());
+        assert!(p.to_query().contains("meeting_id=uuid%20with%2Fslash"));
+    }
+
+    #[test]
+    fn has_any_recognizes_meeting_id() {
+        let p = RecallParams {
+            preferences: false,
+            facts: false,
+            episodes: false,
+            project: None,
+            meeting_id: Some("m-1".into()),
+        };
+        assert!(p.has_any());
     }
 
     #[test]
