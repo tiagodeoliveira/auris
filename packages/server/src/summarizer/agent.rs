@@ -76,6 +76,14 @@ const CHARS_PER_TOKEN: usize = 4;
 /// a few more headroom turns for fetch → reason → emit chains.
 const MAX_TURNS_PER_FIRE: usize = 8;
 
+/// Output-token ceiling per agent fire. Anthropic-direct *requires*
+/// this be set on every request (rig raises `max_tokens must be set`
+/// otherwise); Bedrock + OpenAI default it but we set it everywhere
+/// for predictable behavior across providers. The agent emits a
+/// handful of short tool calls plus optional chat replies — 4096 is
+/// generous headroom without hitting Claude's 8192 default ceiling.
+const AGENT_MAX_TOKENS: u64 = 4096;
+
 const SYSTEM_PROMPT: &str = "You are an agent inside a real-time meeting note-taker. \
 Your job: emit structured items via tool calls when transcript chunks contain something noteworthy.\n\
 \n\
@@ -869,6 +877,7 @@ async fn fire(
             let model = client.completion_model(model_id).with_prompt_caching();
             let agent = AgentBuilder::new(model)
                 .preamble(SYSTEM_PROMPT)
+                .max_tokens(AGENT_MAX_TOKENS)
                 .tool(PushHighlight(ctx.clone()))
                 .tool(ReplaceHighlights(ctx.clone()))
                 .tool(PushAction(ctx.clone()))
@@ -887,6 +896,7 @@ async fn fire(
             let agent = client
                 .agent(model_id.as_str())
                 .preamble(SYSTEM_PROMPT)
+                .max_tokens(AGENT_MAX_TOKENS)
                 .tool(PushHighlight(ctx.clone()))
                 .tool(ReplaceHighlights(ctx.clone()))
                 .tool(PushAction(ctx.clone()))
@@ -912,6 +922,7 @@ async fn fire(
                 .with_prompt_caching();
             let agent = AgentBuilder::new(model)
                 .preamble(SYSTEM_PROMPT)
+                .max_tokens(AGENT_MAX_TOKENS)
                 .tool(PushHighlight(ctx.clone()))
                 .tool(ReplaceHighlights(ctx.clone()))
                 .tool(PushAction(ctx.clone()))

@@ -47,6 +47,15 @@ metadata. If a field cannot be confidently extracted from the description, \
 return an empty string for that field — do not guess.";
 pub const EXTRACTION_TIMEOUT: Duration = Duration::from_secs(8);
 
+/// Output-token ceiling for every extractor call. Anthropic-direct
+/// *requires* this be set (rig surfaces a `max_tokens must be set`
+/// error otherwise); Bedrock + OpenAI default it but we set it
+/// everywhere so behavior is predictable across providers. The
+/// extractors produce small structured JSON objects — 1024 is
+/// comfortable headroom for the largest one (metadata + vision
+/// moment summary) without wasting budget.
+const LLM_MAX_TOKENS: u64 = 1024;
+
 // ─── Provider discriminant ───────────────────────────────────────────────────
 
 /// Which LLM backend to use.
@@ -309,6 +318,7 @@ impl LlmClient {
                 let extractor = bedrock_client
                     .extractor::<ExtractedMetadata>(&model_id)
                     .preamble(SYSTEM_PROMPT)
+                    .max_tokens(LLM_MAX_TOKENS)
                     .build();
 
                 info!(%region, %model_id, "LLM client initialised (rig + bedrock)");
@@ -335,6 +345,7 @@ impl LlmClient {
                 let extractor = openai_client
                     .extractor::<ExtractedMetadata>(&model_id)
                     .preamble(SYSTEM_PROMPT)
+                    .max_tokens(LLM_MAX_TOKENS)
                     .build();
 
                 info!(%model_id, "LLM client initialised (rig + openai)");
@@ -361,6 +372,7 @@ impl LlmClient {
                 let extractor = anthropic_client
                     .extractor::<ExtractedMetadata>(&model_id)
                     .preamble(SYSTEM_PROMPT)
+                    .max_tokens(LLM_MAX_TOKENS)
                     .build();
 
                 info!(%model_id, "LLM client initialised (rig + anthropic-direct)");
@@ -441,6 +453,7 @@ impl LlmClient {
                 LlmBackend::Bedrock { client, model_id } => client
                     .extractor::<T>(model_id.as_str())
                     .preamble(system_prompt)
+                    .max_tokens(LLM_MAX_TOKENS)
                     .build()
                     .extract_with_usage(user_input)
                     .await
@@ -448,6 +461,7 @@ impl LlmClient {
                 LlmBackend::OpenAI { client, model_id } => client
                     .extractor::<T>(model_id.as_str())
                     .preamble(system_prompt)
+                    .max_tokens(LLM_MAX_TOKENS)
                     .build()
                     .extract_with_usage(user_input)
                     .await
@@ -455,6 +469,7 @@ impl LlmClient {
                 LlmBackend::Anthropic { client, model_id } => client
                     .extractor::<T>(model_id.as_str())
                     .preamble(system_prompt)
+                    .max_tokens(LLM_MAX_TOKENS)
                     .build()
                     .extract_with_usage(user_input)
                     .await
@@ -532,6 +547,7 @@ impl LlmClient {
                 LlmBackend::Bedrock { client, model_id } => client
                     .extractor::<T>(model_id.as_str())
                     .preamble(system_prompt)
+                    .max_tokens(LLM_MAX_TOKENS)
                     .build()
                     .extract_with_usage(message.clone())
                     .await
@@ -539,6 +555,7 @@ impl LlmClient {
                 LlmBackend::OpenAI { client, model_id } => client
                     .extractor::<T>(model_id.as_str())
                     .preamble(system_prompt)
+                    .max_tokens(LLM_MAX_TOKENS)
                     .build()
                     .extract_with_usage(message.clone())
                     .await
@@ -546,6 +563,7 @@ impl LlmClient {
                 LlmBackend::Anthropic { client, model_id } => client
                     .extractor::<T>(model_id.as_str())
                     .preamble(system_prompt)
+                    .max_tokens(LLM_MAX_TOKENS)
                     .build()
                     .extract_with_usage(message.clone())
                     .await
@@ -630,6 +648,7 @@ impl LlmClient {
                 LlmBackend::Bedrock { client, model_id } => client
                     .extractor::<T>(model_id.as_str())
                     .preamble(system_prompt)
+                    .max_tokens(LLM_MAX_TOKENS)
                     .build()
                     .extract_with_usage(message.clone())
                     .await
@@ -637,6 +656,7 @@ impl LlmClient {
                 LlmBackend::OpenAI { client, model_id } => client
                     .extractor::<T>(model_id.as_str())
                     .preamble(system_prompt)
+                    .max_tokens(LLM_MAX_TOKENS)
                     .build()
                     .extract_with_usage(message.clone())
                     .await
@@ -644,6 +664,7 @@ impl LlmClient {
                 LlmBackend::Anthropic { client, model_id } => client
                     .extractor::<T>(model_id.as_str())
                     .preamble(system_prompt)
+                    .max_tokens(LLM_MAX_TOKENS)
                     .build()
                     .extract_with_usage(message.clone())
                     .await
