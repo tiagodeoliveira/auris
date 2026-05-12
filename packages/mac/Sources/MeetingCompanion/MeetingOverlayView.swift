@@ -669,15 +669,16 @@ struct MeetingOverlayView: View {
     /// a meeting (mirrors the gate inside `captureChatAttachment`) and
     /// we haven't hit the per-message attachment cap.
     private var canCaptureChatAttachment: Bool {
-        model.currentMeetingId != nil && model.pendingChatAttachments.count < 4
+        model.currentMeetingId != nil
+            && model.pendingChatAttachments.count < model.chatAttachmentLimit
     }
 
     private var captureButtonTooltip: String {
         if model.currentMeetingId == nil {
             return "Start a meeting to attach screenshots"
         }
-        if model.pendingChatAttachments.count >= 4 {
-            return "Maximum 4 screenshots per message"
+        if model.pendingChatAttachments.count >= model.chatAttachmentLimit {
+            return "Maximum \(model.chatAttachmentLimit) screenshots per message"
         }
         return "Capture screen"
     }

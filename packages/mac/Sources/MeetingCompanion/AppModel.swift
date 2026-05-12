@@ -146,7 +146,7 @@ final class AppModel {
     /// Cleared on meeting-state → idle (orphan rows on the server are
     /// cascade-deleted with the meeting).
     private(set) var pendingChatAttachments: [ChatAttachmentDraft] = []
-    private let chatAttachmentLimit = 4
+    let chatAttachmentLimit = 4
 
     /// Transient toast-like message for chat-attachment / chat-send
     /// status (mirrors `momentStatus`). Cleared by
