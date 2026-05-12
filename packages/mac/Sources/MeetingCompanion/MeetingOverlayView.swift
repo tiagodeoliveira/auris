@@ -612,40 +612,74 @@ struct MeetingOverlayView: View {
     }
 
     private var chatInputRow: some View {
-        HStack(spacing: 8) {
-            TextField("Ask the agent…", text: $chatDraft)
-                .textFieldStyle(.plain)
-                .focused($isChatFocused)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 6)
-                .background(MCTheme.input.opacity(model.settings.overlayOpacity))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 6)
-                        .strokeBorder(isChatFocused ? MCTheme.blue : MCTheme.border)
-                )
-                .clipShape(RoundedRectangle(cornerRadius: 6))
-                .disabled(chatBusy)
-                .onSubmit { submitChat() }
+        VStack(spacing: 4) {
+            ChatAttachmentStrip(model: model)
 
-            Button {
-                submitChat()
-            } label: {
-                Text("Send")
-                    .font(.system(size: 12, weight: .semibold))
-                    .padding(.horizontal, 12)
+            HStack(spacing: 8) {
+                TextField("Ask the agent…", text: $chatDraft)
+                    .textFieldStyle(.plain)
+                    .focused($isChatFocused)
+                    .padding(.horizontal, 10)
                     .padding(.vertical, 6)
+                    .background(MCTheme.input.opacity(model.settings.overlayOpacity))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 6)
+                            .strokeBorder(isChatFocused ? MCTheme.blue : MCTheme.border)
+                    )
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
+                    .disabled(chatBusy)
+                    .onSubmit { submitChat() }
+
+                Button {
+                    Task { await model.captureChatAttachment() }
+                } label: {
+                    Image(systemName: "camera.fill")
+                        .font(.system(size: 14, weight: .medium))
+                        .foregroundStyle(canCaptureChatAttachment ? MCTheme.blue : MCTheme.muted)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 6)
+                }
+                .buttonStyle(.plain)
+                .disabled(!canCaptureChatAttachment)
+                .help(captureButtonTooltip)
+
+                Button {
+                    submitChat()
+                } label: {
+                    Text("Send")
+                        .font(.system(size: 12, weight: .semibold))
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(MCTheme.blue)
+                .disabled(chatBusy || chatDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
-            .buttonStyle(.borderedProminent)
-            .tint(MCTheme.blue)
-            .disabled(chatBusy || chatDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            .onChange(of: hasPendingChatBubble) { _, pending in
+                // While a `meta.role == "assistant-pending"` bubble sits
+                // in chat-mode items, we're waiting on the agent. The
+                // server's ItemsUpdate replaces it with a real assistant
+                // bubble (role == "assistant") → flip back to enabled.
+                chatBusy = pending
+            }
         }
-        .onChange(of: hasPendingChatBubble) { _, pending in
-            // While a `meta.role == "assistant-pending"` bubble sits
-            // in chat-mode items, we're waiting on the agent. The
-            // server's ItemsUpdate replaces it with a real assistant
-            // bubble (role == "assistant") → flip back to enabled.
-            chatBusy = pending
+    }
+
+    /// Camera button is only useful when the server agrees we're in
+    /// a meeting (mirrors the gate inside `captureChatAttachment`) and
+    /// we haven't hit the per-message attachment cap.
+    private var canCaptureChatAttachment: Bool {
+        model.currentMeetingId != nil && model.pendingChatAttachments.count < 4
+    }
+
+    private var captureButtonTooltip: String {
+        if model.currentMeetingId == nil {
+            return "Start a meeting to attach screenshots"
         }
+        if model.pendingChatAttachments.count >= 4 {
+            return "Maximum 4 screenshots per message"
+        }
+        return "Capture screen"
     }
 
     /// True while the optimistic-echo placeholder bubble is the
@@ -1594,6 +1628,96 @@ private struct ArtifactChip: View {
             RoundedRectangle(cornerRadius: 6)
                 .strokeBorder(MCTheme.border)
         )
+    }
+}
+
+/// Horizontal strip of staged chat screenshots above the chat input.
+/// Empty drafts list → renders nothing (no reserved gap). Each chip
+/// shows the captured thumbnail with an upload-state overlay and an
+/// X close button that drops the draft.
+private struct ChatAttachmentStrip: View {
+    @Bindable var model: AppModel
+
+    var body: some View {
+        if !model.pendingChatAttachments.isEmpty {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 6) {
+                    ForEach(model.pendingChatAttachments) { draft in
+                        ChatAttachmentChip(draft: draft) {
+                            model.removeChatAttachment(draftId: draft.id)
+                        }
+                    }
+                }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+            }
+            .frame(height: 72)
+        }
+    }
+}
+
+/// 64×64 thumbnail chip for a single staged screenshot. Visual state
+/// follows `ChatAttachmentUploadState`: spinner while uploading,
+/// warning glyph + red border on failure, clean thumb when uploaded.
+private struct ChatAttachmentChip: View {
+    let draft: ChatAttachmentDraft
+    let onRemove: () -> Void
+
+    var body: some View {
+        ZStack(alignment: .topTrailing) {
+            Image(nsImage: draft.image)
+                .resizable()
+                .aspectRatio(contentMode: .fill)
+                .frame(width: 64, height: 64)
+                .clipShape(RoundedRectangle(cornerRadius: 6))
+                .overlay(stateOverlay)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6)
+                        .stroke(borderColor, lineWidth: 1)
+                )
+
+            Button(action: onRemove) {
+                Image(systemName: "xmark.circle.fill")
+                    .foregroundStyle(.white, .black.opacity(0.65))
+                    .font(.system(size: 14))
+            }
+            .buttonStyle(.plain)
+            .offset(x: 4, y: -4)
+        }
+        .help(tooltip)
+    }
+
+    @ViewBuilder private var stateOverlay: some View {
+        switch draft.state {
+        case .uploading:
+            ProgressView()
+                .controlSize(.small)
+                .padding(4)
+                .background(.black.opacity(0.4), in: Circle())
+        case .failed:
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(.yellow)
+                .padding(4)
+                .background(.black.opacity(0.4), in: Circle())
+        case .uploaded:
+            EmptyView()
+        }
+    }
+
+    private var borderColor: Color {
+        switch draft.state {
+        case .uploading: return .secondary.opacity(0.5)
+        case .failed:    return .red
+        case .uploaded:  return .clear
+        }
+    }
+
+    private var tooltip: String {
+        switch draft.state {
+        case .uploading:       return "Uploading screenshot…"
+        case .failed(let msg): return "Upload failed: \(msg)"
+        case .uploaded:        return "Screenshot ready"
+        }
     }
 }
 
