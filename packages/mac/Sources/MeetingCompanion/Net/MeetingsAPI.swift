@@ -244,6 +244,41 @@ struct MeetingsAPI: Sendable {
         }
     }
 
+    /// POST raw PNG bytes to `/meetings/<id>/chat_attachments` and return
+    /// the server-assigned attachment id. Throws via `MeetingsAPIError`
+    /// on transport or non-2xx HTTP errors. Mirrors
+    /// `uploadMomentScreenshot` exactly except for the path and the
+    /// JSON-decoded response body.
+    func uploadChatAttachment(meetingId: String, png: Data) async throws -> String {
+        let url = baseURL.appendingPathComponent(
+            "meetings/\(meetingId)/chat_attachments"
+        )
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        req.setValue("image/png", forHTTPHeaderField: "Content-Type")
+
+        let data: Data
+        let resp: URLResponse
+        do {
+            (data, resp) = try await URLSession.shared.upload(for: req, from: png)
+        } catch {
+            throw MeetingsAPIError.transport(error)
+        }
+        guard let http = resp as? HTTPURLResponse else {
+            throw MeetingsAPIError.http(0)
+        }
+        switch http.statusCode {
+        case 200..<300:
+            struct UploadResponse: Decodable { let id: String }
+            let decoded = try JSONDecoder().decode(UploadResponse.self, from: data)
+            return decoded.id
+        case 401: throw MeetingsAPIError.unauthorized
+        case 404: throw MeetingsAPIError.notFound
+        default:  throw MeetingsAPIError.http(http.statusCode)
+        }
+    }
+
     /// Attach a past meeting to the active meeting (carry-over
     /// context). Server is idempotent (`ON CONFLICT DO NOTHING`);
     /// duplicate attaches are no-ops. Mirrors `ArtifactsAPI.attach`.

@@ -186,9 +186,25 @@ struct MarkMomentIntent: Encodable {
 /// User-typed question to the agent during an active meeting. The
 /// server validates active/paused state, kicks the agent, and the
 /// resulting Q+A pair lands in chat-mode `items_update` events.
+///
+/// `attachmentIds` (added 2026-05-12) carries chat-attachment ids
+/// previously returned by `POST /meetings/:id/chat_attachments`.
+/// Default `[]` matches today's text-only chats.
 struct ChatIntent: Encodable {
     let type: String = "chat"
     let text: String
+    let attachmentIds: [String]
+
+    init(text: String, attachmentIds: [String] = []) {
+        self.text = text
+        self.attachmentIds = attachmentIds
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case type
+        case text
+        case attachmentIds = "attachment_ids"
+    }
 }
 
 /// Ask the agent to expand on a specific item by id. The agent's
