@@ -972,7 +972,7 @@ async fn fire(
     // and we use the boolean to gate trailing-text-strip and to
     // capture the agent's response as the chat reply.
     let chat_user_text: Option<String> = match &kick_block {
-        Some(KickBlock::Chat { user_text }) => Some(user_text.clone()),
+        Some(KickBlock::Chat { user_text, .. }) => Some(user_text.clone()),
         _ => None,
     };
     let is_chat_fire = chat_user_text.is_some();
@@ -1436,6 +1436,7 @@ enum KickBlock {
     Event(String),
     Chat {
         user_text: String,
+        attachments: Vec<AttachmentPayload>,
     },
     /// User asked the agent to expand on a specific item.
     /// Captures the mode + item_id so the fire path knows where to
@@ -1459,7 +1460,7 @@ impl KickBlock {
     fn body(&self) -> String {
         match self {
             KickBlock::Event(text) => text.clone(),
-            KickBlock::Chat { user_text } => format!("User: {user_text:?}"),
+            KickBlock::Chat { user_text, .. } => format!("User: {user_text:?}"),
             KickBlock::Expand {
                 mode, item_text, ..
             } => format!(
@@ -1490,8 +1491,9 @@ async fn format_kick_event(db: &sqlx::PgPool, kick: &AgentKick) -> Option<KickBl
             };
             Some(KickBlock::Event(body))
         }
-        AgentKickReason::ChatMessage { text } => Some(KickBlock::Chat {
+        AgentKickReason::ChatMessage { text, attachments } => Some(KickBlock::Chat {
             user_text: text.clone(),
+            attachments: attachments.clone(),
         }),
         AgentKickReason::ExpandItem {
             mode,
@@ -1558,6 +1560,27 @@ fn format_ms(t_ms: i64) -> String {
 
 // ─── Kick channel ───────────────────────────────────────────────────────
 
+/// Bytes + mime for a chat attachment. Owns the bytes so it can
+/// travel through the `AgentKick` broadcast channel without
+/// dipping back into the DB or filesystem.
+///
+/// Custom `Debug` redacts the byte vector — `tracing::info!(?kick)`
+/// elsewhere in the agent loop must not spill base64 into logs.
+#[derive(Clone)]
+pub struct AttachmentPayload {
+    pub mime: String,
+    pub bytes: Vec<u8>,
+}
+
+impl std::fmt::Debug for AttachmentPayload {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AttachmentPayload")
+            .field("mime", &self.mime)
+            .field("bytes_len", &self.bytes.len())
+            .finish()
+    }
+}
+
 /// Sent on `ServerHandle.agent_kick_tx` to ask the agent loop to
 /// fire immediately for a specific user, optionally with an event
 /// payload that gets folded into the agent's next user-turn message
@@ -1581,7 +1604,15 @@ pub enum AgentKickReason {
     /// Tool calls are still allowed during a chat fire — if the
     /// user asks "record this as an action," the agent emits the
     /// tool call AND the text reply.
-    ChatMessage { text: String },
+    ///
+    /// `attachments` (added 2026-05-12) carries any screenshots the
+    /// user attached via the Mac compose strip. Empty for text-only
+    /// chats. Bytes are loaded by the WS handler before kicking; the
+    /// agent task threads them as `UserContent::Image` blocks.
+    ChatMessage {
+        text: String,
+        attachments: Vec<AttachmentPayload>,
+    },
     /// User just bookmarked a moment. Sent immediately on creation
     /// so the agent knows about it before the (15-22 s) summary
     /// worker finishes; lets users chat about a moment they just

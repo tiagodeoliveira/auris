@@ -151,8 +151,17 @@ pub enum Intent {
     /// becomes the assistant-side bubble. Allowed only when a
     /// meeting is active or paused — chat is per-meeting only,
     /// no persistence across meetings in v1.
+    ///
+    /// `attachment_ids` (added 2026-05-12) reference rows in
+    /// `chat_attachments`, uploaded via
+    /// `POST /meetings/:id/chat_attachments`. The server reads
+    /// the bytes from disk and threads them as vision content
+    /// blocks into the agent's LLM call. Empty list = today's
+    /// text-only behavior. Mac is the only producer in v1.
     Chat {
         text: String,
+        #[serde(default)]
+        attachment_ids: Vec<String>,
     },
 }
 

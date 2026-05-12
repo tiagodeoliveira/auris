@@ -865,7 +865,7 @@ async fn dispatch_intent(
     // Chat dispatches to the agent task via the kick channel; it
     // doesn't mutate state directly. Validation: meeting must be
     // active or paused (chat is per-meeting only in v1).
-    if let Intent::Chat { text } = intent {
+    if let Intent::Chat { text, .. } = intent {
         let trimmed = text.trim().to_string();
         if trimmed.is_empty() {
             return Ok(());
@@ -897,7 +897,10 @@ async fn dispatch_intent(
             .agent_kick_tx
             .send(crate::summarizer::agent::AgentKick {
                 user_id: user_id.to_string(),
-                reason: crate::summarizer::agent::AgentKickReason::ChatMessage { text: trimmed },
+                reason: crate::summarizer::agent::AgentKickReason::ChatMessage {
+                    text: trimmed,
+                    attachments: Vec::new(),
+                },
             });
         return Ok(());
     }
