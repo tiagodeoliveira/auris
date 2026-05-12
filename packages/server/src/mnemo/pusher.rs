@@ -1,22 +1,22 @@
 //! Background task that subscribes to the WS event broadcast and pushes
-//! relevant events to mnemo.
+//! transcript turns to mnemo. Nothing else.
 //!
 //! Lifecycle, per meeting:
 //!   - `MeetingStateChanged { Active }`: start a new mnemo session (uuid),
-//!     reset transcript-pushed count and per-mode item cache. Metadata
-//!     cache is intentionally preserved so a pre-meeting `ExtractMetadata`
-//!     run carries through.
+//!     reset transcript-pushed count. Metadata cache is intentionally
+//!     preserved so a pre-meeting `ExtractMetadata` run carries through.
 //!   - `MetadataChanged`: refresh the metadata cache. Applied even outside
 //!     active meetings (Extract-before-Start populates this).
 //!   - `ItemsUpdate { mode: "transcript", items }`: push each new item
 //!     (since the last push) as a `user`-role turn. Each push is a
 //!     spawned tokio task so a slow HTTP call doesn't stall the loop.
-//!   - `ItemsUpdate { mode: <other>, items }`: cache for the end-of-meeting
-//!     summary push. Replace strategy mirrors how mnemo will see the
-//!     final state.
-//!   - `MeetingStateChanged { Idle }`: push one `assistant`-role event
-//!     bundling actions / highlights / open-questions, then reset.
+//!   - `MeetingStateChanged { Idle }`: reset state.
 //!   - `MeetingStateChanged { Paused }`: no-op; keep accumulating.
+//!
+//! All other event kinds (chat fires, highlight/action/open-question tool
+//! emissions, moment summaries, etc.) are deliberately ignored. Pushing
+//! them was muddying meeting recall with agent-summarized content; the
+//! transcript stream is the only ground-truth signal mnemo gets.
 //!
 //! All HTTP calls are best-effort. Failure logs at warn but never aborts
 //! the loop.
@@ -31,9 +31,7 @@ use uuid::Uuid;
 use crate::contract::{Event, Item, MeetingState, UserEvent};
 
 use super::client::MnemoClient;
-use super::payload::{
-    build_chat_event, build_moment_event, build_sentence_event, build_summary_event,
-};
+use super::payload::build_sentence_event;
 
 #[derive(Debug, Default)]
 struct PusherState {
@@ -45,10 +43,6 @@ struct PusherState {
     meeting_id: Option<String>,
     /// Number of transcript items already pushed in this session.
     transcript_pushed: usize,
-    /// Per-mode item cache (excluding transcript). Populated as
-    /// `ItemsUpdate` events fire so the end-of-meeting summary can be
-    /// built without re-querying state.
-    items_by_mode: HashMap<String, Vec<Item>>,
     /// Latest metadata snapshot. Survives across the
     /// `ExtractMetadata` → `start_meeting` boundary.
     metadata: HashMap<String, String>,
@@ -98,7 +92,6 @@ async fn handle_event(client: &MnemoClient, state: &mut PusherState, event: Even
                 state.started_at = Some(Utc::now());
                 state.meeting_id = meeting_id;
                 state.transcript_pushed = 0;
-                state.items_by_mode.clear();
                 // Keep metadata cache — ExtractMetadata may have populated it.
             }
         }
@@ -106,7 +99,6 @@ async fn handle_event(client: &MnemoClient, state: &mut PusherState, event: Even
             meeting_state: MeetingState::Idle,
             ..
         } => {
-            flush_summary(client, state).await;
             *state = PusherState::default();
         }
         Event::MeetingStateChanged {
@@ -119,35 +111,17 @@ async fn handle_event(client: &MnemoClient, state: &mut PusherState, event: Even
             state.metadata = metadata;
         }
         Event::ItemsUpdate { mode, items } => {
+            // Only transcript items push to mnemo. Chat, highlights,
+            // actions, open_questions, summary — all derived/agent
+            // content — are intentionally ignored so recall stays
+            // anchored to ground-truth speech.
             if mode == "transcript" {
                 push_new_transcript(client, state, &items);
-            } else if mode == "chat" {
-                push_chat_pair(client, state, &items);
-                // Don't cache chat in items_by_mode — chat exchanges
-                // stream to mnemo per fire (above), and the
-                // end-of-meeting summary bundle intentionally
-                // omits chat (covered by the per-fire pushes).
-            } else if mode == "summary" {
-                // Summary is the running 3-5 sentence overview that
-                // refreshes on a heartbeat; pushing every refresh
-                // would spam mnemo with progressively-larger versions
-                // of the same content, and the actions/highlights/
-                // open_questions bundle at meeting stop already
-                // covers the same ground. Skip entirely.
-            } else {
-                state.items_by_mode.insert(mode, items);
             }
         }
-        Event::MomentSummarized {
-            t_ms,
-            summary,
-            note,
-            ..
-        } => {
-            push_moment(client, state, t_ms, &summary, note.as_deref());
-        }
-        // No-ops for memory purposes.
-        Event::Snapshot { .. }
+        // Everything else: intentional no-op for memory purposes.
+        Event::MomentSummarized { .. }
+        | Event::Snapshot { .. }
         | Event::ModeChanged { .. }
         | Event::DisplayTagChanged { .. }
         | Event::PriorContextChanged { .. }
@@ -162,68 +136,6 @@ async fn handle_event(client: &MnemoClient, state: &mut PusherState, event: Even
         | Event::AttachedMeetingsChanged { .. }
         | Event::ItemUpdated { .. } => {}
     }
-}
-
-/// Chat exchange → one mnemo event with two turns. Fires per chat
-/// round-trip. The Q+A pair arrives in `items` as
-/// `[user_item, assistant_item]` (the chat fire's broadcast shape).
-fn push_chat_pair(client: &MnemoClient, state: &PusherState, items: &[Item]) {
-    let (Some(session_id), Some(started_at)) = (state.session_id.as_deref(), state.started_at)
-    else {
-        return;
-    };
-    if items.len() < 2 {
-        return;
-    }
-    let question = &items[0].text;
-    let answer = &items[1].text;
-    let payload = build_chat_event(
-        session_id,
-        client.workstation(),
-        &state.metadata,
-        started_at,
-        state.meeting_id.as_deref(),
-        question,
-        answer,
-    );
-    let client = client.clone();
-    tokio::spawn(async move {
-        if let Err(e) = client.push_event(&payload).await {
-            warn!(error = %e, "mnemo: chat push failed");
-        }
-    });
-}
-
-/// Moment summary → one assistant-role turn carrying the LLM's
-/// transcript-window + screenshot synthesis. Screenshot itself is
-/// not sent (mnemo is text-only).
-fn push_moment(
-    client: &MnemoClient,
-    state: &PusherState,
-    t_ms: i64,
-    summary: &str,
-    note: Option<&str>,
-) {
-    let (Some(session_id), Some(started_at)) = (state.session_id.as_deref(), state.started_at)
-    else {
-        return;
-    };
-    let payload = build_moment_event(
-        session_id,
-        client.workstation(),
-        &state.metadata,
-        started_at,
-        state.meeting_id.as_deref(),
-        t_ms,
-        summary,
-        note,
-    );
-    let client = client.clone();
-    tokio::spawn(async move {
-        if let Err(e) = client.push_event(&payload).await {
-            warn!(error = %e, "mnemo: moment push failed");
-        }
-    });
 }
 
 /// Format a transcript Item's content for mnemo, prefixing the
@@ -278,35 +190,6 @@ fn push_new_transcript(client: &MnemoClient, state: &mut PusherState, items: &[I
         });
     }
     state.transcript_pushed = items.len();
-}
-
-async fn flush_summary(client: &MnemoClient, state: &PusherState) {
-    let (Some(session_id), Some(started_at)) = (state.session_id.as_deref(), state.started_at)
-    else {
-        return;
-    };
-    // `flush_summary` fires from the MeetingStateChanged → Idle
-    // handler, so `now` IS the meeting end time. Captured here
-    // rather than threaded through the broader state so it's
-    // unambiguously the stop-time wall clock.
-    let meeting_ended = Utc::now();
-    let Some(payload) = build_summary_event(
-        session_id,
-        client.workstation(),
-        &state.metadata,
-        started_at,
-        state.meeting_id.as_deref(),
-        Some(meeting_ended),
-        &state.items_by_mode,
-    ) else {
-        debug!(session_id = %session_id, "mnemo: nothing to summarize, skipping final push");
-        return;
-    };
-    if let Err(e) = client.push_event(&payload).await {
-        warn!(error = %e, "mnemo: final summary push failed");
-    } else {
-        info!(session_id = %session_id, "mnemo: final summary pushed");
-    }
 }
 
 #[cfg(test)]
@@ -446,7 +329,7 @@ mod tests {
             .await;
             assert_eq!(state.transcript_pushed, 3);
 
-            // Other modes get cached.
+            // Other modes are ignored — only transcript turns push.
             handle_event(
                 &client,
                 &mut state,
@@ -456,7 +339,9 @@ mod tests {
                 },
             )
             .await;
-            assert_eq!(state.items_by_mode.get("actions").unwrap().len(), 1);
+            // No items_by_mode field anymore; this is just a smoke
+            // that the actions branch is a silent no-op.
+            assert_eq!(state.transcript_pushed, 3);
 
             // Pause: state unchanged.
             let snap_before_pause = state.transcript_pushed;
@@ -484,7 +369,6 @@ mod tests {
             .await;
             assert!(state.session_id.is_none());
             assert!(state.metadata.is_empty());
-            assert!(state.items_by_mode.is_empty());
             assert_eq!(state.transcript_pushed, 0);
         });
     }

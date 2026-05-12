@@ -9,8 +9,6 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::contract::Item;
-
 pub const SOURCE: &str = "meeting_companion";
 pub const WORKDIR: &str = "/meeting_companion";
 
@@ -132,133 +130,6 @@ pub fn build_sentence_event(
     }
 }
 
-/// One chat exchange → one event with two turns: user-role
-/// question + assistant-role reply. Streams the same way as
-/// transcript sentences (per fire), so mnemo recall captures
-/// the question and the agent's answer as paired memories.
-pub fn build_chat_event(
-    session_id: &str,
-    workstation: &str,
-    metadata: &HashMap<String, String>,
-    started_at: chrono::DateTime<chrono::Utc>,
-    meeting_id: Option<&str>,
-    question: &str,
-    answer: &str,
-) -> IngestEvent {
-    IngestEvent {
-        session_id: session_id.to_string(),
-        turns: vec![
-            Turn {
-                role: TurnRole::User,
-                content: question.to_string(),
-            },
-            Turn {
-                role: TurnRole::Assistant,
-                content: answer.to_string(),
-            },
-        ],
-        context: build_context(
-            workstation,
-            metadata,
-            started_at,
-            meeting_id,
-            Some("chat"),
-            None,
-        ),
-    }
-}
-
-/// Moment summary → one assistant-role turn carrying the
-/// transcript-window + screenshot-synthesis text. The screenshot
-/// itself isn't sent (mnemo only takes text); only the summary
-/// the LLM produced. `note` (when the user attached one at mark
-/// time) prefixes the turn so recall surfaces "the user's intent"
-/// alongside the auto-generated summary.
-pub fn build_moment_event(
-    session_id: &str,
-    workstation: &str,
-    metadata: &HashMap<String, String>,
-    started_at: chrono::DateTime<chrono::Utc>,
-    meeting_id: Option<&str>,
-    t_ms: i64,
-    summary: &str,
-    note: Option<&str>,
-) -> IngestEvent {
-    let total_secs = (t_ms.max(0) / 1000) as u64;
-    let timestamp = format!("{:02}:{:02}", total_secs / 60, total_secs % 60);
-    let mut content = format!("Moment at {timestamp}: {summary}");
-    if let Some(n) = note.filter(|s| !s.trim().is_empty()) {
-        content = format!("Moment at {timestamp} — user note: {n}\n{summary}");
-    }
-    IngestEvent {
-        session_id: session_id.to_string(),
-        turns: vec![Turn {
-            role: TurnRole::Assistant,
-            content,
-        }],
-        context: build_context(
-            workstation,
-            metadata,
-            started_at,
-            meeting_id,
-            Some("moment"),
-            None,
-        ),
-    }
-}
-
-/// At meeting stop, bundle the LLM-extracted per-mode summaries into one
-/// event of assistant-role turns. Skips empty modes. Skips entirely if
-/// nothing was extracted (returns `None`).
-pub fn build_summary_event(
-    session_id: &str,
-    workstation: &str,
-    metadata: &HashMap<String, String>,
-    started_at: chrono::DateTime<chrono::Utc>,
-    meeting_id: Option<&str>,
-    meeting_ended: Option<chrono::DateTime<chrono::Utc>>,
-    items_by_mode: &HashMap<String, Vec<Item>>,
-) -> Option<IngestEvent> {
-    let mut turns = Vec::new();
-    // Stable, human-readable order: actions first, then highlights, then
-    // open questions. Transcript mode is intentionally omitted — those
-    // items were already streamed sentence-by-sentence.
-    for (mode_id, header) in [
-        ("actions", "Action items:"),
-        ("highlights", "Highlights:"),
-        ("open_questions", "Open questions:"),
-    ] {
-        let items = match items_by_mode.get(mode_id) {
-            Some(v) if !v.is_empty() => v,
-            _ => continue,
-        };
-        let mut block = String::from(header);
-        for item in items {
-            block.push_str("\n- ");
-            block.push_str(&item.text);
-        }
-        turns.push(Turn {
-            role: TurnRole::Assistant,
-            content: block,
-        });
-    }
-    if turns.is_empty() {
-        return None;
-    }
-    Some(IngestEvent {
-        session_id: session_id.to_string(),
-        turns,
-        context: build_context(
-            workstation,
-            metadata,
-            started_at,
-            meeting_id,
-            Some("summary_bundle"),
-            meeting_ended,
-        ),
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -268,16 +139,6 @@ mod tests {
             .iter()
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect()
-    }
-
-    fn item(id: &str, text: &str) -> Item {
-        Item {
-            id: id.to_string(),
-            text: text.to_string(),
-            detail: None,
-            t: 0,
-            meta: None,
-        }
     }
 
     fn ts() -> chrono::DateTime<chrono::Utc> {
@@ -329,76 +190,6 @@ mod tests {
         assert_eq!(
             ev.context.attributes.get("owner"),
             Some(&"tiago".to_string())
-        );
-    }
-
-    #[test]
-    fn summary_event_groups_actions_highlights_questions() {
-        let mut by_mode = HashMap::new();
-        by_mode.insert(
-            "actions".into(),
-            vec![item("a1", "Send recap"), item("a2", "Follow up with PM")],
-        );
-        by_mode.insert("highlights".into(), vec![item("h1", "Helix shipped v2")]);
-        by_mode.insert("open_questions".into(), vec![item("q1", "Pricing tier?")]);
-        // Transcript items must be skipped.
-        by_mode.insert("transcript".into(), vec![item("t1", "We talked.")]);
-
-        let ev = build_summary_event("s", "h", &meta(&[]), ts(), None, None, &by_mode)
-            .expect("non-empty");
-        assert_eq!(ev.turns.len(), 3);
-        assert!(ev.turns[0].content.starts_with("Action items:"));
-        assert!(ev.turns[0].content.contains("- Send recap"));
-        assert!(ev.turns[0].content.contains("- Follow up with PM"));
-        assert!(ev.turns[1].content.starts_with("Highlights:"));
-        assert!(ev.turns[2].content.starts_with("Open questions:"));
-        // Transcript not duplicated here.
-        assert!(!ev.turns.iter().any(|t| t.content.contains("We talked")));
-    }
-
-    #[test]
-    fn summary_event_skips_empty_modes() {
-        let mut by_mode = HashMap::new();
-        by_mode.insert("actions".into(), vec![item("a1", "Only this")]);
-        by_mode.insert("highlights".into(), vec![]); // empty
-        let ev = build_summary_event("s", "h", &meta(&[]), ts(), None, None, &by_mode)
-            .expect("non-empty");
-        assert_eq!(ev.turns.len(), 1);
-        assert!(ev.turns[0].content.starts_with("Action items:"));
-    }
-
-    #[test]
-    fn summary_event_returns_none_when_nothing_to_push() {
-        let ev = build_summary_event("s", "h", &meta(&[]), ts(), None, None, &HashMap::new());
-        assert!(ev.is_none());
-    }
-
-    #[test]
-    fn summary_event_carries_meeting_ended_attribute_when_provided() {
-        let mut by_mode = HashMap::new();
-        by_mode.insert("actions".into(), vec![item("a1", "follow up")]);
-        let end = chrono::DateTime::parse_from_rfc3339("2026-05-04T13:30:00Z")
-            .unwrap()
-            .with_timezone(&chrono::Utc);
-        let ev = build_summary_event(
-            "s",
-            "h",
-            &meta(&[]),
-            ts(),
-            Some("m-42"),
-            Some(end),
-            &by_mode,
-        )
-        .expect("non-empty");
-        assert_eq!(
-            ev.context.attributes.get("meeting_ended"),
-            Some(&end.to_rfc3339()),
-            "meeting_ended should land in attributes when set"
-        );
-        // meeting_id rides along too.
-        assert_eq!(
-            ev.context.attributes.get("meeting_id"),
-            Some(&"m-42".to_string()),
         );
     }
 

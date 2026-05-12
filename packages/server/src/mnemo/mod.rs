@@ -1,13 +1,11 @@
 //! mnemo memory integration.
 //!
-//! mnemo is a Bedrock AgentCore-backed memory layer. We push:
-//!   - one `user`-role turn per consolidated transcript sentence (streaming)
-//!   - one final batch of `assistant`-role turns at meeting stop, holding
-//!     the LLM-extracted summaries (action items, highlights, open questions)
-//!
-//! Recall is not yet implemented; for now we lean on mnemo's existing
-//! `facts` / `preferences` / `project` dimensions, queried via its `/recall`
-//! endpoint when needed.
+//! mnemo is a Bedrock AgentCore-backed memory layer. We push exactly one
+//! kind of event: `user`-role turns carrying consolidated transcript
+//! sentences, streamed as the meeting progresses. Agent-summarized
+//! content (chat exchanges, highlights, actions, open questions, moment
+//! summaries) is intentionally not pushed — recall stays anchored to
+//! ground-truth speech rather than progressively-rephrased derivatives.
 //!
 //! All HTTP calls are fire-and-forget: failure logs a warning but does not
 //! block the meeting flow. If `MEETING_COMPANION_MNEMO_URL` or
@@ -21,16 +19,14 @@ pub mod recall;
 pub mod recaller;
 
 pub use client::MnemoClient;
-pub use payload::{
-    build_sentence_event, build_summary_event, IngestEvent, IngestRequest, Turn, TurnRole,
-};
+pub use payload::{build_sentence_event, IngestEvent, IngestRequest, Turn, TurnRole};
 pub use recall::{RecallParams, RecalledContext, RecalledMemory};
 
 use std::sync::Arc;
 
 use tokio::sync::{broadcast, Mutex};
 
-use crate::contract::{Event, UserEvent};
+use crate::contract::UserEvent;
 use crate::state::ServerState;
 
 /// Spin up both the ingestion pusher and the start-of-meeting recaller.
