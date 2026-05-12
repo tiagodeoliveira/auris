@@ -864,23 +864,37 @@ async fn dispatch_intent(
 
     // Chat dispatches to the agent task via the kick channel; it
     // doesn't mutate state directly. Validation: meeting must be
-    // active or paused (chat is per-meeting only in v1).
-    if let Intent::Chat { text, .. } = intent {
+    // active or paused (chat is per-meeting only in v1). Attachments
+    // (added 2026-05-12) are resolved here: row by id, ownership-
+    // checked (same meeting + same user), bytes read from disk, then
+    // packed into AttachmentPayload for the agent kick. Any error
+    // surfaces as an Event::Error and aborts the send (no partial
+    // attachments leak through to the agent).
+    if let Intent::Chat {
+        text,
+        attachment_ids,
+    } = intent
+    {
         let trimmed = text.trim().to_string();
-        if trimmed.is_empty() {
+        if trimmed.is_empty() && attachment_ids.is_empty() {
+            // No content at all — silent no-op.
             return Ok(());
         }
-        let active = {
+        // Gate on Active/Paused AND capture the current meeting_id in
+        // the same critical section, so we can ownership-check
+        // attachments against the same id the kick will use.
+        let (active, current_meeting_id) = {
             let s = handle.state.lock().await;
             s.user(user_id)
                 .map(|u| {
-                    matches!(
+                    let ok = matches!(
                         u.snapshot_meeting_state(),
                         crate::contract::MeetingState::Active
                             | crate::contract::MeetingState::Paused
-                    )
+                    );
+                    (ok, u.current_meeting_id.clone())
                 })
-                .unwrap_or(false)
+                .unwrap_or((false, None))
         };
         if !active {
             let err = Event::Error {
@@ -893,13 +907,103 @@ async fn dispatch_intent(
                 .ok();
             return Ok(());
         }
+        // Active/Paused implies current_meeting_id is Some. Guard
+        // defensively in case an invariant is violated upstream.
+        let Some(current_meeting_id) = current_meeting_id else {
+            let err = Event::Error {
+                code: "no_active_meeting".into(),
+                message: "Chat is only available during an active meeting".into(),
+                intent_ref: None,
+            };
+            sink.send(Message::Text(serde_json::to_string(&err)?))
+                .await
+                .ok();
+            return Ok(());
+        };
+
+        let mut attachments: Vec<crate::summarizer::agent::AttachmentPayload> = Vec::new();
+        for att_id in &attachment_ids {
+            let row = match crate::db::get_chat_attachment(&handle.db, att_id).await {
+                Ok(Some(row)) => row,
+                Ok(None) => {
+                    let err = Event::Error {
+                        code: "chat_attachment_not_found".into(),
+                        message: format!("chat attachment '{att_id}' not found"),
+                        intent_ref: Some(att_id.clone()),
+                    };
+                    sink.send(Message::Text(serde_json::to_string(&err)?))
+                        .await
+                        .ok();
+                    return Ok(());
+                }
+                Err(e) => {
+                    tracing::warn!(?e, attachment_id = %att_id, "chat_attachment lookup failed");
+                    let err = Event::Error {
+                        code: "chat_attachment_unreadable".into(),
+                        message: format!("chat attachment '{att_id}' unreadable"),
+                        intent_ref: Some(att_id.clone()),
+                    };
+                    sink.send(Message::Text(serde_json::to_string(&err)?))
+                        .await
+                        .ok();
+                    return Ok(());
+                }
+            };
+            if row.meeting_id != current_meeting_id || row.user_id != user_id {
+                let err = Event::Error {
+                    code: "chat_attachment_forbidden".into(),
+                    message: format!("chat attachment '{att_id}' does not belong to this meeting"),
+                    intent_ref: Some(att_id.clone()),
+                };
+                sink.send(Message::Text(serde_json::to_string(&err)?))
+                    .await
+                    .ok();
+                return Ok(());
+            }
+            let abs_path = match crate::db::data_dir() {
+                Ok(dir) => dir.join(&row.bytes_path),
+                Err(e) => {
+                    tracing::warn!(?e, "data_dir() failed");
+                    let err = Event::Error {
+                        code: "chat_attachment_unreadable".into(),
+                        message: format!("chat attachment '{att_id}' unreadable"),
+                        intent_ref: Some(att_id.clone()),
+                    };
+                    sink.send(Message::Text(serde_json::to_string(&err)?))
+                        .await
+                        .ok();
+                    return Ok(());
+                }
+            };
+            let bytes = match tokio::fs::read(&abs_path).await {
+                Ok(b) => b,
+                Err(e) => {
+                    tracing::warn!(?e, attachment_id = %att_id, path = %abs_path.display(),
+                        "chat_attachment disk read failed");
+                    let err = Event::Error {
+                        code: "chat_attachment_unreadable".into(),
+                        message: format!("chat attachment '{att_id}' unreadable"),
+                        intent_ref: Some(att_id.clone()),
+                    };
+                    sink.send(Message::Text(serde_json::to_string(&err)?))
+                        .await
+                        .ok();
+                    return Ok(());
+                }
+            };
+            attachments.push(crate::summarizer::agent::AttachmentPayload {
+                mime: row.mime,
+                bytes,
+            });
+        }
+
         let _ = handle
             .agent_kick_tx
             .send(crate::summarizer::agent::AgentKick {
                 user_id: user_id.to_string(),
                 reason: crate::summarizer::agent::AgentKickReason::ChatMessage {
                     text: trimmed,
-                    attachments: Vec::new(),
+                    attachments,
                 },
             });
         return Ok(());
