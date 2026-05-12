@@ -8,6 +8,40 @@ import AppKit
 import Foundation
 import Observation
 
+/// Upload state for a single staged chat attachment.
+enum ChatAttachmentUploadState: Equatable {
+    case uploading
+    case uploaded(id: String)
+    case failed(message: String)
+}
+
+/// A screenshot the user has staged for the next chat send. Held in
+/// `AppModel.pendingChatAttachments` between capture and send.
+struct ChatAttachmentDraft: Identifiable, Equatable {
+    /// Local-only id so SwiftUI can key the chip strip. Distinct from
+    /// the server-assigned attachment id (which lives in `state`
+    /// once upload completes).
+    let id: UUID
+
+    /// Source PNG for the thumbnail render. Retained for the chip's
+    /// lifetime in the strip.
+    let image: NSImage
+
+    /// Raw PNG bytes, kept until upload succeeds. Cleared after
+    /// `.uploaded` to free memory; the server has the only copy now.
+    var pngBytes: Data
+
+    /// Upload lifecycle.
+    var state: ChatAttachmentUploadState
+
+    // NSImage doesn't conform to Equatable, so compare only the
+    // fields SwiftUI's diffing cares about. The image and pngBytes
+    // are immutable from SwiftUI's perspective for a given id.
+    static func == (lhs: ChatAttachmentDraft, rhs: ChatAttachmentDraft) -> Bool {
+        lhs.id == rhs.id && lhs.state == rhs.state
+    }
+}
+
 @MainActor
 @Observable
 final class AppModel {
@@ -105,6 +139,19 @@ final class AppModel {
     /// in the overlay for ~2s after a capture, then cleared. Lets
     /// us confirm the capture without spawning a custom toast view.
     private(set) var momentStatus: String? = nil
+
+    /// Screenshots staged for the next chat send. Capture appends a
+    /// draft in `.uploading`; the upload Task mutates it to `.uploaded`
+    /// or `.failed`. Cap of 4 — UI button disables when reached.
+    /// Cleared on meeting-state → idle (orphan rows on the server are
+    /// cascade-deleted with the meeting).
+    private(set) var pendingChatAttachments: [ChatAttachmentDraft] = []
+    private let chatAttachmentLimit = 4
+
+    /// Transient toast-like message for chat-attachment / chat-send
+    /// status (mirrors `momentStatus`). Cleared by
+    /// `scheduleChatStatusClear()` after ~2s.
+    private(set) var chatStatus: String? = nil
 
     /// Which tab the Settings window should show on next open.
     /// "Settings…" leaves it where the user last was; "Meetings…"
@@ -545,6 +592,119 @@ final class AppModel {
         }
     }
 
+    // MARK: - Chat attachments (staged screenshots)
+
+    /// Capture the primary display, append a chip in `.uploading`,
+    /// fire the upload Task. Gated on active/paused meeting + cap.
+    /// The UI is responsible for not calling this from idle, but we
+    /// double-check defensively here.
+    func captureChatAttachment() async {
+        guard webSocket.state == .connected else {
+            chatStatus = "Not connected"
+            scheduleChatStatusClear()
+            return
+        }
+        guard let meetingId = currentMeetingId else {
+            chatStatus = "No active meeting"
+            scheduleChatStatusClear()
+            return
+        }
+        guard pendingChatAttachments.count < chatAttachmentLimit else {
+            chatStatus = "Maximum \(chatAttachmentLimit) screenshots per message"
+            scheduleChatStatusClear()
+            return
+        }
+
+        let png: Data
+        do {
+            png = try await ScreenshotCapture.capturePrimaryDisplay()
+        } catch {
+            chatStatus = "Capture failed: \(error.localizedDescription)"
+            scheduleChatStatusClear()
+            return
+        }
+
+        let draft = ChatAttachmentDraft(
+            id: UUID(),
+            image: NSImage(data: png) ?? NSImage(),
+            pngBytes: png,
+            state: .uploading
+        )
+        pendingChatAttachments.append(draft)
+
+        Task { [weak self] in
+            await self?.uploadChatAttachment(draftId: draft.id, meetingId: meetingId, png: png)
+        }
+    }
+
+    /// Remove a chip from the local queue. The server-side row (if
+    /// upload already landed) is left as an orphan and cleaned up
+    /// when the parent meeting is deleted.
+    func removeChatAttachment(draftId: UUID) {
+        pendingChatAttachments.removeAll { $0.id == draftId }
+    }
+
+    /// Background upload for a staged chat attachment. Mutates the
+    /// matching draft to `.uploaded` (with the server id) or
+    /// `.failed` (with a user-readable message). Run-to-completion;
+    /// removal of the chip during upload makes the final mutate a
+    /// no-op.
+    private func uploadChatAttachment(draftId: UUID, meetingId: String, png: Data) async {
+        let api: MeetingsAPI
+        do {
+            api = try await makeMeetingsAPI()
+        } catch {
+            updateChatDraft(draftId: draftId) { d in
+                d.state = .failed(message: "API setup failed: \(error.localizedDescription)")
+            }
+            return
+        }
+        do {
+            let id = try await api.uploadChatAttachment(meetingId: meetingId, png: png)
+            updateChatDraft(draftId: draftId) { d in
+                d.state = .uploaded(id: id)
+                d.pngBytes = Data()        // drop bytes; server has them
+            }
+        } catch {
+            updateChatDraft(draftId: draftId) { d in
+                d.state = .failed(message: error.localizedDescription)
+            }
+        }
+    }
+
+    /// Locate a draft by id, mutate via the caller's closure, and
+    /// write the (copy) back so SwiftUI's `@Observable` macro sees
+    /// the change as an array assignment. In-place struct mutation
+    /// would also work, but the replace-by-index pattern matches the
+    /// rest of the file (see `mergeItems`, `itemUpdated`).
+    private func updateChatDraft(draftId: UUID, mutate: (inout ChatAttachmentDraft) -> Void) {
+        guard let idx = pendingChatAttachments.firstIndex(where: { $0.id == draftId }) else {
+            return
+        }
+        var d = pendingChatAttachments[idx]
+        mutate(&d)
+        pendingChatAttachments[idx] = d
+    }
+
+    /// Whether `sendChat` is currently allowed to dispatch. Blocked
+    /// while any attachment is mid-upload — sending early would ship
+    /// a chat with fewer images than the user staged.
+    var canSendChatNow: Bool {
+        !pendingChatAttachments.contains {
+            if case .uploading = $0.state { return true }
+            return false
+        }
+    }
+
+    /// Clear `chatStatus` after a short delay so the toast-like
+    /// label fades cleanly. Mirrors `scheduleMomentStatusClear`.
+    private func scheduleChatStatusClear() {
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(2))
+            self?.chatStatus = nil
+        }
+    }
+
     /// React to the server's audio-source binding. The server emits
     /// `audio_source_device_changed` whenever a meeting starts/stops
     /// or the binding shifts; clients react by starting or stopping
@@ -657,6 +817,7 @@ final class AppModel {
                 currentMeetingAttachedArtifactIds = []
                 pendingAttachedMeetings = []
                 currentMeetingAttachedMeetingIds = []
+                pendingChatAttachments = []
                 closeOverlayWindow()
             }
             if state == "active", let mid = meetingId, !pendingArtifactAttachments.isEmpty {
@@ -786,11 +947,44 @@ final class AppModel {
     /// pending bubbles lingering alongside the real ones.
     func sendChat(_ text: String) async {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
+        let hasText = !trimmed.isEmpty
+        let hasAttachments = !pendingChatAttachments.isEmpty
+        // Allow image-only sends (empty text + at least one staged
+        // screenshot). The agent's vision prompt handles the
+        // attachment-only case server-side.
+        guard hasText || hasAttachments else { return }
         guard webSocket.state == .connected else { return }
+
+        // Block while any chip is mid-upload — shipping early would
+        // drop images the user thinks they attached.
+        if !canSendChatNow {
+            chatStatus = "Waiting for screenshots to upload…"
+            scheduleChatStatusClear()
+            return
+        }
+
+        // Drain BEFORE the optimistic echo and WS send. Failed chips
+        // are silently dropped from the dispatch but surfaced via a
+        // status toast so the user knows their images didn't ride.
+        let uploadedIds: [String] = pendingChatAttachments.compactMap { d in
+            if case .uploaded(let id) = d.state { return id } else { return nil }
+        }
+        let failedCount = pendingChatAttachments.count - uploadedIds.count
+        pendingChatAttachments = []
+
+        if failedCount > 0 {
+            chatStatus = "Skipped \(failedCount) failed screenshot\(failedCount == 1 ? "" : "s")"
+            scheduleChatStatusClear()
+        }
+
+        // User bubble text. Empty-text + images shows a representative
+        // label in the optimistic echo; the server's items_update
+        // replaces it with whatever the real items reflect.
+        let bubbleText = hasText ? trimmed : "[Image attached]"
+
         let userBubble = Item(
             id: "chat-q-pending-\(UUID().uuidString)",
-            text: trimmed,
+            text: bubbleText,
             detail: nil,
             t: 0,
             meta: ItemMeta(
@@ -815,7 +1009,7 @@ final class AppModel {
         current.append(pendingBubble)
         itemsByMode["chat"] = current
         do {
-            try await webSocket.send(intent: ChatIntent(text: trimmed))
+            try await webSocket.send(intent: ChatIntent(text: trimmed, attachmentIds: uploadedIds))
         } catch {
             print("[AppModel] chat send failed: \(error)")
         }
