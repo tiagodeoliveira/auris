@@ -421,6 +421,64 @@ pub async fn list_moments_for_meeting(pool: &PgPool, meeting_id: &str) -> Result
     Ok(rows)
 }
 
+// ─── Chat attachment subsystem ──────────────────────────────────────────
+
+/// Row shape for `chat_attachments`. `bytes_path` is relative to
+/// `data_dir()` (e.g. `blobs/meetings/<mid>/chat/<aid>.png`).
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct ChatAttachmentRow {
+    pub id: String,
+    pub meeting_id: String,
+    pub user_id: String,
+    pub mime: String,
+    pub bytes_path: String,
+    pub bytes_size: i64,
+    pub created_at: DateTime<Utc>,
+}
+
+/// Insert a new chat-attachment row. Caller is responsible for having
+/// already written the bytes to disk at `bytes_path` (relative to
+/// `data_dir()`).
+pub async fn insert_chat_attachment(
+    pool: &PgPool,
+    id: &str,
+    meeting_id: &str,
+    user_id: &str,
+    mime: &str,
+    bytes_path: &str,
+    bytes_size: i64,
+) -> Result<()> {
+    sqlx::query(
+        r#"INSERT INTO chat_attachments (id, meeting_id, user_id, mime, bytes_path, bytes_size)
+           VALUES ($1, $2, $3, $4, $5, $6)"#,
+    )
+    .bind(id)
+    .bind(meeting_id)
+    .bind(user_id)
+    .bind(mime)
+    .bind(bytes_path)
+    .bind(bytes_size)
+    .execute(pool)
+    .await
+    .with_context(|| format!("insert_chat_attachment(id={id})"))?;
+    Ok(())
+}
+
+/// Fetch a chat-attachment row by id. Returns `None` if unknown. The
+/// caller is responsible for verifying `meeting_id` + `user_id` match
+/// the current chat context (the WS handler does this).
+pub async fn get_chat_attachment(pool: &PgPool, id: &str) -> Result<Option<ChatAttachmentRow>> {
+    let row = sqlx::query_as::<_, ChatAttachmentRow>(
+        r#"SELECT id, meeting_id, user_id, mime, bytes_path, bytes_size, created_at
+             FROM chat_attachments WHERE id = $1"#,
+    )
+    .bind(id)
+    .fetch_optional(pool)
+    .await
+    .with_context(|| format!("get_chat_attachment(id={id})"))?;
+    Ok(row)
+}
+
 // ─── Artifact subsystem (PLAN.md §3.7) ───────────────────────────────────
 
 /// Row shape for the artifacts library. `asset_path` is relative to
