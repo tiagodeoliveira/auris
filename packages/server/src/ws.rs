@@ -921,6 +921,25 @@ async fn dispatch_intent(
             return Ok(());
         };
 
+        // Hoisted: data_dir() is sync and idempotent. Calling it inside
+        // the per-attachment loop wasted N-1 syscalls (create_dir_all).
+        // One call at the start covers every attachment in this fire.
+        let data_dir = match crate::db::data_dir() {
+            Ok(dir) => dir,
+            Err(e) => {
+                tracing::warn!(?e, "data_dir() failed");
+                let err = Event::Error {
+                    code: "chat_attachment_unreadable".into(),
+                    message: "chat attachment storage unavailable".into(),
+                    intent_ref: None,
+                };
+                sink.send(Message::Text(serde_json::to_string(&err)?))
+                    .await
+                    .ok();
+                return Ok(());
+            }
+        };
+
         let mut attachments: Vec<crate::summarizer::agent::AttachmentPayload> = Vec::new();
         for att_id in &attachment_ids {
             let row = match crate::db::get_chat_attachment(&handle.db, att_id).await {
@@ -960,21 +979,7 @@ async fn dispatch_intent(
                     .ok();
                 return Ok(());
             }
-            let abs_path = match crate::db::data_dir() {
-                Ok(dir) => dir.join(&row.bytes_path),
-                Err(e) => {
-                    tracing::warn!(?e, "data_dir() failed");
-                    let err = Event::Error {
-                        code: "chat_attachment_unreadable".into(),
-                        message: format!("chat attachment '{att_id}' unreadable"),
-                        intent_ref: Some(att_id.clone()),
-                    };
-                    sink.send(Message::Text(serde_json::to_string(&err)?))
-                        .await
-                        .ok();
-                    return Ok(());
-                }
-            };
+            let abs_path = data_dir.join(&row.bytes_path);
             let bytes = match tokio::fs::read(&abs_path).await {
                 Ok(b) => b,
                 Err(e) => {
