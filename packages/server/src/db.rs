@@ -1274,6 +1274,79 @@ mod tests {
         assert_eq!(rows[1].id, later);
     }
 
+    // ─── Chat attachments ───────────────────────────────────────────────
+
+    #[sqlx::test]
+    async fn insert_chat_attachment_round_trips(pool: PgPool) {
+        let uid = test_user(&pool).await;
+        let mid = uuid::Uuid::new_v4().to_string();
+        insert_meeting(&pool, &mid, &uid, Utc::now(), None, "{}")
+            .await
+            .unwrap();
+        let aid = uuid::Uuid::new_v4().to_string();
+
+        insert_chat_attachment(
+            &pool,
+            &aid,
+            &mid,
+            &uid,
+            "image/png",
+            "blobs/meetings/m/chat/att.png",
+            12345,
+        )
+        .await
+        .unwrap();
+
+        let got = get_chat_attachment(&pool, &aid)
+            .await
+            .unwrap()
+            .expect("row exists");
+        assert_eq!(got.id, aid);
+        assert_eq!(got.meeting_id, mid);
+        assert_eq!(got.user_id, uid);
+        assert_eq!(got.mime, "image/png");
+        assert_eq!(got.bytes_path, "blobs/meetings/m/chat/att.png");
+        assert_eq!(got.bytes_size, 12345);
+    }
+
+    #[sqlx::test]
+    async fn get_missing_chat_attachment_returns_none(pool: PgPool) {
+        let got = get_chat_attachment(&pool, &uuid::Uuid::new_v4().to_string())
+            .await
+            .unwrap();
+        assert!(got.is_none());
+    }
+
+    #[sqlx::test]
+    async fn chat_attachment_cascade_deletes_with_meeting(pool: PgPool) {
+        let uid = test_user(&pool).await;
+        let mid = uuid::Uuid::new_v4().to_string();
+        insert_meeting(&pool, &mid, &uid, Utc::now(), None, "{}")
+            .await
+            .unwrap();
+        let aid = uuid::Uuid::new_v4().to_string();
+        insert_chat_attachment(
+            &pool,
+            &aid,
+            &mid,
+            &uid,
+            "image/png",
+            "blobs/meetings/m/chat/att.png",
+            1,
+        )
+        .await
+        .unwrap();
+
+        let deleted = delete_meeting_for_user(&pool, &mid, &uid).await.unwrap();
+        assert!(deleted);
+
+        let got = get_chat_attachment(&pool, &aid).await.unwrap();
+        assert!(
+            got.is_none(),
+            "cascade should have removed the attachment row"
+        );
+    }
+
     #[test]
     fn redact_url_masks_password() {
         assert_eq!(
