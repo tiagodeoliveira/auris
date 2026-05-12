@@ -942,6 +942,34 @@ pub fn spawn_meeting_agent(
     });
 }
 
+/// Build a `rig::completion::Message::User` from a text body plus a
+/// list of attachments. Text comes first, followed by image content
+/// blocks in caller order. Empty / whitespace-only text is skipped
+/// (Anthropic rejects empty text blocks; OpenAI is unhappy about
+/// them too). The caller MUST guarantee that at least one of (text,
+/// attachments) is non-empty — `OneOrMany::many` panics otherwise.
+fn build_user_message(text: String, attachments: Vec<AttachmentPayload>) -> RigMessage {
+    use base64::Engine as _;
+    use rig::message::{DocumentSourceKind, Image as RigImage, ImageMediaType};
+
+    let mut parts: Vec<rig::message::UserContent> = Vec::with_capacity(1 + attachments.len());
+    if !text.trim().is_empty() {
+        parts.push(rig::message::UserContent::Text(text.into()));
+    }
+    for a in attachments {
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&a.bytes);
+        parts.push(rig::message::UserContent::Image(RigImage {
+            data: DocumentSourceKind::Base64(b64),
+            media_type: Some(ImageMediaType::PNG),
+            detail: None,
+            additional_params: None,
+        }));
+    }
+    RigMessage::User {
+        content: rig::OneOrMany::many(parts).expect("at least one content part"),
+    }
+}
+
 /// One agent invocation. Builds the next user-turn message from
 /// (optional) bootstrap + (optional) kick block + new transcript
 /// chunks, fires the agent through rig with the existing `history`
@@ -971,10 +999,16 @@ async fn fire(
     // chat-mode item even if the fire fails or returns empty text;
     // and we use the boolean to gate trailing-text-strip and to
     // capture the agent's response as the chat reply.
-    let chat_user_text: Option<String> = match &kick_block {
-        Some(KickBlock::Chat { user_text, .. }) => Some(user_text.clone()),
-        _ => None,
-    };
+    // Also capture attachments so we can thread image bytes through
+    // `build_user_message` into the LLM call below.
+    let (chat_user_text, chat_attachments): (Option<String>, Vec<AttachmentPayload>) =
+        match &kick_block {
+            Some(KickBlock::Chat {
+                user_text,
+                attachments,
+            }) => (Some(user_text.clone()), attachments.clone()),
+            _ => (None, Vec::new()),
+        };
     let is_chat_fire = chat_user_text.is_some();
     // Same shape for expand — we need the (mode, item_id) pair to
     // know where to write the resulting detail back. Capture it
@@ -1008,6 +1042,17 @@ async fn fire(
         return;
     }
     let user_message = sections.join("\n\n");
+
+    // When the chat fire carries images, wrap the composed user text +
+    // images into a single typed Message::User. For text-only fires
+    // (the common case for non-chat kicks AND chat without attachments)
+    // we pass the String straight through — rig's `Into<Message>` impl
+    // wraps it for us, preserving current behavior.
+    let user_prompt: rig::completion::Message = if !chat_attachments.is_empty() {
+        build_user_message(user_message.clone(), chat_attachments)
+    } else {
+        user_message.clone().into()
+    };
 
     if std::env::var("AGENT_LOG_PROMPT").ok().as_deref() == Some("1") {
         info!(user_id, prompt = %user_message, "agent prompt");
@@ -1052,7 +1097,7 @@ async fn fire(
                 .tool(FetchMeeting(ctx))
                 .build();
             agent
-                .prompt(user_message.clone())
+                .prompt(user_prompt.clone())
                 .with_history(history_input)
                 .max_turns(MAX_TURNS_PER_FIRE)
                 .extended_details()
@@ -1073,7 +1118,7 @@ async fn fire(
                 .tool(FetchMeeting(ctx))
                 .build();
             agent
-                .prompt(user_message.clone())
+                .prompt(user_prompt.clone())
                 .with_history(history_input)
                 .max_turns(MAX_TURNS_PER_FIRE)
                 .extended_details()
@@ -1101,7 +1146,7 @@ async fn fire(
                 .tool(FetchMeeting(ctx))
                 .build();
             agent
-                .prompt(user_message.clone())
+                .prompt(user_prompt.clone())
                 .with_history(history_input)
                 .max_turns(MAX_TURNS_PER_FIRE)
                 .extended_details()
@@ -1805,5 +1850,114 @@ mod tests {
         // `[context]` and the indented body underneath.
         assert!(out.contains("  first line"));
         assert!(out.contains("  second line"));
+    }
+}
+
+#[cfg(test)]
+mod build_user_message_tests {
+    use super::*;
+    use rig::completion::Message;
+    use rig::message::{DocumentSourceKind, ImageMediaType, UserContent};
+
+    #[test]
+    fn text_only_produces_single_text_part() {
+        let msg = build_user_message("hello".to_string(), vec![]);
+        match msg {
+            Message::User { content } => {
+                let parts: Vec<UserContent> = content.into_iter().collect();
+                assert_eq!(parts.len(), 1);
+                assert!(matches!(parts[0], UserContent::Text(_)));
+            }
+            _ => panic!("expected Message::User"),
+        }
+    }
+
+    #[test]
+    fn attachments_only_produces_image_parts() {
+        let attachments = vec![
+            AttachmentPayload {
+                mime: "image/png".into(),
+                bytes: vec![0, 1, 2],
+            },
+            AttachmentPayload {
+                mime: "image/png".into(),
+                bytes: vec![3, 4, 5],
+            },
+        ];
+        let msg = build_user_message("".to_string(), attachments);
+        match msg {
+            Message::User { content } => {
+                let parts: Vec<UserContent> = content.into_iter().collect();
+                assert_eq!(parts.len(), 2);
+                for p in &parts {
+                    assert!(matches!(p, UserContent::Image(_)));
+                }
+            }
+            _ => panic!("expected Message::User"),
+        }
+    }
+
+    #[test]
+    fn mixed_produces_text_then_images_in_order() {
+        let attachments = vec![
+            AttachmentPayload {
+                mime: "image/png".into(),
+                bytes: vec![1],
+            },
+            AttachmentPayload {
+                mime: "image/png".into(),
+                bytes: vec![2],
+            },
+        ];
+        let msg = build_user_message("compare these".to_string(), attachments);
+        match msg {
+            Message::User { content } => {
+                let parts: Vec<UserContent> = content.into_iter().collect();
+                assert_eq!(parts.len(), 3);
+                assert!(matches!(parts[0], UserContent::Text(_)));
+                assert!(matches!(parts[1], UserContent::Image(_)));
+                assert!(matches!(parts[2], UserContent::Image(_)));
+            }
+            _ => panic!("expected Message::User"),
+        }
+    }
+
+    #[test]
+    fn whitespace_only_text_skipped() {
+        let attachments = vec![AttachmentPayload {
+            mime: "image/png".into(),
+            bytes: vec![0],
+        }];
+        let msg = build_user_message("   \n  ".to_string(), attachments);
+        match msg {
+            Message::User { content } => {
+                let parts: Vec<UserContent> = content.into_iter().collect();
+                assert_eq!(parts.len(), 1, "whitespace text dropped, image kept");
+                assert!(matches!(parts[0], UserContent::Image(_)));
+            }
+            _ => panic!("expected Message::User"),
+        }
+    }
+
+    #[test]
+    fn image_uses_base64_png_media_type() {
+        let attachments = vec![AttachmentPayload {
+            mime: "image/png".into(),
+            bytes: vec![0xAA, 0xBB, 0xCC],
+        }];
+        let msg = build_user_message("".to_string(), attachments);
+        match msg {
+            Message::User { content } => {
+                let parts: Vec<UserContent> = content.into_iter().collect();
+                match &parts[0] {
+                    UserContent::Image(img) => {
+                        assert_eq!(img.media_type, Some(ImageMediaType::PNG));
+                        assert!(matches!(img.data, DocumentSourceKind::Base64(_)));
+                    }
+                    _ => panic!("expected Image part"),
+                }
+            }
+            _ => panic!("expected Message::User"),
+        }
     }
 }
