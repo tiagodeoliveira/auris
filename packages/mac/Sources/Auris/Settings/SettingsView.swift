@@ -57,57 +57,51 @@ struct SettingsView: View {
 // MARK: - Auris brand mark
 
 /// Auris brand mark — two nested ear arcs opening left + a coral
-/// focal-point dot. Stroke colour follows `currentColor` (primary
-/// foreground) so it adapts to light/dark mode automatically.
+/// focal-point dot. Stroke colour follows `.primary` so it adapts
+/// to light/dark mode automatically.
+///
+/// Implementation note: deliberately uses SwiftUI Shape primitives
+/// (Circle + trim + rotation) rather than a `Canvas`. macOS's
+/// MenuBarExtra applies a template-conversion pass on any custom
+/// View used as the menu bar label, which flattens Canvas-drawn
+/// content into a solid silhouette. Shape-based views survive
+/// that pass intact.
 ///
 /// Pair with a `Text("auris")` in a horizontal stack for the full
-/// wordmark lockup, or use the mark on its own (it stands alone).
+/// wordmark lockup, or use the mark on its own.
 struct AurisMark: View {
-    /// Outer-arc diameter in points. The whole mark sits in a
-    /// `size × size` square (arc width drives layout).
+    /// Outer-arc diameter in points. The mark fits in a
+    /// `size × size` square.
     var size: CGFloat = 22
 
     var body: some View {
-        Canvas { ctx, canvasSize in
-            let c = CGPoint(x: canvasSize.width / 2, y: canvasSize.height / 2)
-            let outerR = canvasSize.width * 0.42
-            let innerR = canvasSize.width * 0.22
-            let strokeW = canvasSize.width * 0.13
-            // Two arcs tracing the RIGHT half of each circle — so the
-            // mark reads as `))` with the open side facing LEFT. The
-            // coral dot below then sits inside the opening, matching
-            // the master SVG's ear-receiving-sound shape.
-            //
-            // SwiftUI `clockwise: true` here means: from top (-90°) to
-            // bottom (90°) via 0° (3 o'clock / right side), which is
-            // visually clockwise in Canvas's y-down coordinate space.
-            for r in [outerR, innerR] {
-                var p = Path()
-                p.addArc(
-                    center: c,
-                    radius: r,
-                    startAngle: .degrees(-90),
-                    endAngle: .degrees(90),
-                    clockwise: true
-                )
-                ctx.stroke(
-                    p,
-                    with: .color(.primary),
-                    style: StrokeStyle(lineWidth: strokeW, lineCap: .round)
-                )
-            }
-            // Coral focal dot, just left of centre.
-            let dotR = canvasSize.width * 0.07
-            let dot = Path(ellipseIn: CGRect(
-                x: c.x - canvasSize.width * 0.18 - dotR,
-                y: c.y - dotR,
-                width: dotR * 2,
-                height: dotR * 2
-            ))
-            ctx.fill(dot, with: .color(SettingsTheme.blue))
+        ZStack {
+            // Outer arc — right half of a circle (opens left).
+            // Circle paths start at 3 o'clock and trace clockwise;
+            // trim(0, 0.5) → bottom half, rotated -90° → right half.
+            arc(radius: size * 0.42)
+            // Inner arc — same shape, smaller radius.
+            arc(radius: size * 0.22)
+            // Coral focal dot, sitting inside the opening (left of centre).
+            Circle()
+                .fill(SettingsTheme.blue)
+                .frame(width: size * 0.14, height: size * 0.14)
+                .offset(x: -size * 0.18)
         }
         .frame(width: size, height: size)
         .accessibilityHidden(true)
+    }
+
+    @ViewBuilder
+    private func arc(radius: CGFloat) -> some View {
+        Circle()
+            .trim(from: 0, to: 0.5)
+            .rotation(.degrees(-90))
+            .stroke(
+                Color.primary,
+                style: StrokeStyle(lineWidth: size * 0.13, lineCap: .round)
+            )
+            .frame(width: radius * 2, height: radius * 2)
     }
 }
 
