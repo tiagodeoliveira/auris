@@ -116,11 +116,49 @@ ios-run:
 
 # Build + launch the Expo dev client on an Android Emulator.
 #
-# Requires a running AVD (Android Studio → Device Manager → start one
-# first). `10.0.2.2` is the AVD's host-loopback — the actual machine's
-# `localhost` from inside the emulator. Physical Android devices need
-# the host's LAN IP instead; swap `EXPO_PUBLIC_SERVER_URL` then.
+# Auto-starts the first available AVD if none is running, waits for
+# it to fully boot, then hands off to `expo run:android`. `10.0.2.2`
+# is the emulator's host-loopback — the host machine's localhost
+# from inside the AVD. Physical Android devices need the host's
+# LAN IP instead; swap `EXPO_PUBLIC_SERVER_URL` then.
+#
+# Expects Android Studio + an AVD; the recipe uses the SDK at
+# `$ANDROID_HOME` (defaulting to ~/Library/Android/sdk, the macOS
+# Android Studio default). Override `ANDROID_HOME` to point
+# elsewhere.
 android-run:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    ANDROID_HOME="${ANDROID_HOME:-$HOME/Library/Android/sdk}"
+    EMULATOR="$ANDROID_HOME/emulator/emulator"
+    ADB="$ANDROID_HOME/platform-tools/adb"
+    if [[ ! -x "$EMULATOR" || ! -x "$ADB" ]]; then
+      echo "Android SDK not found at $ANDROID_HOME — install Android Studio or set ANDROID_HOME." >&2
+      exit 1
+    fi
+    # If no emulator is already running, start the first AVD and
+    # wait for it to fully boot. `wait-for-device` blocks until adb
+    # sees the device; the boot-complete poll then ensures the
+    # system is up far enough to install/run an app.
+    if ! "$ADB" devices | awk 'NR>1 && $1 ~ /^emulator-/' | grep -q .; then
+      AVD=$("$EMULATOR" -list-avds | head -n1)
+      if [[ -z "$AVD" ]]; then
+        echo "No AVD found. Create one in Android Studio → Device Manager." >&2
+        exit 1
+      fi
+      echo "Starting AVD: $AVD"
+      "$EMULATOR" -avd "$AVD" -no-snapshot-save -no-boot-anim >/dev/null 2>&1 &
+      "$ADB" wait-for-device
+      until [[ "$("$ADB" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" == "1" ]]; do
+        sleep 2
+      done
+      echo "AVD ready."
+    fi
+    # Put SDK tools on PATH so `expo run:android`'s own gradle +
+    # adb invocations find them (Expo reads ANDROID_HOME too, but
+    # belt-and-braces). Then build + install + launch.
+    export ANDROID_HOME
+    export PATH="$ANDROID_HOME/emulator:$ANDROID_HOME/platform-tools:$PATH"
     cd packages/mobile && \
     EXPO_PUBLIC_SERVER_URL=ws://10.0.2.2:7331 \
     EXPO_PUBLIC_AUTH0_DOMAIN=dev-jrva0wzk3qkdxcar.us.auth0.com \
