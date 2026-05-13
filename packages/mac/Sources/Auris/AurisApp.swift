@@ -43,7 +43,12 @@ struct AurisApp: App {
             MenuBarContent(model: model, updater: updaterController)
         } label: {
             if case .connected = model.webSocket.state {
-                AurisMark(size: 18)
+                // Image(nsImage:) of a pre-rasterized template image —
+                // MenuBarExtra can't extract a usable alpha mask from
+                // a SwiftUI View directly, so we feed it an NSImage
+                // with isTemplate=true and let macOS handle tinting.
+                Image(nsImage: AurisMark.menuBarTemplateImage)
+                    .renderingMode(.template)
             } else {
                 Image(systemName: model.statusSystemImageName)
             }

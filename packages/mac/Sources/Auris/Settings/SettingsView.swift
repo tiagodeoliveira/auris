@@ -58,17 +58,12 @@ struct SettingsView: View {
 
 /// Auris brand mark — two nested ear arcs opening left + a coral
 /// focal-point dot. Stroke colour follows `.primary` so it adapts
-/// to light/dark mode automatically.
+/// to light/dark mode automatically when rendered inline in a View
+/// hierarchy.
 ///
-/// Implementation note: deliberately uses SwiftUI Shape primitives
-/// (Circle + trim + rotation) rather than a `Canvas`. macOS's
-/// MenuBarExtra applies a template-conversion pass on any custom
-/// View used as the menu bar label, which flattens Canvas-drawn
-/// content into a solid silhouette. Shape-based views survive
-/// that pass intact.
-///
-/// Pair with a `Text("auris")` in a horizontal stack for the full
-/// wordmark lockup, or use the mark on its own.
+/// For menu bar use, see `AurisMark.menuBarTemplateImage` — the
+/// system's MenuBarExtra can't extract a usable alpha mask from a
+/// SwiftUI View directly, so we pre-rasterize there.
 struct AurisMark: View {
     /// Outer-arc diameter in points. The mark fits in a
     /// `size × size` square.
@@ -103,6 +98,27 @@ struct AurisMark: View {
             )
             .frame(width: radius * 2, height: radius * 2)
     }
+
+    /// Pre-rasterized template NSImage of the mark, sized for the
+    /// macOS menu bar (18×18pt @ Retina scale). MenuBarExtra needs
+    /// a real NSImage with a usable alpha mask — feeding it a
+    /// SwiftUI View directly produces a solid silhouette / nothing
+    /// depending on appearance state.
+    ///
+    /// `isTemplate = true` + `Image(nsImage:).renderingMode(.template)`
+    /// lets macOS apply its standard menu-bar tinting (white on dark
+    /// menu bar, black on light, dim when inactive). The arc colour
+    /// reads correctly in every appearance, at the cost of losing
+    /// the coral dot's brand colour at this tiny size — a tradeoff
+    /// where consistency wins.
+    @MainActor
+    static let menuBarTemplateImage: NSImage = {
+        let renderer = ImageRenderer(content: AurisMark(size: 18))
+        renderer.scale = NSScreen.main?.backingScaleFactor ?? 2
+        let image = renderer.nsImage ?? NSImage(size: NSSize(width: 18, height: 18))
+        image.isTemplate = true
+        return image
+    }()
 }
 
 // MARK: - Account tab
