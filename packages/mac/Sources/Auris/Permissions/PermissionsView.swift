@@ -44,7 +44,8 @@ struct PermissionsView: View {
         }
         .formStyle(.grouped)
         .scrollContentBackground(.hidden)
-        .background(Color(red: 0.97, green: 0.98, blue: 1.0))
+        // No explicit background — inherit the Settings window's
+        // appearance so this tab follows the system theme.
         .padding()
         .onReceive(
             NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)

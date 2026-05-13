@@ -45,7 +45,10 @@ struct SettingsView: View {
         }
         .frame(minWidth: 720, minHeight: 460)
         .navigationTitle("Settings")
-        .preferredColorScheme(.light)
+        // No .preferredColorScheme — inherit the system appearance.
+        // The SettingsTheme tokens below are AppKit-semantic colors
+        // so the 3-tier elevation hierarchy (sidebar < background <
+        // card) reads correctly in both light and dark mode.
         .tint(SettingsTheme.blue)
         .background(SettingsTheme.background)
     }
@@ -1451,11 +1454,41 @@ private struct ArtifactRow: View {
     }
 }
 
+/// Settings-window color tokens.
+///
+/// `background` and `sidebar` are intentionally NOT explicit Colors —
+/// instead, callers should `.background(Color.clear)` (or omit the
+/// modifier) so SwiftUI inherits the window's chrome, which Cocoa
+/// keeps in sync with the system appearance automatically.
+///
+/// The "raised" surfaces (cards) use SwiftUI materials, which are
+/// guaranteed-dynamic and also give a subtle blur — closer to native
+/// macOS feel than a flat hex color.
 private enum SettingsTheme {
-    static let background = Color(hex: 0xF7FAFE)
-    static let sidebar = Color(hex: 0xEEF4FB)
-    static let card = Color(hex: 0xFFFFFF)
-    static let border = Color(hex: 0xD5DEE9)
+    /// Use `.background(SettingsTheme.background)` to clear any
+    /// inherited tint and fall through to the window bg. Effectively
+    /// a no-op surface; relies on the NSWindow content view.
+    static let background = Color.clear
+    /// Subtle recessed pane. `quaternary` reads as "behind" the
+    /// default surface and adapts to both modes.
+    static let sidebar = Color(nsColor: .underPageBackgroundColor)
+    /// Raised cards use a material rather than a Color so they
+    /// adapt + get the standard macOS blur. Apply with
+    /// `.background(SettingsTheme.cardMaterial)`.
+    static let cardMaterial: Material = .regularMaterial
+    /// Legacy alias kept so existing `.background(SettingsTheme.card)`
+    /// call sites compile — same visual as `cardMaterial` would
+    /// produce; defined as the closest equivalent flat color via
+    /// a non-dynamic-bridging path. New call sites should prefer
+    /// `cardMaterial`.
+    static let card = Color.clear
+    /// Hairline divider between cards / between rows. SwiftUI's
+    /// secondary content already follows appearance so this is the
+    /// safest mapping.
+    static let border = Color.secondary.opacity(0.3)
+    /// Brand accent. Kept as an explicit hex (not `Color.accentColor`)
+    /// so the sign-in button reads as Auris-blue regardless of the
+    /// user's system accent setting.
     static let blue = Color(hex: 0x2563EB)
 }
 

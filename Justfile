@@ -31,7 +31,7 @@ db-shell:
 # dotenvy.
 server-run:
     AUTH0_DOMAIN=dev-jrva0wzk3qkdxcar.us.auth0.com \
-    AUTH0_API_AUDIENCE=https://auris.api \
+    AUTH0_API_AUDIENCE=https://auris.tiago.tools \
     DATABASE_URL=postgres://auris:dev@localhost:5432/auris \
     cargo run -p auris-server -- --port 7331
 
@@ -52,7 +52,7 @@ pwa-dev:
     VITE_SERVER_URL=ws://localhost:7331 \
     VITE_AUTH0_DOMAIN=dev-jrva0wzk3qkdxcar.us.auth0.com \
     VITE_AUTH0_PWA_CLIENT_ID=IPKnV1gX91eYYnX5Uc6142bQpnuA9n3G \
-    VITE_AUTH0_API_AUDIENCE=https://auris.api \
+    VITE_AUTH0_API_AUDIENCE=https://auris.tiago.tools \
     pnpm -F @auris/pwa dev
 
 # Run the PWA dev server + the EvenHub simulator pointed at it.
@@ -61,7 +61,7 @@ pwa-sim:
     VITE_SERVER_URL=ws://localhost:7331 \
     VITE_AUTH0_DOMAIN=dev-jrva0wzk3qkdxcar.us.auth0.com \
     VITE_AUTH0_PWA_CLIENT_ID=IPKnV1gX91eYYnX5Uc6142bQpnuA9n3G \
-    VITE_AUTH0_API_AUDIENCE=https://auris.api \
+    VITE_AUTH0_API_AUDIENCE=https://auris.tiago.tools \
     pnpm -F @auris/pwa dev:sim
 
 # Print integrated-stack run instructions (three terminals).
@@ -93,7 +93,7 @@ mac-run:
     AURIS_SERVER_URL=ws://localhost:7331 \
     AUTH0_DOMAIN=dev-jrva0wzk3qkdxcar.us.auth0.com \
     AUTH0_MAC_CLIENT_ID=YDK0XoDAIRhp2uORlfk8TijQkcqRzjsi \
-    AUTH0_API_AUDIENCE=https://auris.api \
+    AUTH0_API_AUDIENCE=https://auris.tiago.tools \
     swift run
 
 # --- Test ------------------------------------------------------------------
