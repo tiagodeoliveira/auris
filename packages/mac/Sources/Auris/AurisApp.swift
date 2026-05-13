@@ -33,8 +33,20 @@ struct AurisApp: App {
     @StateObject private var updaterController = UpdaterController()
 
     var body: some Scene {
-        MenuBarExtra("Auris", systemImage: model.statusSystemImageName) {
+        // Menu bar icon. When the server is reachable, show the
+        // Auris ear-arcs mark (brand). When the connection is in any
+        // other state (connecting / reconnecting / error / signed
+        // out), fall back to the SF Symbol that telegraphs that
+        // state so the user notices trouble at a glance instead of
+        // seeing a perpetually-happy logo.
+        MenuBarExtra {
             MenuBarContent(model: model, updater: updaterController)
+        } label: {
+            if case .connected = model.webSocket.state {
+                AurisMark(size: 18)
+            } else {
+                Image(systemName: model.statusSystemImageName)
+            }
         }
 
         // Settings window — summoned from the menu via openWindow(id:).

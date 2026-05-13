@@ -73,7 +73,14 @@ struct AurisMark: View {
             let outerR = canvasSize.width * 0.42
             let innerR = canvasSize.width * 0.22
             let strokeW = canvasSize.width * 0.13
-            // Two arcs, both opening to the left (half-circles facing right).
+            // Two arcs tracing the RIGHT half of each circle — so the
+            // mark reads as `))` with the open side facing LEFT. The
+            // coral dot below then sits inside the opening, matching
+            // the master SVG's ear-receiving-sound shape.
+            //
+            // SwiftUI `clockwise: true` here means: from top (-90°) to
+            // bottom (90°) via 0° (3 o'clock / right side), which is
+            // visually clockwise in Canvas's y-down coordinate space.
             for r in [outerR, innerR] {
                 var p = Path()
                 p.addArc(
@@ -81,7 +88,7 @@ struct AurisMark: View {
                     radius: r,
                     startAngle: .degrees(-90),
                     endAngle: .degrees(90),
-                    clockwise: false
+                    clockwise: true
                 )
                 ctx.stroke(
                     p,
