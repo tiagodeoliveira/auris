@@ -1,7 +1,7 @@
 {
   "expo": {
     "name": "Auris",
-    "slug": "auris",
+    "slug": "aurismobile",
     "version": "0.1.0",
     "orientation": "portrait",
     "scheme": "auris",
@@ -39,7 +39,7 @@
     },
     "extra": {
       "eas": {
-        "projectId": "eab5beef-bbaa-4517-9efc-498eb552cbb6"
+        "projectId": "be9e897f-4625-4a99-b1c8-9fe7c970375c"
       }
     },
     "owner": "tiagodeoliveira",
@@ -47,7 +47,7 @@
       "policy": "appVersion"
     },
     "updates": {
-      "url": "https://u.expo.dev/eab5beef-bbaa-4517-9efc-498eb552cbb6"
+      "url": "https://u.expo.dev/be9e897f-4625-4a99-b1c8-9fe7c970375c"
     }
   }
 }
