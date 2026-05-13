@@ -96,6 +96,38 @@ mac-run:
     AUTH0_API_AUDIENCE=https://auris.tiago.tools \
     swift run
 
+# Build + launch the Expo dev client on the iOS Simulator.
+#
+# Uses `expo run:ios` (rather than `expo start --ios`) so a fresh
+# checkout — or any time `app.json`'s native config drifted — does
+# a full prebuild + Xcode build + install before metro takes over.
+# Subsequent runs reuse the simulator's installed dev client and
+# are fast; the first run can take 5+ minutes.
+#
+# Server URL points at the local server via `localhost` — the iOS
+# Simulator shares the host's network namespace, so no IP gymnastics.
+ios-run:
+    cd packages/mobile && \
+    EXPO_PUBLIC_SERVER_URL=ws://localhost:7331 \
+    EXPO_PUBLIC_AUTH0_DOMAIN=dev-jrva0wzk3qkdxcar.us.auth0.com \
+    EXPO_PUBLIC_AUTH0_MOBILE_CLIENT_ID=YDK0XoDAIRhp2uORlfk8TijQkcqRzjsi \
+    EXPO_PUBLIC_AUTH0_API_AUDIENCE=https://auris.tiago.tools \
+    pnpm -F @auris/mobile ios
+
+# Build + launch the Expo dev client on an Android Emulator.
+#
+# Requires a running AVD (Android Studio → Device Manager → start one
+# first). `10.0.2.2` is the AVD's host-loopback — the actual machine's
+# `localhost` from inside the emulator. Physical Android devices need
+# the host's LAN IP instead; swap `EXPO_PUBLIC_SERVER_URL` then.
+android-run:
+    cd packages/mobile && \
+    EXPO_PUBLIC_SERVER_URL=ws://10.0.2.2:7331 \
+    EXPO_PUBLIC_AUTH0_DOMAIN=dev-jrva0wzk3qkdxcar.us.auth0.com \
+    EXPO_PUBLIC_AUTH0_MOBILE_CLIENT_ID=YDK0XoDAIRhp2uORlfk8TijQkcqRzjsi \
+    EXPO_PUBLIC_AUTH0_API_AUDIENCE=https://auris.tiago.tools \
+    pnpm -F @auris/mobile android
+
 # --- Test ------------------------------------------------------------------
 
 # Run the full test suite (server + PWA).
