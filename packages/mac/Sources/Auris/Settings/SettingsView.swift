@@ -115,15 +115,20 @@ struct AurisMark: View {
     /// where consistency wins.
     @MainActor
     static let menuBarTemplateImage: NSImage = {
-        // Pre-mirror horizontally to compensate for the y-axis
-        // bridging quirk between SwiftUI (y-down) and AppKit
-        // (y-up). Without this, ImageRenderer's NSImage output
-        // reads horizontally flipped in the menu bar, even though
-        // the same AurisMark renders correctly when used inline
-        // in any SwiftUI hierarchy (Settings header, etc.).
-        let renderer = ImageRenderer(
-            content: AurisMark(size: 18).scaleEffect(x: -1, y: 1)
-        )
+        // Renders the inline AurisMark verbatim via ImageRenderer —
+        // no compensating transform. Both this NSImage and the
+        // inline SwiftUI render flow from the same `AurisMark.body`,
+        // so any future geometry change propagates to both sites
+        // predictably.
+        //
+        // (Earlier revisions of this code applied .scaleEffect(x:-1)
+        // here, on the theory that ImageRenderer's NSImage output
+        // was horizontally flipped relative to the SwiftUI render.
+        // That was a misdiagnosis: the scaleEffect was the entire
+        // mirror, not a compensation. After the AurisMark body was
+        // corrected to match the brand master orientation, removing
+        // it kept the menu bar consistent with the inline mark.)
+        let renderer = ImageRenderer(content: AurisMark(size: 18))
         renderer.scale = NSScreen.main?.backingScaleFactor ?? 2
         let image = renderer.nsImage ?? NSImage(size: NSSize(width: 18, height: 18))
         image.isTemplate = true
