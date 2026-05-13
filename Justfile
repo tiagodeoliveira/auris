@@ -136,6 +136,22 @@ android-run:
       echo "Android SDK not found at $ANDROID_HOME — install Android Studio or set ANDROID_HOME." >&2
       exit 1
     fi
+    # JDK pin. Gradle 8.8 supports up to Java 22 (class file 66); the
+    # user's shell `java` is often newer than that on modern macOS,
+    # which trips Gradle with "Unsupported class file major version 67"
+    # or similar. Android Studio bundles a known-good OpenJDK 21
+    # (JetBrains Runtime) under `Contents/jbr`; point JAVA_HOME at it
+    # unless the caller already set one.
+    if [[ -z "${JAVA_HOME:-}" ]]; then
+      AS_JBR="/Applications/Android Studio.app/Contents/jbr/Contents/Home"
+      if [[ -x "$AS_JBR/bin/java" ]]; then
+        export JAVA_HOME="$AS_JBR"
+      else
+        echo "JAVA_HOME unset and Android Studio's bundled JDK not found." >&2
+        echo "Install Android Studio or set JAVA_HOME to a JDK 17/21." >&2
+        exit 1
+      fi
+    fi
     # If no emulator is already running, start the first AVD and
     # wait for it to fully boot. `wait-for-device` blocks until adb
     # sees the device; the boot-complete poll then ensures the
