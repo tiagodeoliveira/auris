@@ -42,10 +42,17 @@ jobs:
         uses: actions/cache@v4
         with:
           path: packages/mac/.build
-          key: ${{ runner.os }}-swift-${{ hashFiles('packages/mac/Package.swift', 'packages/mac/Package.resolved') }}-${{ hashFiles('packages/mac/Sources/**/*.swift') }}
+          # `v2` cache-bust prefix: introduced when the repo was renamed
+          # meeting_companion → auris. Old caches contained `.build/`
+          # manifest files with absolute paths to the previous repo
+          # checkout dir; the broad `restore-keys` fallback was happily
+          # restoring them and breaking Sparkle's XCFramework lookup.
+          # Bump the prefix to invalidate on any future churn that
+          # poisons build-dir absolute paths.
+          key: ${{ runner.os }}-swift-v2-${{ hashFiles('packages/mac/Package.swift', 'packages/mac/Package.resolved') }}-${{ hashFiles('packages/mac/Sources/**/*.swift') }}
           restore-keys: |
-            ${{ runner.os }}-swift-${{ hashFiles('packages/mac/Package.swift', 'packages/mac/Package.resolved') }}-
-            ${{ runner.os }}-swift-
+            ${{ runner.os }}-swift-v2-${{ hashFiles('packages/mac/Package.swift', 'packages/mac/Package.resolved') }}-
+            ${{ runner.os }}-swift-v2-
 
       - name: Resolve version
         id: version
