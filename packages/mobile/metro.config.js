@@ -32,4 +32,30 @@ config.resolver.nodeModulesPaths = [
   path.resolve(monorepoRoot, "node_modules"),
 ];
 
+// Android dev-client bundle URL rewrite.
+//
+// Android's dev-client APK requests bundle URLs of the form
+//   /node_modules/expo-router/entry.bundle?platform=android&…
+// Metro's HTTP bundler treats `/node_modules/<x>` as a literal
+// project-relative file path — no hierarchical walk. With pnpm
+// `node-linker=hoisted`, most deps live at the monorepo root
+// `node_modules/`, NOT under `packages/mobile/node_modules/`, so
+// the request 404s.
+//
+// Strip the `/node_modules/` prefix so the URL becomes a bare-
+// module form (e.g. `/expo-router/entry.bundle`). Metro then
+// resolves `expo-router/entry` as a module via its hierarchical
+// resolver, which (combined with `nodeModulesPaths` above) finds
+// the hoisted copy at the workspace root.
+//
+// iOS uses a slightly different URL shape and works without this
+// rewrite, but the rewrite is platform-agnostic and safe.
+config.server = config.server || {};
+config.server.rewriteRequestUrl = (url) => {
+  if (url.startsWith("/node_modules/")) {
+    return url.replace(/^\/node_modules\//, "/");
+  }
+  return url;
+};
+
 module.exports = config;
