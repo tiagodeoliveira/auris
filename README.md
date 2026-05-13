@@ -1,4 +1,4 @@
-# Meeting Companion
+# Auris
 
 Real-time meeting summarization across **four surfaces**: a Rust
 server that owns audio capture / STT / agent reasoning, a native Mac
@@ -81,13 +81,13 @@ External services (any of which you can skip and the server will
 gracefully disable that capability):
 
 - A [Soniox](https://soniox.com/) API key — live STT and dictation.
-  Set `MEETING_COMPANION_STT_PROVIDER=mock` for offline dev.
+  Set `AURIS_STT_PROVIDER=mock` for offline dev.
 - One of: AWS credentials (Bedrock), an OpenAI API key, or an
   Anthropic API key — agent + summarizers + extraction. Set
-  `MEETING_COMPANION_LLM_DISABLED=1` to skip.
+  `AURIS_LLM_DISABLED=1` to skip.
 - An Auth0 tenant with a SPA client (PWA), a Native client
   (Mac + mobile), and an API audience. Set
-  `MEETING_COMPANION_AUTH_DISABLED=1` for local dev with a
+  `AURIS_AUTH_DISABLED=1` for local dev with a
   synthetic user.
 - A [mnemo](https://github.com/tiagodeoliveira/mnemo) deployment URL
   - API key for cross-meeting memory.
@@ -113,15 +113,15 @@ Key sections:
 - **Auth0** — `AUTH0_DOMAIN` + `AUTH0_API_AUDIENCE`. The server
   validates JWTs against Auth0's JWKS; the clients (Mac / PWA /
   mobile) drive their own OAuth flows against the same tenant. Set
-  `MEETING_COMPANION_AUTH_DISABLED=1` for local dev without Auth0.
-- **LLM provider** — `MEETING_COMPANION_LLM_PROVIDER` (`bedrock` |
+  `AURIS_AUTH_DISABLED=1` for local dev without Auth0.
+- **LLM provider** — `AURIS_LLM_PROVIDER` (`bedrock` |
   `openai` | `anthropic`) plus provider-specific keys.
-- **STT** — `SONIOX_API_KEY`. Or `MEETING_COMPANION_STT_PROVIDER=mock`
+- **STT** — `SONIOX_API_KEY`. Or `AURIS_STT_PROVIDER=mock`
   for offline dev.
-- **mnemo** — `MEETING_COMPANION_MNEMO_URL` +
-  `MEETING_COMPANION_MNEMO_API_KEY`. Unset to disable.
+- **mnemo** — `AURIS_MNEMO_URL` +
+  `AURIS_MNEMO_API_KEY`. Unset to disable.
 - **Database** — `DATABASE_URL` (Postgres). The local default is
-  `postgres://meeting_companion:dev@localhost:5432/meeting_companion`,
+  `postgres://auris:dev@localhost:5432/auris`,
   matching the `docker compose up -d postgres` container.
 
 For the PWA's runtime defaults, copy `packages/pwa/.env.example` to
@@ -144,7 +144,7 @@ just db-up
 # 2. Server (terminal 1)
 just server-run        # with Auth0
 # or:
-just server-run-noauth # MEETING_COMPANION_AUTH_DISABLED=1, synthetic dev user
+just server-run-noauth # AURIS_AUTH_DISABLED=1, synthetic dev user
 
 # 3a. PWA + EvenHub simulator (terminal 2)
 just pwa-sim
@@ -170,7 +170,7 @@ If you just want to poke at the server with `websocat` for protocol
 work:
 
 ```bash
-just server-run-noauth      # MEETING_COMPANION_AUTH_DISABLED=1
+just server-run-noauth      # AURIS_AUTH_DISABLED=1
 just smoke-instructions     # prints websocat one-liners
 ```
 
@@ -190,7 +190,7 @@ run them:
 
 ```bash
 just pwa-sim                                    # terminal 1
-pnpm -F @meeting-companion/pwa test:integration # terminal 2
+pnpm -F @auris/pwa test:integration # terminal 2
 ```
 
 ## Format

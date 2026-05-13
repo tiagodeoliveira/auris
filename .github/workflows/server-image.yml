@@ -68,7 +68,7 @@ jobs:
           # Owner casing matters for ghcr — `github.repository_owner`
           # preserves the source case but the registry lowercases on
           # store. Both forms resolve.
-          images: ghcr.io/${{ github.repository_owner }}/meeting-companion-server
+          images: ghcr.io/${{ github.repository_owner }}/auris-server
           tags: |
             type=ref,event=branch
             type=ref,event=tag

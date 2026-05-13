@@ -25,7 +25,7 @@ export {
   Status,
   PriorContextSummary,
   Device,
-} from "./gen/meeting_companion/v1/common.js";
+} from "./gen/auris/v1/common.js";
 
 // ─── Intents (intents.proto) ────────────────────────────────────────────
 export {
@@ -41,7 +41,7 @@ export {
   MarkMoment,
   ExpandItem,
   Chat,
-} from "./gen/meeting_companion/v1/intents.js";
+} from "./gen/auris/v1/intents.js";
 
 // ─── Events (events.proto) ──────────────────────────────────────────────
 export {
@@ -63,7 +63,7 @@ export {
   ArtifactsChanged,
   CaptureMomentScreenshot,
   MomentSummarized,
-} from "./gen/meeting_companion/v1/events.js";
+} from "./gen/auris/v1/events.js";
 
 /**
  * The wire-protocol version this package's generated types speak.

@@ -1,7 +1,7 @@
 //! REST API for browsing meetings + artifact subsystem (PLAN.md §3.7).
 //!
 //! All endpoints are auth'd by `Authorization: Bearer <token>` (Auth0
-//! JWT or the dev-bypass synthetic user when `MEETING_COMPANION_AUTH_DISABLED=1`).
+//! JWT or the dev-bypass synthetic user when `AURIS_AUTH_DISABLED=1`).
 //!
 //!   GET    /meetings                                       → summaries (newest first)
 //!   GET    /meetings/:id                                   → meeting + transcript + moments
@@ -1392,7 +1392,7 @@ mod tests {
     /// Build a minimal `multipart/form-data` body with a single `file`
     /// field. Boundary chosen to be unambiguous against the payload.
     fn multipart_body(filename: &str, mime: &str, content: &[u8]) -> (String, Vec<u8>) {
-        let boundary = "----meetingcompaniontest";
+        let boundary = "----auristest";
         let mut body = Vec::new();
         body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
         body.extend_from_slice(
@@ -1405,15 +1405,14 @@ mod tests {
         (format!("multipart/form-data; boundary={boundary}"), body)
     }
 
-    /// Point `MEETING_COMPANION_DATA_DIR` at a unique per-test path so
+    /// Point `AURIS_DATA_DIR` at a unique per-test path so
     /// blob writes don't leak between concurrent runs. Avoids a
     /// `tempfile` dep — the dir lives under `/tmp` and gets recycled
     /// by the OS. Tests don't bother cleaning it up; the volume is
     /// small (a handful of bytes per artifact).
     fn scoped_data_dir() {
-        let path =
-            std::env::temp_dir().join(format!("meeting-companion-test-{}", uuid::Uuid::new_v4()));
-        std::env::set_var("MEETING_COMPANION_DATA_DIR", &path);
+        let path = std::env::temp_dir().join(format!("auris-test-{}", uuid::Uuid::new_v4()));
+        std::env::set_var("AURIS_DATA_DIR", &path);
     }
 
     #[sqlx::test]

@@ -22,6 +22,6 @@ plugins:
       - forceLong=number # u64 → number; safe for our ms-since-meeting-start values
 
   - remote: buf.build/apple/swift
-    out: swift/Sources/MeetingCompanionContract/Generated
+    out: swift/Sources/AurisContract/Generated
     opt:
       - Visibility=Public

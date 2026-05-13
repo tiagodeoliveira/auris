@@ -1,6 +1,6 @@
 //! HTTP client for mnemo's `/events` endpoint.
 //!
-//! Reads `MEETING_COMPANION_MNEMO_URL` and `MEETING_COMPANION_MNEMO_API_KEY`
+//! Reads `AURIS_MNEMO_URL` and `AURIS_MNEMO_API_KEY`
 //! from the environment. If either is missing, the client returns
 //! `MnemoClient::Disabled` and `push_event` becomes a no-op. This makes the
 //! integration trivially opt-in for dev / tests.
@@ -46,15 +46,15 @@ impl MnemoClient {
     /// `Disabled` and logs a one-line debug message so it's visible in
     /// dev logs.
     pub fn from_env() -> Self {
-        let url = crate::env::var_opt("MEETING_COMPANION_MNEMO_URL");
-        let api_key = crate::env::var_opt("MEETING_COMPANION_MNEMO_API_KEY");
+        let url = crate::env::var_opt("AURIS_MNEMO_URL");
+        let api_key = crate::env::var_opt("AURIS_MNEMO_API_KEY");
         match (url, api_key) {
             (Some(url), Some(api_key)) => {
                 let http = reqwest::Client::builder()
                     .timeout(PUSH_TIMEOUT)
                     .build()
                     .expect("reqwest client builder");
-                let workstation = crate::env::var_opt("MEETING_COMPANION_MNEMO_WORKSTATION")
+                let workstation = crate::env::var_opt("AURIS_MNEMO_WORKSTATION")
                     .unwrap_or_else(default_workstation);
                 tracing::info!(%url, %workstation, "mnemo client enabled");
                 Self::Enabled(EnabledClient {
@@ -66,8 +66,8 @@ impl MnemoClient {
             }
             _ => {
                 debug!(
-                    "mnemo client disabled (set MEETING_COMPANION_MNEMO_URL and \
-                     MEETING_COMPANION_MNEMO_API_KEY to enable)"
+                    "mnemo client disabled (set AURIS_MNEMO_URL and \
+                     AURIS_MNEMO_API_KEY to enable)"
                 );
                 Self::Disabled
             }

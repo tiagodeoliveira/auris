@@ -9,7 +9,7 @@
 mod common;
 use common::spawn_test_server;
 
-use meeting_companion_server::db;
+use auris_server::db;
 use std::time::Duration;
 
 /// Seed (or fetch) the dev user that the auth-disabled handler will
@@ -238,7 +238,7 @@ async fn chat_with_one_attachment_happy() {
     )
     .await;
 
-    // No real LLM in the test harness (MEETING_COMPANION_LLM_DISABLED=1),
+    // No real LLM in the test harness (AURIS_LLM_DISABLED=1),
     // so we never see the agent's reply. What we DO see — if the
     // handler rejects the attachment — is an Event::Error within ~100ms.
     // Grace period of 1s: if nothing arrives, the handler accepted.

@@ -64,8 +64,8 @@ Three integration questions had to be answered:
   An idle-time `ExtractMetadata` survives `start_meeting`; an
   `extraction_cancel` is taken on stop so a stale recall doesn't pollute
   the next meeting's empty state.
-- **Disabled by default.** When `MEETING_COMPANION_MNEMO_URL` /
-  `MEETING_COMPANION_MNEMO_API_KEY` are unset, the client returns
+- **Disabled by default.** When `AURIS_MNEMO_URL` /
+  `AURIS_MNEMO_API_KEY` are unset, the client returns
   `Disabled` and `spawn_tasks` early-returns. No HTTP, no broadcast
   subscriber, zero overhead.
 
@@ -141,7 +141,7 @@ the deployment simple.
 A `meetings/{actorId}/{meetingId}/` namespace with its own extraction
 lambda. Rejected for _this_ phase: mnemo's strategy layer is complex
 enough that a meeting-specific addition couldn't ship in one pass with
-the meeting companion changes. The companion is forward-compatible
+the Auris changes. The companion is forward-compatible
 (`attributes.meeting_id` is sent today) so the strategy can be added
 later without a contract change.
 
@@ -152,7 +152,7 @@ later without a contract change.
   AgentCore extraction by appearing inline in turn content. Useful as a
   bridge until mnemo supports per-meeting recall properly.
 - mnemo's strategy layer: when it learns to read `attributes`, the
-  meeting companion can stop content-embedding the slug.
+  Auris can stop content-embedding the slug.
 - Recall on a longer time window: today the recall is a single call at
   meeting Active. Re-recall on project change is implemented; mid-meeting
   refresh on transcript-content drift could be added if the existing

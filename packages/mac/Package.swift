@@ -3,7 +3,7 @@
 import PackageDescription
 
 let package = Package(
-    name: "MeetingCompanion",
+    name: "Auris",
     platforms: [
         // macOS 15 is required for SCStream's microphone-capture
         // path (`config.captureMicrophone = true` and the
@@ -14,7 +14,7 @@ let package = Package(
         .macOS("15.0")
     ],
     products: [
-        .executable(name: "MeetingCompanion", targets: ["MeetingCompanion"])
+        .executable(name: "Auris", targets: ["Auris"])
     ],
     dependencies: [
         // Sparkle drives the OTA update flow. App polls SUFeedURL
@@ -27,11 +27,11 @@ let package = Package(
     ],
     targets: [
         .executableTarget(
-            name: "MeetingCompanion",
+            name: "Auris",
             dependencies: [
                 .product(name: "Sparkle", package: "Sparkle")
             ],
-            path: "Sources/MeetingCompanion"
+            path: "Sources/Auris"
         )
     ]
 )

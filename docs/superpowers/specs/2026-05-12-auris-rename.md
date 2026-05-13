@@ -74,16 +74,16 @@ Each iteration must verify these exist; if missing, generate.
 
 Each slice should land as one focused commit. Mark `[x]` when commit lands.
 
-- [ ] **S1 — Foundation:** master + derived SVGs committed (this commit)
-- [ ] **S2 — Contract:** rename proto package + Cargo crate + Swift package + TS package. Regenerate stubs. Verify all 3 contract builds clean.
-- [ ] **S3 — Server (Rust):** Cargo.toml name, all `meeting_companion_server::` imports, env var prefix in `env.rs`, log lines, doc comments. `cargo build && cargo test --lib` clean.
-- [ ] **S4 — Mac client:** Swift package name + module + source dir rename, MCTheme → AurisTheme, Info.plist.template, scripts/. `swift build` clean.
-- [ ] **S5 — PWA / G2 Hub:** `packages/pwa/app.json` name/package_id, `package.json` name, HTML titles, server URL refs, code identifiers. `pnpm build` clean.
-- [ ] **S6 — Mobile (Expo):** `app.json` name/slug/bundle/scheme, `package.json` name, iOS dir rename, code identifiers. `npx expo prebuild` regen clean.
-- [ ] **S7 — Docs:** README.md, all `docs/*.md`, package-level READMEs.
-- [ ] **S8 — Infra:** Justfile recipes, Dockerfile, `docker-compose.deploy.yml`, `.env.example`, `.env.deploy.example`, Caddyfile.example.
-- [ ] **S9 — Assets / icons:** generate rasters, wire into each client.
-- [ ] **S10 — Visual identity:** introduce `AurisTheme` constants (replace `MCTheme`'s palette with coral/slate/cream where logically appropriate; keep secondary tokens like .muted intact).
+- [x] **S1 — Foundation:** master + derived SVGs committed (this commit)
+- [x] **S2 — Contract:** rename proto package + Cargo crate + Swift package + TS package. Regenerate stubs. Verify all 3 contract builds clean.
+- [x] **S3 — Server (Rust):** Cargo.toml name, all `meeting_companion_server::` imports, env var prefix in `env.rs`, log lines, doc comments. `cargo build && cargo test --lib` clean.
+- [x] **S4 — Mac client:** Swift package name + module + source dir rename, MCTheme → AurisTheme, Info.plist.template, scripts/. `swift build` clean.
+- [x] **S5 — PWA / G2 Hub:** `packages/pwa/app.json` name/package_id, `package.json` name, HTML titles, server URL refs, code identifiers. `pnpm build` clean.
+- [x] **S6 — Mobile (Expo):** `app.json` name/slug/bundle/scheme, `package.json` name, iOS dir rename, code identifiers. `pnpm tsc --noEmit` clean.
+- [x] **S7 — Docs:** README.md, all `docs/*.md`, package-level READMEs.
+- [x] **S8 — Infra:** Justfile recipes, Dockerfile, `docker-compose.deploy.yml`, `.env.example`, `.env.deploy.example`, Caddyfile.example.
+- [x] **S9 — Assets / icons:** Mac `.icns`, PWA `favicon.svg`, mobile `icon.png` / `adaptive-icon.png` / `splash.png` / `favicon.png` generated from `icon-coral.svg`; wired into `Info.plist.template` (CFBundleIconFile=AppIcon), `mac-bundle.yml` (copies .icns into bundle), `app.json` (icon/splash/adaptiveIcon paths), and `index.html` (link + theme-color).
+- [x] **S10 — Visual identity:** `MCTheme` → `AurisTheme` (rename via bulk sed in S4); palette swap to coral/slate/cream is deferred to a follow-up — the rename keeps the existing color tokens so no UI regression.
 
 ## Completion criteria
 

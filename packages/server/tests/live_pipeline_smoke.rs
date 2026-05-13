@@ -9,10 +9,10 @@ use std::time::Duration;
 
 #[tokio::test(flavor = "multi_thread")]
 async fn live_pipeline_emits_transcript_items_when_stt_mocked() {
-    std::env::set_var("MEETING_COMPANION_STT_MOCK", "1");
-    std::env::set_var("MEETING_COMPANION_STT_MOCK_INTERVAL_MS", "100");
-    std::env::set_var("MEETING_COMPANION_LLM_DISABLED", "1");
-    std::env::set_var("MEETING_COMPANION_AUDIO_DISABLED", "1");
+    std::env::set_var("AURIS_STT_MOCK", "1");
+    std::env::set_var("AURIS_STT_MOCK_INTERVAL_MS", "100");
+    std::env::set_var("AURIS_LLM_DISABLED", "1");
+    std::env::set_var("AURIS_AUDIO_DISABLED", "1");
 
     let server = spawn_test_server_with_token("test-token").await;
     let mut ws = connect(server.addr, "test-token").await;

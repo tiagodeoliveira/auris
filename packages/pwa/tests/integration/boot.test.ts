@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 
-const SIM_BASE = process.env.MEETING_COMPANION_SIM_URL ?? "http://localhost:9898";
+const SIM_BASE = process.env.AURIS_SIM_URL ?? "http://localhost:9898";
 
 async function ping() {
   try {

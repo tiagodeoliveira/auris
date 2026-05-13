@@ -80,20 +80,25 @@ jobs:
           # unset the corresponding Info.plist key gets an empty
           # string; the app's runtime code falls back to its coded
           # defaults (localhost server, dev Auth0 tenant).
-          MEETING_COMPANION_SERVER_URL: ${{ vars.MEETING_COMPANION_SERVER_URL }}
+          AURIS_SERVER_URL: ${{ vars.AURIS_SERVER_URL }}
           AUTH0_DOMAIN: ${{ vars.AUTH0_DOMAIN }}
           AUTH0_MAC_CLIENT_ID: ${{ vars.AUTH0_MAC_CLIENT_ID }}
           AUTH0_API_AUDIENCE: ${{ vars.AUTH0_API_AUDIENCE }}
           # Sparkle public key — fail-closes auto-update if unset.
           SPARKLE_PUBLIC_KEY: ${{ vars.SPARKLE_PUBLIC_KEY }}
         run: |
-          BUNDLE="MeetingCompanion.app"
+          BUNDLE="Auris.app"
           rm -rf "$BUNDLE"
           mkdir -p "$BUNDLE/Contents/MacOS" "$BUNDLE/Contents/Resources" "$BUNDLE/Contents/lib"
           # SwiftPM with multiple --arch produces a universal binary
           # under .build/apple/Products/Release.
-          cp .build/apple/Products/Release/MeetingCompanion "$BUNDLE/Contents/MacOS/"
+          cp .build/apple/Products/Release/Auris "$BUNDLE/Contents/MacOS/"
           envsubst < Info.plist.template > "$BUNDLE/Contents/Info.plist"
+
+          # App icon. Info.plist points CFBundleIconFile at "AppIcon";
+          # Finder + Dock look for AppIcon.icns under Contents/Resources/.
+          # The .icns is committed under packages/mac/Resources/.
+          cp Resources/AppIcon.icns "$BUNDLE/Contents/Resources/"
 
           # Sparkle ships as a binary-target xcframework. The linked
           # binary's rpath is `@executable_path/../lib`, so we copy
@@ -116,14 +121,14 @@ jobs:
           # `ditto -c -k --keepParent` preserves the bundle's directory
           # structure inside the zip (matching what users get from
           # GitHub Release downloads).
-          ditto -c -k --keepParent "$BUNDLE" "MeetingCompanion-${VERSION}.zip"
-          ls -la "MeetingCompanion-${VERSION}.zip"
+          ditto -c -k --keepParent "$BUNDLE" "Auris-${VERSION}.zip"
+          ls -la "Auris-${VERSION}.zip"
 
       - name: Upload bundle artifact
         uses: actions/upload-artifact@v4
         with:
-          name: MeetingCompanion-${{ steps.version.outputs.version }}
-          path: packages/mac/MeetingCompanion-${{ steps.version.outputs.version }}.zip
+          name: Auris-${{ steps.version.outputs.version }}
+          path: packages/mac/Auris-${{ steps.version.outputs.version }}.zip
           if-no-files-found: error
 
       # ──────────  Sparkle: sign + generate appcast (tag pushes only)  ──────────
@@ -161,7 +166,7 @@ jobs:
           # `sign_update -f <keyfile>` returns a single line containing
           # the `sparkle:edSignature` and `length` attributes ready to
           # paste into the appcast's <enclosure>.
-          SIG_BLOB=$(sign_update -f "$KEY_FILE" "MeetingCompanion-${VERSION}.zip")
+          SIG_BLOB=$(sign_update -f "$KEY_FILE" "Auris-${VERSION}.zip")
           rm -f "$KEY_FILE"
           # Multi-line outputs need EOF-delimiter syntax to round-trip
           # through GITHUB_OUTPUT cleanly.
@@ -178,16 +183,16 @@ jobs:
           VERSION: ${{ steps.version.outputs.version }}
           BUILD: ${{ steps.version.outputs.build }}
           SIG_BLOB: ${{ steps.sign.outputs.sig_blob }}
-          DOWNLOAD_URL: https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/MeetingCompanion-${{ steps.version.outputs.version }}.zip
+          DOWNLOAD_URL: https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/Auris-${{ steps.version.outputs.version }}.zip
         run: |
           PUB_DATE=$(date -u +"%a, %d %b %Y %H:%M:%S GMT")
           cat > appcast.xml <<EOF
           <?xml version="1.0" encoding="utf-8"?>
           <rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
               <channel>
-                  <title>Meeting Companion</title>
+                  <title>Auris</title>
                   <link>https://github.com/${GITHUB_REPOSITORY}</link>
-                  <description>Auto-update feed for the Meeting Companion menu-bar app.</description>
+                  <description>Auto-update feed for the Auris menu-bar app.</description>
                   <language>en</language>
                   <item>
                       <title>Version ${VERSION}</title>
@@ -209,7 +214,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            packages/mac/MeetingCompanion-${{ steps.version.outputs.version }}.zip
+            packages/mac/Auris-${{ steps.version.outputs.version }}.zip
             packages/mac/appcast.xml
           fail_on_unmatched_files: true
 
@@ -235,7 +240,7 @@ jobs:
           # Stable filename for a copy-pasteable download URL. The
           # versioned file ships alongside it on the same release
           # so people can still pin to a known build.
-          cp "MeetingCompanion-${VERSION}.zip" "MeetingCompanion-nightly.zip"
+          cp "Auris-${VERSION}.zip" "Auris-nightly.zip"
 
           # Drop the previous nightly + force-recreate the tag at
           # the current commit. `--cleanup-tag` removes the git
@@ -257,7 +262,7 @@ jobs:
 
           Stable download URL (always the newest):
           \`\`\`
-          https://github.com/${REPO}/releases/download/nightly/MeetingCompanion-nightly.zip
+          https://github.com/${REPO}/releases/download/nightly/Auris-nightly.zip
           \`\`\`
 
           For Sparkle-managed auto-updates, install a tagged \`vX.Y.Z\`
@@ -267,8 +272,8 @@ jobs:
           )
 
           gh release create nightly \
-            "MeetingCompanion-nightly.zip" \
-            "MeetingCompanion-${VERSION}.zip" \
+            "Auris-nightly.zip" \
+            "Auris-${VERSION}.zip" \
             --title "Nightly build (main)" \
             --notes "$BODY" \
             --prerelease \

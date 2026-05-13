@@ -1,4 +1,4 @@
-# @meeting-companion/contract
+# @auris/contract
 
 **Status: standalone scaffolding, not yet adopted.** The server,
 PWA, Mac, and mobile clients still use their hand-synced contract
@@ -21,7 +21,7 @@ couldn't give us.
 
 ```
 packages/contract/
-├── proto/meeting_companion/v1/      ← source of truth (3 .proto files)
+├── proto/auris/v1/      ← source of truth (3 .proto files)
 │   ├── common.proto                   shared types (Item, Status, Device, …)
 │   ├── intents.proto                  Intent oneof + per-variant messages
 │   └── events.proto                   Event oneof + per-variant messages
@@ -32,15 +32,15 @@ packages/contract/
 │   ├── build.rs
 │   └── src/lib.rs
 ├── ts/                                pnpm workspace package
-│   ├── package.json                   "@meeting-companion/contract"
+│   ├── package.json                   "@auris/contract"
 │   ├── tsconfig.json
 │   └── src/
 │       ├── index.ts                   curated public re-exports
 │       └── gen/                       ts-proto output (committed)
 └── swift/                             local SwiftPM package
-    ├── Package.swift                  "MeetingCompanionContract"
-    └── Sources/MeetingCompanionContract/
-        ├── MeetingCompanionContract.swift  manual public surface
+    ├── Package.swift                  "AurisContract"
+    └── Sources/AurisContract/
+        ├── AurisContract.swift  manual public surface
         └── Generated/                       swift-protobuf output (committed)
 ```
 
@@ -54,7 +54,7 @@ every dev machine. Diff is reviewable in PRs that touch the proto.
 Schema evolution is the whole point of protobuf — additive changes
 don't require a coordinated client roll-out.
 
-1. **Edit the right .proto file** under `proto/meeting_companion/v1/`.
+1. **Edit the right .proto file** under `proto/auris/v1/`.
    - New types? `common.proto`.
    - New intent variant? `intents.proto`. Pick the next free oneof
      number (current high-water: 11). Add a new top-level message
@@ -125,7 +125,7 @@ When you bump the version:
 4. Land all four clients in one merge train, then deploy server
    first.
 
-For really big shifts, copy the whole tree to `proto/meeting_companion/v2/`
+For really big shifts, copy the whole tree to `proto/auris/v2/`
 and let the generators produce parallel `v2.*` modules. Old clients
 keep using `v1`; new clients import `v2`. ts-proto, prost, and
 swift-protobuf all support multi-version coexistence.
@@ -169,7 +169,7 @@ CI (Ubuntu) installs `buf` via its release tarball + `protoc` via
   idiomatic per-language types. prost integrates with cargo's
   build.rs (no committed output); ts-proto + swift-protobuf produce
   clean files we commit so consumers don't need protoc.
-- **Versioned package paths (`meeting_companion.v1.*`)** — lets a
+- **Versioned package paths (`auris.v1.*`)** — lets a
   future `v2` land in parallel without breaking `v1` imports.
 - **`buf` as the orchestrator** — single tool for lint + format +
   cross-language gen, replaces three separate `protoc` invocations.
@@ -184,7 +184,7 @@ CI (Ubuntu) installs `buf` via its release tarball + `protoc` via
   protobuf.
 - [`packages/server/src/contract.rs`](../server/src/contract.rs),
   [`packages/pwa/src/contract.ts`](../pwa/src/contract.ts),
-  [`packages/mac/Sources/MeetingCompanion/Net/Protocol.swift`](../mac/Sources/MeetingCompanion/Net/Protocol.swift),
+  [`packages/mac/Sources/Auris/Net/Protocol.swift`](../mac/Sources/Auris/Net/Protocol.swift),
   [`packages/mobile/src/wire/contract.ts`](../mobile/src/wire/contract.ts)
   — the four hand-synced contract files in active use today. When
   a client migrates to this package, its hand-synced file goes

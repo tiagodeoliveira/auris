@@ -25,7 +25,7 @@ pub fn flag(key: &str) -> bool {
 /// string. The empty-string case matters because docker-compose's
 /// `${VAR:-}` substitution lands in the container as `KEY=""` which
 /// `std::env::var().unwrap_or_else(|_| ...)` treats as "set" — that
-/// silently took an empty `MEETING_COMPANION_LLM_MODEL_ID` straight
+/// silently took an empty `AURIS_LLM_MODEL_ID` straight
 /// to the Anthropic API, which rejected with "model: String should
 /// have at least 1 character". Use this helper for any "stringly-
 /// typed knob with a sensible default" — model ids, regions, file
@@ -50,7 +50,7 @@ mod tests {
     /// suite runs with `--test-threads=1` (per the heartbeat tests'
     /// pre-existing constraint), so the lack of inter-test isolation
     /// is fine.
-    const TEST_KEY: &str = "MEETING_COMPANION_ENV_FLAG_TEST";
+    const TEST_KEY: &str = "AURIS_ENV_FLAG_TEST";
 
     fn with_var<F: FnOnce()>(value: Option<&str>, body: F) {
         match value {

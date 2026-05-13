@@ -1,4 +1,4 @@
-//! Meeting Companion server library. See `docs/ARCHITECTURE.md` for
+//! Auris server library. See `docs/ARCHITECTURE.md` for
 //! the system overview.
 
 pub mod api;

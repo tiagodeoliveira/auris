@@ -56,7 +56,7 @@ how load-bearing they are:
 - **Multi-tenant Auth0** — per-user state shard
   (`HashMap<UserId, UserState>`), JWT validation against Auth0
   JWKS, three Auth0 client roles (server-as-API-audience, PWA-SPA,
-  Mac+mobile-Native), `MEETING_COMPANION_AUTH_DISABLED=1` bypass
+  Mac+mobile-Native), `AURIS_AUTH_DISABLED=1` bypass
   for dev/CI. Currently captured ad-hoc in
   [`docs/ARCHITECTURE.md`](../ARCHITECTURE.md) §9.
 - **Postgres + boot recovery** — relational state for users +

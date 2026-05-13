@@ -6,7 +6,7 @@ hand-maintained files kept in sync by review:
 
 - Server (Rust, source of truth): [`packages/server/src/contract.rs`](../packages/server/src/contract.rs)
 - PWA (TypeScript): [`packages/pwa/src/contract.ts`](../packages/pwa/src/contract.ts)
-- Mac (Swift): [`packages/mac/Sources/MeetingCompanion/Net/Protocol.swift`](../packages/mac/Sources/MeetingCompanion/Net/Protocol.swift)
+- Mac (Swift): [`packages/mac/Sources/Auris/Net/Protocol.swift`](../packages/mac/Sources/Auris/Net/Protocol.swift)
 - Mobile (TypeScript): [`packages/mobile/src/wire/contract.ts`](../packages/mobile/src/wire/contract.ts)
 
 See [ADR-0004](adr/0004-websocket-protocol.md) for the rationale. A
@@ -39,7 +39,7 @@ authenticate per request:
 The server caches JWKS keys by `kid` with a refetch-on-miss cooldown
 to resist forged-`kid` flooding (see `packages/server/src/auth.rs`).
 
-For local dev / CI, set `MEETING_COMPANION_AUTH_DISABLED=1`. The
+For local dev / CI, set `AURIS_AUTH_DISABLED=1`. The
 server then synthesises a stable user (`auth0_sub = dev-user`) and
 the JWT is ignored entirely.
 

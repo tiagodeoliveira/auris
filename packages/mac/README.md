@@ -1,4 +1,4 @@
-# Meeting Companion — Mac app
+# Auris — Mac app
 
 Native macOS menu-bar app. Captures audio (system + mic) and streams
 it to the server, hosts a floating overlay during meetings (mode
@@ -75,13 +75,13 @@ Build-time configuration is baked into `Info.plist` via envsubst in
 vars at build time. Variables (with hardcoded defaults in
 `Auth0Client.swift` and `AppSettings.swift` for personal-use safety):
 
-| Variable                       | Used for                                                       |
-| ------------------------------ | -------------------------------------------------------------- |
-| `MEETING_COMPANION_SERVER_URL` | WS / REST endpoint (e.g. `ws://jarvis.tail48cb4.ts.net:7331`). |
-| `AUTH0_DOMAIN`                 | Auth0 tenant (e.g. `your-tenant.us.auth0.com`).                |
-| `AUTH0_MAC_CLIENT_ID`          | Auth0 Native application client ID.                            |
-| `AUTH0_API_AUDIENCE`           | Auth0 API identifier the JWT must `aud`-match.                 |
-| `SPARKLE_PUBLIC_KEY`           | EdDSA public key Sparkle uses to verify update signatures.     |
+| Variable              | Used for                                                       |
+| --------------------- | -------------------------------------------------------------- |
+| `AURIS_SERVER_URL`    | WS / REST endpoint (e.g. `ws://jarvis.tail48cb4.ts.net:7331`). |
+| `AUTH0_DOMAIN`        | Auth0 tenant (e.g. `your-tenant.us.auth0.com`).                |
+| `AUTH0_MAC_CLIENT_ID` | Auth0 Native application client ID.                            |
+| `AUTH0_API_AUDIENCE`  | Auth0 API identifier the JWT must `aud`-match.                 |
+| `SPARKLE_PUBLIC_KEY`  | EdDSA public key Sparkle uses to verify update signatures.     |
 
 Auth0 access + refresh tokens are persisted in the macOS Keychain.
 Overlay theme + opacity are persisted in `UserDefaults`.
@@ -119,11 +119,11 @@ complete secret/variable inventory.
 
 ## Architecture
 
-Single executable target. Files under `Sources/MeetingCompanion/`:
+Single executable target. Files under `Sources/Auris/`:
 
 | File                                      | Role                                                                                              |
 | ----------------------------------------- | ------------------------------------------------------------------------------------------------- |
-| `MeetingCompanionApp.swift`               | `@main` entry. App delegate. Accessory activation policy.                                         |
+| `AurisApp.swift`                          | `@main` entry. App delegate. Accessory activation policy.                                         |
 | `AppModel.swift`                          | `@Observable` source of truth. Mirrors per-user server state (modes, items, devices, transcript). |
 | `MenuBarContent.swift`                    | Menu dropdown. Status, Start / Stop / Compose, Meetings…, Settings…, Permissions….                |
 | `MeetingOverlayView.swift`                | Floating overlay panel during meetings. Mode tabs, items, peak meter, mark-moment, mic, stop.     |

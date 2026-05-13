@@ -16,7 +16,7 @@
 //
 // Auth0 dashboard config:
 //   - Application type: Native
-//   - Allowed Callback URLs: must include `meetingcompanion://callback`
+//   - Allowed Callback URLs: must include `auris://callback`
 //     (matches the Mac app — we share the Auth0 application
 //     between both clients).
 //   - Allowed Logout URLs: same scheme.
@@ -35,8 +35,8 @@ import { auth0Config, auth0Configured } from "../config";
 // pattern. No-op on Android.
 WebBrowser.maybeCompleteAuthSession();
 
-const REFRESH_TOKEN_KEY = "meetingCompanion.auth.refreshToken";
-const REDIRECT_URI = "meetingcompanion://callback";
+const REFRESH_TOKEN_KEY = "auris.auth.refreshToken";
+const REDIRECT_URI = "auris://callback";
 const SCOPES = ["openid", "profile", "email", "offline_access"];
 
 /// Identity surfaced after a successful sign-in or refresh. Mirrors

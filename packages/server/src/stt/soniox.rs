@@ -16,7 +16,7 @@ const SONIOX_URL: &str = "wss://stt-rt.soniox.com/transcribe-websocket";
 // `stt-rt-preview` which appears to be deprecated — sessions died after
 // 10-20 s and transcripts came back as Finnish/Spanish gibberish once
 // `enable_speaker_diarization` was set. Override via
-// `MEETING_COMPANION_SONIOX_MODEL` if a newer model ships.
+// `AURIS_SONIOX_MODEL` if a newer model ships.
 const MODEL_DEFAULT: &str = "stt-rt-v4";
 const SAMPLE_RATE: u32 = 16000;
 const RECONNECT_BASE: Duration = Duration::from_millis(500);
@@ -32,7 +32,7 @@ impl SonioxStt {
     pub fn from_env() -> Result<Self, SttInitError> {
         let api_key = std::env::var("SONIOX_API_KEY").map_err(|_| {
             SttInitError::MissingCredentials(
-                "SONIOX_API_KEY is required when MEETING_COMPANION_STT_PROVIDER=soniox".to_string(),
+                "SONIOX_API_KEY is required when AURIS_STT_PROVIDER=soniox".to_string(),
             )
         })?;
         if api_key.is_empty() {
@@ -40,7 +40,7 @@ impl SonioxStt {
                 "SONIOX_API_KEY is empty".to_string(),
             ));
         }
-        let model = crate::env::var_or("MEETING_COMPANION_SONIOX_MODEL", MODEL_DEFAULT);
+        let model = crate::env::var_or("AURIS_SONIOX_MODEL", MODEL_DEFAULT);
         Ok(Self {
             api_key,
             url: SONIOX_URL.to_string(),
@@ -879,22 +879,22 @@ mod tests {
     #[test]
     fn from_env_reads_model_override() {
         // Save and restore env state
-        let prev_model = std::env::var("MEETING_COMPANION_SONIOX_MODEL").ok();
+        let prev_model = std::env::var("AURIS_SONIOX_MODEL").ok();
         let prev_key = std::env::var("SONIOX_API_KEY").ok();
 
         std::env::set_var("SONIOX_API_KEY", "test_key");
-        std::env::set_var("MEETING_COMPANION_SONIOX_MODEL", "custom-model");
+        std::env::set_var("AURIS_SONIOX_MODEL", "custom-model");
         let s = SonioxStt::from_env().unwrap();
         assert_eq!(s.model, "custom-model");
 
-        std::env::remove_var("MEETING_COMPANION_SONIOX_MODEL");
+        std::env::remove_var("AURIS_SONIOX_MODEL");
         let s = SonioxStt::from_env().unwrap();
         assert_eq!(s.model, MODEL_DEFAULT);
 
         // Restore
         match prev_model {
-            Some(v) => std::env::set_var("MEETING_COMPANION_SONIOX_MODEL", v),
-            None => std::env::remove_var("MEETING_COMPANION_SONIOX_MODEL"),
+            Some(v) => std::env::set_var("AURIS_SONIOX_MODEL", v),
+            None => std::env::remove_var("AURIS_SONIOX_MODEL"),
         }
         match prev_key {
             Some(v) => std::env::set_var("SONIOX_API_KEY", v),

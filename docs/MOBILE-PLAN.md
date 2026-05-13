@@ -235,7 +235,7 @@ the build order.
 
 ### 6.5 Theming + design system
 
-Phone client mirrors the Mac overlay's palette (`MCTheme.panel`,
+Phone client mirrors the Mac overlay's palette (`AurisTheme.panel`,
 `text`, `border`, blue accents, amber moment indicator, danger red).
 PWA's design system in `style.css` is the visual reference; we
 re-implement those tokens as TS objects + StyleSheet entries.
@@ -422,7 +422,7 @@ Both are explicitly _future_ work. Mobile v1 ships without glasses.
   default; same tenant means the same identity across surfaces (a
   user's mobile sign-in mirrors their PWA sign-in).
 - Universal links vs custom scheme for OAuth callback? Custom
-  scheme (`meetingcompanion://auth-callback`) is simpler; universal
+  scheme (`auris://auth-callback`) is simpler; universal
   links are cleaner UX (no "open in app" prompt). v1: custom
   scheme.
 - Server-side considerations: any user-agent tracking we want for

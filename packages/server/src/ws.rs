@@ -32,7 +32,7 @@ use crate::state::ServerState;
 /// Auth0, or we run with a synthetic dev user (env-flag bypass for
 /// `websocat`/`curl` smoke testing without a browser flow).
 pub enum AuthMode {
-    /// `MEETING_COMPANION_AUTH_DISABLED=1` set. Every request is
+    /// `AURIS_AUTH_DISABLED=1` set. Every request is
     /// attributed to a fixed dev user (`auth0_sub = "dev|local"`).
     Disabled,
     /// Real Auth0 validation. Tokens must verify against the tenant's
@@ -111,7 +111,7 @@ pub struct ServerHandle {
     /// Mnemo client (shared with the pusher + recaller). Held on the
     /// handle so the agent's per-meeting fetch tools can recall
     /// scoped to a specific attached meeting's `meeting_id`. Stays
-    /// `Disabled` (no-op) when `MEETING_COMPANION_MNEMO_*` env vars
+    /// `Disabled` (no-op) when `AURIS_MNEMO_*` env vars
     /// are unset.
     pub mnemo: crate::mnemo::MnemoClient,
 }
@@ -747,7 +747,7 @@ async fn recover_active_meetings(
 ) -> Vec<RecoveredUserMeeting> {
     // Test escape hatch: integration tests share a process and would
     // resurrect each other's leftover meetings without this gate.
-    if crate::env::flag("MEETING_COMPANION_SKIP_BOOT_RECOVERY") {
+    if crate::env::flag("AURIS_SKIP_BOOT_RECOVERY") {
         return Vec::new();
     }
     let rows = match crate::db::find_active_meetings_per_user(db).await {
@@ -1311,7 +1311,7 @@ async fn send_protocol_error(
 }
 
 fn heartbeat_interval() -> Duration {
-    if let Ok(s) = std::env::var("MEETING_COMPANION_HEARTBEAT_MS") {
+    if let Ok(s) = std::env::var("AURIS_HEARTBEAT_MS") {
         if let Ok(ms) = s.parse::<u64>() {
             return Duration::from_millis(ms);
         }
@@ -1326,7 +1326,7 @@ fn spawn_extraction(
 ) {
     tokio::spawn(async move {
         // Dev escape hatch.
-        if crate::env::flag("MEETING_COMPANION_LLM_DISABLED") {
+        if crate::env::flag("AURIS_LLM_DISABLED") {
             tracing::info!("LLM extraction disabled by env var; skipping");
             return;
         }
@@ -1403,7 +1403,7 @@ async fn spawn_live_pipeline(handle: ServerHandle, user_id: String, cancel: Canc
     // user_id can forward incoming PCM into it. Nothing here ever
     // crosses user boundaries.
     // -------------------------------------------------------------------
-    let audio_disabled = crate::env::flag("MEETING_COMPANION_AUDIO_DISABLED");
+    let audio_disabled = crate::env::flag("AURIS_AUDIO_DISABLED");
     let audio_rx = if audio_disabled {
         tracing::info!("audio capture disabled by env var");
         None
@@ -1418,14 +1418,13 @@ async fn spawn_live_pipeline(handle: ServerHandle, user_id: String, cancel: Canc
     // -------------------------------------------------------------------
     // STT task — dispatch via trait so future providers slot in cleanly.
     // -------------------------------------------------------------------
-    let provider_name =
-        crate::env::var_opt("MEETING_COMPANION_STT_PROVIDER").unwrap_or_else(|| {
-            if crate::env::flag("MEETING_COMPANION_STT_MOCK") {
-                "mock".to_string()
-            } else {
-                "soniox".to_string()
-            }
-        });
+    let provider_name = crate::env::var_opt("AURIS_STT_PROVIDER").unwrap_or_else(|| {
+        if crate::env::flag("AURIS_STT_MOCK") {
+            "mock".to_string()
+        } else {
+            "soniox".to_string()
+        }
+    });
 
     match crate::stt::make_provider(&provider_name) {
         Ok(provider) => {

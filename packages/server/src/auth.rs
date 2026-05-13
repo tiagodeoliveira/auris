@@ -8,7 +8,7 @@
 //! Not yet wired into request paths — that's stage 2. This module is
 //! standalone, fully unit-testable on its own.
 //!
-//! Bypass: when `MEETING_COMPANION_AUTH_DISABLED=1`, callers should
+//! Bypass: when `AURIS_AUTH_DISABLED=1`, callers should
 //! short-circuit to a synthetic dev user. The bypass is the caller's
 //! responsibility (axum middleware in stage 2); this module always
 //! validates a real JWT.

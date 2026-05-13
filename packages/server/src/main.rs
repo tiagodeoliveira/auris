@@ -7,7 +7,7 @@ use tracing::info;
 use tracing_subscriber::EnvFilter;
 
 #[derive(Parser, Debug)]
-#[command(name = "meeting-companion-server")]
+#[command(name = "auris-server")]
 struct Args {
     /// Single port serving both WebSocket (control + /audio) and
     /// REST (/meetings…) over axum.
@@ -30,7 +30,7 @@ async fn main() -> Result<()> {
 
     let args = Args::parse();
     let addr: SocketAddr = format!("{}:{}", args.bind, args.port).parse()?;
-    let auth_disabled = meeting_companion_server::env::flag("MEETING_COMPANION_AUTH_DISABLED");
+    let auth_disabled = auris_server::env::flag("AURIS_AUTH_DISABLED");
     info!(
         ?addr,
         version = env!("CARGO_PKG_VERSION"),
@@ -40,12 +40,12 @@ async fn main() -> Result<()> {
 
     let auth = if auth_disabled {
         tracing::warn!(
-            "MEETING_COMPANION_AUTH_DISABLED=1: bypass mode, every request maps to a synthetic dev user"
+            "AURIS_AUTH_DISABLED=1: bypass mode, every request maps to a synthetic dev user"
         );
-        meeting_companion_server::ws::AuthMode::Disabled
+        auris_server::ws::AuthMode::Disabled
     } else {
-        match meeting_companion_server::auth::AuthValidator::from_env() {
-            Ok(v) => meeting_companion_server::ws::AuthMode::Live(v),
+        match auris_server::auth::AuthValidator::from_env() {
+            Ok(v) => auris_server::ws::AuthMode::Live(v),
             Err(e) => {
                 tracing::error!(error = %e, "Auth validator init failed");
                 std::process::exit(2);
@@ -53,7 +53,7 @@ async fn main() -> Result<()> {
         }
     };
 
-    let llm = match meeting_companion_server::llm::LlmClient::from_env().await {
+    let llm = match auris_server::llm::LlmClient::from_env().await {
         Ok(c) => Arc::new(c),
         Err(e) => {
             tracing::error!(error = %e, "LLM client init failed");
@@ -72,5 +72,5 @@ async fn main() -> Result<()> {
         let _ = shutdown_tx.send(());
     });
 
-    meeting_companion_server::run_server(addr, auth, llm, shutdown_rx).await
+    auris_server::run_server(addr, auth, llm, shutdown_rx).await
 }

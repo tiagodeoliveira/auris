@@ -1,6 +1,6 @@
 # Deploying behind Cloudflare (TLS via Origin Certificate)
 
-Public-internet deploy of `meeting-companion` fronted by Cloudflare,
+Public-internet deploy of `auris` fronted by Cloudflare,
 **without** a Cloudflare Tunnel daemon. Cloudflare proxies traffic to
 your VM over a port-forwarded public IP and re-encrypts to the origin
 using a **Cloudflare Origin Certificate** that you serve via Caddy.
@@ -61,7 +61,7 @@ Pick the zone that owns your apex (e.g. `tiago.tools`).
 ## 2. Drop the cert files on the VM
 
 ```bash
-cd /path/to/meeting-companion
+cd /path/to/auris
 mkdir -p certs && chmod 700 certs
 $EDITOR certs/cert.pem    # paste the Origin Certificate (the "Origin certificate" PEM block)
 $EDITOR certs/key.pem     # paste the private key PEM
@@ -122,7 +122,7 @@ Reference: <https://developers.cloudflare.com/fundamentals/reference/network-por
    same port (the Caddyfile reads `{$PORT}`).
 
 2. **In Cloudflare dashboard** → **Rules → Origin Rules → Create rule**:
-   - Name: `meeting-companion origin port`
+   - Name: `auris origin port`
    - When incoming requests match → **Hostname equals** `auris.tiago.tools`
    - Then → **Override origin destination port** → `8443`
    - Deploy.
@@ -219,7 +219,7 @@ EXPO_PUBLIC_SERVER_URL=wss://auris.tiago.tools eas build
 ## 8. Boot
 
 ```bash
-cd /path/to/meeting-companion
+cd /path/to/auris
 docker compose -f docker-compose.deploy.yml --env-file .env.deploy pull
 docker compose -f docker-compose.deploy.yml --env-file .env.deploy up -d
 ```
@@ -228,7 +228,7 @@ Verify the three containers:
 
 ```bash
 docker compose -f docker-compose.deploy.yml ps
-# Expect: meeting-companion-postgres, meeting-companion-server, meeting-companion-caddy
+# Expect: auris-postgres, auris-server, auris-caddy
 ```
 
 Tail the relevant logs:
@@ -268,7 +268,7 @@ return `101 Switching Protocols` and stay open.
 | `525` from Cloudflare                                                      | TLS handshake to origin failed. Either Caddy isn't running (`docker compose logs caddy`), the cert hostname doesn't match `$DOMAIN`, or the cert PEM is malformed.                                                      |
 | `526` from Cloudflare                                                      | Origin cert didn't validate against CF's CA. Most often: you pasted a Let's Encrypt cert into `certs/cert.pem` by mistake — must be the **Origin Certificate** from CF's dashboard.                                     |
 | `522` from Cloudflare                                                      | TCP timeout to origin. Port-forward isn't working, or VM firewall blocks CF's IPs. From a third-party VM (e.g. another cloud), try `nc -vz <your-public-ip> 443` — if it hangs, the path is broken upstream of your VM. |
-| WebSocket connects then drops every ~100 s                                 | Cloudflare Free's idle timeout on WS. The server already sends heartbeats every `MEETING_COMPANION_HEARTBEAT_MS=10000` ms — verify it's set and that the client is also receiving / replying.                           |
+| WebSocket connects then drops every ~100 s                                 | Cloudflare Free's idle timeout on WS. The server already sends heartbeats every `AURIS_HEARTBEAT_MS=10000` ms — verify it's set and that the client is also receiving / replying.                                       |
 | Browser DevTools shows the WS request as `(failed)` with no further detail | Auth0 token rejected. Check the server logs for `401`. The PWA bundle may have been built against the wrong `VITE_AUTH0_API_AUDIENCE` for this server — rebuild with the right one.                                     |
 | `docker compose up` fails with `Set PUBLIC_DOMAIN in .env.deploy`          | The `caddy` service has a hard-required env var. Add `PUBLIC_DOMAIN=auris.tiago.tools` to `.env.deploy`.                                                                                                                |
 | `https://<vm-public-ip>` (no proxy, raw IP) loads                          | Your firewall isn't blocking non-CF IPs. Re-check step 5. The Origin Cert will fail browser validation, but the port shouldn't even be reachable from arbitrary clients.                                                |

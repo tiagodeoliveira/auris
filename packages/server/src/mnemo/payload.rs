@@ -9,8 +9,8 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
-pub const SOURCE: &str = "meeting_companion";
-pub const WORKDIR: &str = "/meeting_companion";
+pub const SOURCE: &str = "auris";
+pub const WORKDIR: &str = "/auris";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -219,7 +219,7 @@ mod tests {
         assert_eq!(json["sessionId"], "sess-1");
         assert_eq!(json["turns"][0]["role"], "user");
         assert_eq!(json["turns"][0]["content"], "hello world");
-        assert_eq!(json["context"]["source"], "meeting_companion");
+        assert_eq!(json["context"]["source"], "auris");
         assert_eq!(json["context"]["project"], "helix");
         assert_eq!(json["context"]["date"], "2026-05-04");
         assert_eq!(json["context"]["attributes"]["owner"], "tiago");

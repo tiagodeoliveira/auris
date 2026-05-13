@@ -73,7 +73,7 @@ Modules:
   WS endpoints — no `/api/` prefix.
 - `auth.rs` — Auth0 JWT validation. JWKS fetched lazily, cached by
   `kid`, refetch-on-miss with cooldown to resist forged-`kid` floods.
-  `MEETING_COMPANION_AUTH_DISABLED=1` provides a synthetic dev user
+  `AURIS_AUTH_DISABLED=1` provides a synthetic dev user
   for local / CI.
 - `state.rs` — `ServerState` (the multi-user shard), `UserState`
   (per-user meeting + mode buffers + devices + recalled context),
@@ -132,7 +132,7 @@ overlay panel during meetings.
 
 Files of note:
 
-- `MeetingCompanionApp.swift` — App entry, App Delegate.
+- `AurisApp.swift` — App entry, App Delegate.
 - `AppModel.swift` — central observable model. Mirrors server state:
   `availableModes`, `currentMode`, `itemsByMode`, `transcriptInterim`,
   device list. Reduces incoming events; sends intents back.
@@ -269,7 +269,7 @@ JWT-authenticated:
 JWT is passed as `?token=<JWT>` on the WS handshake or as
 `Authorization: Bearer <JWT>` on REST. Auth0 issues the JWT; the
 server validates against Auth0's JWKS. A bypass mode for local dev
-(`MEETING_COMPANION_AUTH_DISABLED=1`) substitutes a synthetic user.
+(`AURIS_AUTH_DISABLED=1`) substitutes a synthetic user.
 
 A two-stage intent dispatch produces named errors (`bad_json` /
 `unknown_intent` / `bad_payload`) instead of generic deserialize
@@ -470,9 +470,9 @@ integration:
 
 Configured via three env vars:
 
-- `MEETING_COMPANION_MNEMO_URL`
-- `MEETING_COMPANION_MNEMO_API_KEY`
-- `MEETING_COMPANION_MNEMO_WORKSTATION` (optional, falls back to
+- `AURIS_MNEMO_URL`
+- `AURIS_MNEMO_API_KEY`
+- `AURIS_MNEMO_WORKSTATION` (optional, falls back to
   `gethostname()`)
 
 Decision and constraints in [ADR-0008](adr/0008-mnemo-memory-integration.md).
@@ -500,7 +500,7 @@ Four consumers of one client:
   `extract_with_prompt` for text.
 
 All paths share `rig::providers::{bedrock, openai, anthropic}`,
-routed by `MEETING_COMPANION_LLM_PROVIDER`. The agent loop's default
+routed by `AURIS_LLM_PROVIDER`. The agent loop's default
 model is Claude Opus 4.7 (1M context).
 
 Vision moments use a longer timeout (30 s) than text-only calls (8 s)
@@ -600,7 +600,7 @@ identity model:
   persistence are all keyed on `user_id` end-to-end. Cross-user
   contamination is structurally prevented (the `state` API never
   exposes a "global" mutator).
-- **Bypass for dev / CI.** `MEETING_COMPANION_AUTH_DISABLED=1`
+- **Bypass for dev / CI.** `AURIS_AUTH_DISABLED=1`
   substitutes a synthetic user so the local dev path runs without
   cloud auth.
 

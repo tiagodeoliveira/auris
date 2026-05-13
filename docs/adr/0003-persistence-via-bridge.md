@@ -9,7 +9,7 @@
 The PWA needs to persist a small set of values between app restarts:
 
 - Server WebSocket URL (e.g. `ws://laptop.local:7331` or `wss://meeting.tiago.tail-scale.ts.net:7331`).
-- Server WebSocket auth token (the same shared secret the server reads from `MEETING_COMPANION_TOKEN`).
+- Server WebSocket auth token (the same shared secret the server reads from `AURIS_TOKEN`).
 - Soniox API key (or whichever STT provider's credential the PWA uses).
 - Optionally: last-used metadata KV pairs to pre-fill the next meeting's editor.
 

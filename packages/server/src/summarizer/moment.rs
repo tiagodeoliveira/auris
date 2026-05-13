@@ -25,7 +25,7 @@ use crate::llm::LlmClient;
 use crate::ws::ServerHandle;
 
 /// Default ±N around the moment's `t` for transcript context.
-/// Override with `MEETING_COMPANION_MOMENT_WINDOW_MS`.
+/// Override with `AURIS_MOMENT_WINDOW_MS`.
 const DEFAULT_WINDOW_MS: i64 = 15_000;
 
 /// Default grace period before reading the transcript, to give
@@ -35,7 +35,7 @@ const DEFAULT_WINDOW_MS: i64 = 15_000;
 /// "Mark moment". Without this delay, the worker reads a JSONL
 /// that's missing the most relevant utterance and the LLM is
 /// forced to say "no transcript".
-/// Override with `MEETING_COMPANION_MOMENT_GRACE_MS`.
+/// Override with `AURIS_MOMENT_GRACE_MS`.
 const DEFAULT_GRACE_MS: u64 = 12_000;
 
 const SYSTEM_PROMPT: &str = "You summarize a single moment a user explicitly bookmarked \
@@ -114,7 +114,7 @@ async fn process_one(
     events_tx: &tokio::sync::broadcast::Sender<crate::contract::UserEvent>,
     req: &MomentCreated,
 ) -> anyhow::Result<()> {
-    if crate::env::flag("MEETING_COMPANION_LLM_DISABLED") {
+    if crate::env::flag("AURIS_LLM_DISABLED") {
         debug!(moment_id = %req.moment_id, "LLM disabled; skipping moment summary");
         return Ok(());
     }
@@ -127,7 +127,7 @@ async fn process_one(
         return Ok(());
     }
 
-    let window_ms = std::env::var("MEETING_COMPANION_MOMENT_WINDOW_MS")
+    let window_ms = std::env::var("AURIS_MOMENT_WINDOW_MS")
         .ok()
         .and_then(|s| s.parse::<i64>().ok())
         .unwrap_or(DEFAULT_WINDOW_MS);
@@ -135,7 +135,7 @@ async fn process_one(
     // Wait for in-flight STT chunks to finalize. Soniox commits a
     // chunk only on punctuation or silence; a moment marked mid-
     // utterance otherwise reads an empty (or stale) transcript window.
-    let grace_ms = std::env::var("MEETING_COMPANION_MOMENT_GRACE_MS")
+    let grace_ms = std::env::var("AURIS_MOMENT_GRACE_MS")
         .ok()
         .and_then(|s| s.parse::<u64>().ok())
         .unwrap_or(DEFAULT_GRACE_MS);

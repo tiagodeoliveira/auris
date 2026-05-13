@@ -8,7 +8,7 @@ lint:
     # We use snake_case file names + snake_case fields, and our
     # tagged-union messages need a oneof named `kind` (not the
     # message name). The STANDARD bundle's PACKAGE_VERSION_SUFFIX
-    # is satisfied by `meeting_companion.v1`.
+    # is satisfied by `auris.v1`.
     - PACKAGE_DIRECTORY_MATCH
 breaking:
   use:

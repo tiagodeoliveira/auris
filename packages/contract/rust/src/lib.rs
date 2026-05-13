@@ -1,6 +1,6 @@
-//! Wire protocol types for the Meeting Companion server + clients.
+//! Wire protocol types for the Auris server + clients.
 //!
-//! Generated from `packages/contract/proto/meeting_companion/v1/*.proto`
+//! Generated from `packages/contract/proto/auris/v1/*.proto`
 //! at build time via `prost-build`. The generated code lives in `OUT_DIR`
 //! and is included verbatim below — there's no committed Rust output to
 //! drift from the .proto sources.
@@ -12,7 +12,7 @@
 //!
 //! Usage from the server:
 //! ```ignore
-//! use meeting_companion_contract::v1::{Intent, Event};
+//! use auris_contract::v1::{Intent, Event};
 //! use prost::Message;
 //!
 //! let bytes = intent.encode_to_vec();      // → wire bytes
@@ -25,7 +25,7 @@
 /// future `v2` can land alongside without a breaking rename of every
 /// import site.
 pub mod v1 {
-    include!(concat!(env!("OUT_DIR"), "/meeting_companion.v1.rs"));
+    include!(concat!(env!("OUT_DIR"), "/auris.v1.rs"));
 }
 
 /// The wire-protocol version this crate's generated types speak.

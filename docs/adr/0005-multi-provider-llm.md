@@ -38,14 +38,14 @@ Three concrete pressures:
   variants. Constructed once at server boot via `LlmClient::from_env()`,
   shared as `Arc<LlmClient>` across all consumers (extraction lambda,
   summarizers).
-- **Provider chosen by `MEETING_COMPANION_LLM_PROVIDER` env var**:
+- **Provider chosen by `AURIS_LLM_PROVIDER` env var**:
   `bedrock` (default) | `openai` | `anthropic`. Model ID overridable via
-  `MEETING_COMPANION_LLM_MODEL_ID`.
+  `AURIS_LLM_MODEL_ID`.
 - **`extract_with_prompt::<Schema>(prompt, input)`** is the single
   consumer-facing API. Takes the system prompt as a runtime string
   (different for metadata vs. each summarizer), the user input, and a
   type parameter for the expected output schema.
-- **Disable hatch:** `MEETING_COMPANION_LLM_DISABLED=1` makes
+- **Disable hatch:** `AURIS_LLM_DISABLED=1` makes
   `extract` return an empty result; useful for offline development and
   for skipping LLM calls in CI.
 

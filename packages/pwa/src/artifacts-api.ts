@@ -1,5 +1,5 @@
 //! REST client for the server's `/artifacts` endpoints. Mirror of
-//! `packages/mac/Sources/MeetingCompanion/Net/ArtifactsAPI.swift`.
+//! `packages/mac/Sources/Auris/Net/ArtifactsAPI.swift`.
 //! Same WS-URL → REST-base derivation as `MeetingsApi`.
 
 import { deriveApiBase, MeetingsApiError } from "./meetings-api";

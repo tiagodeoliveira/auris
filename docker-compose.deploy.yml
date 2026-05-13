@@ -29,20 +29,16 @@
 services:
   postgres:
     image: postgres:16-alpine
-    container_name: meeting-companion-postgres
+    container_name: auris-postgres
     restart: unless-stopped
     environment:
-      POSTGRES_USER: ${POSTGRES_USER:-meeting_companion}
+      POSTGRES_USER: ${POSTGRES_USER:-auris}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env.deploy}
-      POSTGRES_DB: ${POSTGRES_DB:-meeting_companion}
+      POSTGRES_DB: ${POSTGRES_DB:-auris}
     volumes:
       - pg-data:/var/lib/postgresql/data
     healthcheck:
-      test:
-        [
-          "CMD-SHELL",
-          "pg_isready -U ${POSTGRES_USER:-meeting_companion} -d ${POSTGRES_DB:-meeting_companion}",
-        ]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-auris} -d ${POSTGRES_DB:-auris}"]
       interval: 5s
       timeout: 3s
       retries: 5
@@ -52,47 +48,47 @@ services:
     # works for "always grab the newest main build" but defeats the
     # ability to roll back without remembering a sha. CI publishes
     # `latest`, `sha-<short>`, and `<git-tag>` — prefer the tag.
-    image: ghcr.io/${GHCR_OWNER:?Set GHCR_OWNER in .env.deploy}/meeting-companion-server:${SERVER_TAG:-latest}
-    container_name: meeting-companion-server
+    image: ghcr.io/${GHCR_OWNER:?Set GHCR_OWNER in .env.deploy}/auris-server:${SERVER_TAG:-latest}
+    container_name: auris-server
     restart: unless-stopped
     depends_on:
       postgres:
         condition: service_healthy
     environment:
       # ─── Required (server fails to start without these) ──────────────
-      DATABASE_URL: postgres://${POSTGRES_USER:-meeting_companion}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-meeting_companion}
+      DATABASE_URL: postgres://${POSTGRES_USER:-auris}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-auris}
       AUTH0_DOMAIN: ${AUTH0_DOMAIN}
       AUTH0_API_AUDIENCE: ${AUTH0_API_AUDIENCE}
 
       # ─── Server runtime ─────────────────────────────────────────────
-      MEETING_COMPANION_DATA_DIR: /data
+      AURIS_DATA_DIR: /data
       RUST_LOG: ${RUST_LOG:-info}
-      MEETING_COMPANION_HEARTBEAT_MS: ${MEETING_COMPANION_HEARTBEAT_MS:-10000}
+      AURIS_HEARTBEAT_MS: ${AURIS_HEARTBEAT_MS:-10000}
 
       # ─── Toggles (1 = enable, unset = off) ──────────────────────────
       # Intentionally listed without `${VAR:-}` defaults. The previous
       # `${VAR:-}` form expanded to an empty string when unset, and
-      # the container env then carried `MEETING_COMPANION_AUDIO_DISABLED=""`
+      # the container env then carried `AURIS_AUDIO_DISABLED=""`
       # — which the Rust side's `std::env::var(...).is_ok()` check
       # treated as "set" → audio capture silently disabled in prod.
       # Listing the raw `${VAR}` causes docker-compose to forward the
       # variable only when the host actually defines it, and the
       # crate's `env::flag()` helper now also rejects empty values
       # defensively. Add to `.env.deploy` to enable.
-      MEETING_COMPANION_AUTH_DISABLED: ${MEETING_COMPANION_AUTH_DISABLED}
-      MEETING_COMPANION_LLM_DISABLED: ${MEETING_COMPANION_LLM_DISABLED}
-      MEETING_COMPANION_AUDIO_DISABLED: ${MEETING_COMPANION_AUDIO_DISABLED}
-      MEETING_COMPANION_SKIP_BOOT_RECOVERY: ${MEETING_COMPANION_SKIP_BOOT_RECOVERY}
+      AURIS_AUTH_DISABLED: ${AURIS_AUTH_DISABLED}
+      AURIS_LLM_DISABLED: ${AURIS_LLM_DISABLED}
+      AURIS_AUDIO_DISABLED: ${AURIS_AUDIO_DISABLED}
+      AURIS_SKIP_BOOT_RECOVERY: ${AURIS_SKIP_BOOT_RECOVERY}
       AGENT_LOG_PROMPT: ${AGENT_LOG_PROMPT}
 
       # ─── LLM provider ───────────────────────────────────────────────
-      MEETING_COMPANION_LLM_PROVIDER: ${MEETING_COMPANION_LLM_PROVIDER:-bedrock}
+      AURIS_LLM_PROVIDER: ${AURIS_LLM_PROVIDER:-bedrock}
       # Provider-specific defaults coded in src/llm.rs apply when unset:
       #   bedrock  → us.anthropic.claude-sonnet-4-7-20251015-v1:0
       #   openai   → gpt-4o
       #   anthropic→ claude-opus-4-7
-      MEETING_COMPANION_LLM_MODEL_ID: ${MEETING_COMPANION_LLM_MODEL_ID:-}
-      MEETING_COMPANION_LLM_REGION: ${MEETING_COMPANION_LLM_REGION:-us-west-2}
+      AURIS_LLM_MODEL_ID: ${AURIS_LLM_MODEL_ID:-}
+      AURIS_LLM_REGION: ${AURIS_LLM_REGION:-us-west-2}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       AWS_REGION: ${AWS_REGION:-us-west-2}
@@ -100,9 +96,9 @@ services:
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
 
       # ─── STT (speech-to-text) ───────────────────────────────────────
-      MEETING_COMPANION_STT_PROVIDER: ${MEETING_COMPANION_STT_PROVIDER:-soniox}
-      MEETING_COMPANION_SONIOX_MODEL: ${MEETING_COMPANION_SONIOX_MODEL:-stt-rt-preview}
-      MEETING_COMPANION_STT_MOCK_INTERVAL_MS: ${MEETING_COMPANION_STT_MOCK_INTERVAL_MS:-3000}
+      AURIS_STT_PROVIDER: ${AURIS_STT_PROVIDER:-soniox}
+      AURIS_SONIOX_MODEL: ${AURIS_SONIOX_MODEL:-stt-rt-preview}
+      AURIS_STT_MOCK_INTERVAL_MS: ${AURIS_STT_MOCK_INTERVAL_MS:-3000}
       SONIOX_API_KEY: ${SONIOX_API_KEY:-}
 
       # ─── Agent loop (per ADR-0011) ──────────────────────────────────
@@ -117,18 +113,18 @@ services:
       SUMMARY_TRIGGER_MAX_MS: ${SUMMARY_TRIGGER_MAX_MS:-300000}
 
       # ─── Moment summarizer (vision LLM context window) ──────────────
-      MEETING_COMPANION_MOMENT_WINDOW_MS: ${MEETING_COMPANION_MOMENT_WINDOW_MS:-60000}
-      MEETING_COMPANION_MOMENT_GRACE_MS: ${MEETING_COMPANION_MOMENT_GRACE_MS:-5000}
+      AURIS_MOMENT_WINDOW_MS: ${AURIS_MOMENT_WINDOW_MS:-60000}
+      AURIS_MOMENT_GRACE_MS: ${AURIS_MOMENT_GRACE_MS:-5000}
 
       # ─── mnemo memory layer (optional integration) ──────────────────
       # Unset = integration disabled. Both URL and API_KEY required to
-      # enable. Names use the MEETING_COMPANION_ prefix per the server's
+      # enable. Names use the AURIS_ prefix per the server's
       # `mnemo::client` module — passing plain `MNEMO_URL` silently
       # disables the integration because the server can't find the
       # expected key.
-      MEETING_COMPANION_MNEMO_URL: ${MEETING_COMPANION_MNEMO_URL:-}
-      MEETING_COMPANION_MNEMO_API_KEY: ${MEETING_COMPANION_MNEMO_API_KEY:-}
-      MEETING_COMPANION_MNEMO_WORKSTATION: ${MEETING_COMPANION_MNEMO_WORKSTATION:-}
+      AURIS_MNEMO_URL: ${AURIS_MNEMO_URL:-}
+      AURIS_MNEMO_API_KEY: ${AURIS_MNEMO_API_KEY:-}
+      AURIS_MNEMO_WORKSTATION: ${AURIS_MNEMO_WORKSTATION:-}
     ports:
       # Bound to loopback only: public traffic comes through the
       # `caddy` service which terminates TLS and reverse-proxies
@@ -150,7 +146,7 @@ services:
     # upgrades pass through transparently — no special config needed
     # in Caddy v2.
     image: caddy:2-alpine
-    container_name: meeting-companion-caddy
+    container_name: auris-caddy
     restart: unless-stopped
     depends_on:
       - server

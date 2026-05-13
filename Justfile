@@ -4,7 +4,7 @@ default:
 # --- Database --------------------------------------------------------------
 
 # Bring up the local Postgres container in the background.
-# Connects via DATABASE_URL=postgres://meeting_companion:dev@localhost:5432.
+# Connects via DATABASE_URL=postgres://auris:dev@localhost:5432.
 db-up:
     docker compose up -d postgres
 
@@ -18,30 +18,30 @@ db-reset:
 
 # Open `psql` against the local instance.
 db-shell:
-    docker compose exec postgres psql -U meeting_companion meeting_companion
+    docker compose exec postgres psql -U auris auris
 
 # --- Run -------------------------------------------------------------------
 
 # Run the server with real Auth0 JWT validation (port 7331).
 # Both Mac and PWA must present a valid access token for the
-# `https://meeting-companion.api` audience.
+# `https://auris.api` audience.
 #
 # Injects `DATABASE_URL` matching the `just db-up` container so a
 # stray `.env` pointing at a hosted DB doesn't get picked up by
 # dotenvy.
 server-run:
     AUTH0_DOMAIN=dev-jrva0wzk3qkdxcar.us.auth0.com \
-    AUTH0_API_AUDIENCE=https://meeting-companion.api \
-    DATABASE_URL=postgres://meeting_companion:dev@localhost:5432/meeting_companion \
-    cargo run -p meeting-companion-server -- --port 7331
+    AUTH0_API_AUDIENCE=https://auris.api \
+    DATABASE_URL=postgres://auris:dev@localhost:5432/auris \
+    cargo run -p auris-server -- --port 7331
 
 # Run the server with auth disabled — every request is attributed to a
 # synthetic dev user. Useful for poking the server with `websocat` /
 # `curl` without launching a browser flow.
 server-run-noauth:
-    MEETING_COMPANION_AUTH_DISABLED=1 \
-    DATABASE_URL=postgres://meeting_companion:dev@localhost:5432/meeting_companion \
-    cargo run -p meeting-companion-server -- --port 7331
+    AURIS_AUTH_DISABLED=1 \
+    DATABASE_URL=postgres://auris:dev@localhost:5432/auris \
+    cargo run -p auris-server -- --port 7331
 
 # Run the PWA dev server (port 5173). Injects local-targeted
 # `VITE_*` vars so a `.env.local` with a remote URL doesn't redirect
@@ -52,8 +52,8 @@ pwa-dev:
     VITE_SERVER_URL=ws://localhost:7331 \
     VITE_AUTH0_DOMAIN=dev-jrva0wzk3qkdxcar.us.auth0.com \
     VITE_AUTH0_PWA_CLIENT_ID=IPKnV1gX91eYYnX5Uc6142bQpnuA9n3G \
-    VITE_AUTH0_API_AUDIENCE=https://meeting-companion.api \
-    pnpm -F @meeting-companion/pwa dev
+    VITE_AUTH0_API_AUDIENCE=https://auris.api \
+    pnpm -F @auris/pwa dev
 
 # Run the PWA dev server + the EvenHub simulator pointed at it.
 # Same local-dev env injection as `pwa-dev`.
@@ -61,8 +61,8 @@ pwa-sim:
     VITE_SERVER_URL=ws://localhost:7331 \
     VITE_AUTH0_DOMAIN=dev-jrva0wzk3qkdxcar.us.auth0.com \
     VITE_AUTH0_PWA_CLIENT_ID=IPKnV1gX91eYYnX5Uc6142bQpnuA9n3G \
-    VITE_AUTH0_API_AUDIENCE=https://meeting-companion.api \
-    pnpm -F @meeting-companion/pwa dev:sim
+    VITE_AUTH0_API_AUDIENCE=https://auris.api \
+    pnpm -F @auris/pwa dev:sim
 
 # Print integrated-stack run instructions (three terminals).
 stack:
@@ -90,19 +90,19 @@ mac-build:
 # tenant today, but being explicit makes the recipe self-contained).
 mac-run:
     cd packages/mac && \
-    MEETING_COMPANION_SERVER_URL=ws://localhost:7331 \
+    AURIS_SERVER_URL=ws://localhost:7331 \
     AUTH0_DOMAIN=dev-jrva0wzk3qkdxcar.us.auth0.com \
     AUTH0_MAC_CLIENT_ID=YDK0XoDAIRhp2uORlfk8TijQkcqRzjsi \
-    AUTH0_API_AUDIENCE=https://meeting-companion.api \
+    AUTH0_API_AUDIENCE=https://auris.api \
     swift run
 
 # --- Test ------------------------------------------------------------------
 
 # Run the full test suite (server + PWA).
 test:
-    cargo test -p meeting-companion-server -- --test-threads=1
-    pnpm -F @meeting-companion/pwa test
-    pnpm -F @meeting-companion/pwa typecheck
+    cargo test -p auris-server -- --test-threads=1
+    pnpm -F @auris/pwa test
+    pnpm -F @auris/pwa typecheck
 
 # --- Smoke -----------------------------------------------------------------
 
@@ -139,30 +139,30 @@ contract-format:
 contract-check:
     cd packages/contract && buf lint && buf format --diff --exit-code
     cd packages/contract/rust && cargo build
-    pnpm -F @meeting-companion/contract typecheck
+    pnpm -F @auris/contract typecheck
     cd packages/contract/swift && swift build
 
 # --- LLM -------------------------------------------------------------------
 
 # Smoke-test the LLM extraction with a sample description.
 llm-smoke description="Q1 budget review for helix product launch":
-    cargo run -p meeting-companion-server --example llm_smoke -- "{{description}}"
+    cargo run -p auris-server --example llm_smoke -- "{{description}}"
 
 # Smoke-test against Bedrock specifically.
 llm-smoke-bedrock description="Q1 budget review for helix product launch":
-    MEETING_COMPANION_LLM_PROVIDER=bedrock cargo run -p meeting-companion-server --example llm_smoke -- "{{description}}"
+    AURIS_LLM_PROVIDER=bedrock cargo run -p auris-server --example llm_smoke -- "{{description}}"
 
 # Smoke-test against OpenAI specifically.
 llm-smoke-openai description="Q1 budget review for helix product launch":
-    MEETING_COMPANION_LLM_PROVIDER=openai cargo run -p meeting-companion-server --example llm_smoke -- "{{description}}"
+    AURIS_LLM_PROVIDER=openai cargo run -p auris-server --example llm_smoke -- "{{description}}"
 
 # Smoke-test against Anthropic-direct specifically.
 llm-smoke-anthropic description="Q1 budget review for helix product launch":
-    MEETING_COMPANION_LLM_PROVIDER=anthropic cargo run -p meeting-companion-server --example llm_smoke -- "{{description}}"
+    AURIS_LLM_PROVIDER=anthropic cargo run -p auris-server --example llm_smoke -- "{{description}}"
 
-# Run the env-gated LLM integration test (provider selected via MEETING_COMPANION_LLM_PROVIDER, defaults to bedrock).
+# Run the env-gated LLM integration test (provider selected via AURIS_LLM_PROVIDER, defaults to bedrock).
 llm-integration:
-    RUN_LLM_INTEGRATION=1 cargo test -p meeting-companion-server --test llm_integration -- --nocapture
+    RUN_LLM_INTEGRATION=1 cargo test -p auris-server --test llm_integration -- --nocapture
 
 # --- Live pipeline ---------------------------------------------------------
 
@@ -170,15 +170,15 @@ llm-integration:
 # external services. Mock STT emits canned chunks every 2s; transcript
 # items appear; highlights/actions stay empty (LLM disabled).
 live-smoke:
-    MEETING_COMPANION_STT_MOCK=1 \
-    MEETING_COMPANION_STT_MOCK_INTERVAL_MS=2000 \
-    MEETING_COMPANION_LLM_DISABLED=1 \
-    MEETING_COMPANION_AUDIO_DISABLED=1 \
-    MEETING_COMPANION_TOKEN=dev \
-    cargo run -p meeting-companion-server -- --port 7331
+    AURIS_STT_MOCK=1 \
+    AURIS_STT_MOCK_INTERVAL_MS=2000 \
+    AURIS_LLM_DISABLED=1 \
+    AURIS_AUDIO_DISABLED=1 \
+    AURIS_TOKEN=dev \
+    cargo run -p auris-server -- --port 7331
 
 # Sanity-check SCKit audio capture + format conversion. Captures 5s of
 # microphone audio and writes /tmp/spike-audio.wav. Listen with
 # `afplay /tmp/spike-audio.wav` to verify the audio path is healthy.
 audio-spike:
-    cargo run -p meeting-companion-server --example screencapturekit_spike
+    cargo run -p auris-server --example screencapturekit_spike

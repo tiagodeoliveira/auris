@@ -15,24 +15,24 @@
 services:
   postgres:
     image: postgres:16-alpine
-    container_name: meeting-companion-postgres
+    container_name: auris-postgres
     restart: unless-stopped
     environment:
-      POSTGRES_USER: meeting_companion
+      POSTGRES_USER: auris
       POSTGRES_PASSWORD: dev
-      POSTGRES_DB: meeting_companion
+      POSTGRES_DB: auris
     ports:
       # Bound to localhost only — the server connects from the host
       # via DATABASE_URL=postgres://...@localhost:5432. Don't expose
       # this on 0.0.0.0; production gets a separate compose file.
       - "127.0.0.1:5432:5432"
     volumes:
-      - meeting-companion-pg-data:/var/lib/postgresql/data
+      - auris-pg-data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U meeting_companion -d meeting_companion"]
+      test: ["CMD-SHELL", "pg_isready -U auris -d auris"]
       interval: 5s
       timeout: 3s
       retries: 5
 
 volumes:
-  meeting-companion-pg-data:
+  auris-pg-data:

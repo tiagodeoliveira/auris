@@ -14,7 +14,7 @@ export function mountLoginScreen(parent: HTMLElement, auth: AuthBundle): void {
 
   const title = document.createElement("h1");
   title.className = "login-screen-title";
-  title.textContent = "Meeting Companion";
+  title.textContent = "Auris";
 
   const subtitle = document.createElement("p");
   subtitle.className = "login-screen-subtitle";

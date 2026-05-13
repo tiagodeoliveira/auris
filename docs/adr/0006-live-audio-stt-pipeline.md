@@ -46,7 +46,7 @@ Specific constraints on the audio source:
   - `SonioxAdapter` — production. WebSocket streaming, sends `audio_pcm`
     frames, parses finalized + interim tokens.
   - `MockAdapter` — emits canned `TranscriptChunk`s on a configurable
-    cadence; activated by `MEETING_COMPANION_STT_PROVIDER=mock`. No API
+    cadence; activated by `AURIS_STT_PROVIDER=mock`. No API
     key required.
 - **Sentence flushing on the Soniox side.** A 3-second idle threshold
   combined with a "soft boundary" gate (the last finalized token must end

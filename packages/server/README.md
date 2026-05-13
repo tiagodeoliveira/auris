@@ -1,4 +1,4 @@
-# meeting-companion-server
+# auris-server
 
 Multi-tenant Rust WebSocket + REST server. Owns per-user meeting
 state, ingests audio (local ScreenCaptureKit or remote `/audio` WS),
@@ -21,17 +21,17 @@ just server-run         # with Auth0 (uses the dev tenant baked into justfile)
 For local dev without Auth0:
 
 ```bash
-just server-run-noauth  # MEETING_COMPANION_AUTH_DISABLED=1
+just server-run-noauth  # AURIS_AUTH_DISABLED=1
 ```
 
 ## Test
 
 ```bash
-cargo test -p meeting-companion-server -- --test-threads=1
+cargo test -p auris-server -- --test-threads=1
 ```
 
 `--test-threads=1` is required because the heartbeat tests set a
-process-global env var (`MEETING_COMPANION_HEARTBEAT_MS`); running
+process-global env var (`AURIS_HEARTBEAT_MS`); running
 other test binaries in parallel would inherit that override.
 
 ## What it does
@@ -96,30 +96,30 @@ All env vars below are optional unless noted. Copy `.env.example`
 
 ### Server
 
-| Env / Flag                             | Default    | Description                                                     |
-| -------------------------------------- | ---------- | --------------------------------------------------------------- |
-| `DATABASE_URL`                         | local Pg   | Postgres connection URL.                                        |
-| `MEETING_COMPANION_DATA_DIR`           | `./data`   | Root for blob storage (`<DATA_DIR>/blobs/...`).                 |
-| `AUTH0_DOMAIN`                         | (required) | Auth0 tenant domain (e.g. `your-tenant.us.auth0.com`).          |
-| `AUTH0_API_AUDIENCE`                   | (required) | Auth0 API identifier the JWT must `aud`-match.                  |
-| `MEETING_COMPANION_AUTH_DISABLED`      | unset      | When set, bypasses Auth0 and uses a synthetic dev user.         |
-| `MEETING_COMPANION_SKIP_BOOT_RECOVERY` | unset      | Skip respawning Active meetings left in Postgres after a crash. |
-| `MEETING_COMPANION_HEARTBEAT_MS`       | `10000`    | Heartbeat interval (test override only).                        |
-| `RUST_LOG`                             | `info`     | `tracing-subscriber` filter.                                    |
-| `--port`                               | `7331`     | TCP port.                                                       |
-| `--bind`                               | `0.0.0.0`  | Bind address.                                                   |
+| Env / Flag                 | Default    | Description                                                     |
+| -------------------------- | ---------- | --------------------------------------------------------------- |
+| `DATABASE_URL`             | local Pg   | Postgres connection URL.                                        |
+| `AURIS_DATA_DIR`           | `./data`   | Root for blob storage (`<DATA_DIR>/blobs/...`).                 |
+| `AUTH0_DOMAIN`             | (required) | Auth0 tenant domain (e.g. `your-tenant.us.auth0.com`).          |
+| `AUTH0_API_AUDIENCE`       | (required) | Auth0 API identifier the JWT must `aud`-match.                  |
+| `AURIS_AUTH_DISABLED`      | unset      | When set, bypasses Auth0 and uses a synthetic dev user.         |
+| `AURIS_SKIP_BOOT_RECOVERY` | unset      | Skip respawning Active meetings left in Postgres after a crash. |
+| `AURIS_HEARTBEAT_MS`       | `10000`    | Heartbeat interval (test override only).                        |
+| `RUST_LOG`                 | `info`     | `tracing-subscriber` filter.                                    |
+| `--port`                   | `7331`     | TCP port.                                                       |
+| `--bind`                   | `0.0.0.0`  | Bind address.                                                   |
 
 ### LLM (per [ADR-0005](../../docs/adr/0005-multi-provider-llm.md), [ADR-0011](../../docs/adr/0011-agentic-summarizer-loop.md))
 
 | Env var                              | Required when                 | Default                                                                                                 |
 | ------------------------------------ | ----------------------------- | ------------------------------------------------------------------------------------------------------- |
-| `MEETING_COMPANION_LLM_PROVIDER`     | no                            | `bedrock` (`bedrock` \| `openai` \| `anthropic`)                                                        |
-| `MEETING_COMPANION_LLM_MODEL_ID`     | no                            | bedrock: `us.anthropic.claude-sonnet-4-7-20251015-v1:0`; openai: `gpt-4o`; anthropic: `claude-opus-4-7` |
-| `MEETING_COMPANION_LLM_DISABLED`     | no                            | unset (set to skip extraction + agent + summarizers)                                                    |
+| `AURIS_LLM_PROVIDER`                 | no                            | `bedrock` (`bedrock` \| `openai` \| `anthropic`)                                                        |
+| `AURIS_LLM_MODEL_ID`                 | no                            | bedrock: `us.anthropic.claude-sonnet-4-7-20251015-v1:0`; openai: `gpt-4o`; anthropic: `claude-opus-4-7` |
+| `AURIS_LLM_DISABLED`                 | no                            | unset (set to skip extraction + agent + summarizers)                                                    |
 | `AGENT_LOG_PROMPT`                   | no                            | unset (set to `1` to log the full agent prompt on each fire)                                            |
 | **Bedrock**                          | when `LLM_PROVIDER=bedrock`   |                                                                                                         |
 | AWS credentials (any standard chain) | yes                           | —                                                                                                       |
-| `MEETING_COMPANION_LLM_REGION`       | no                            | `us-west-2`                                                                                             |
+| `AURIS_LLM_REGION`                   | no                            | `us-west-2`                                                                                             |
 | **OpenAI**                           | when `LLM_PROVIDER=openai`    |                                                                                                         |
 | `OPENAI_API_KEY`                     | yes                           | —                                                                                                       |
 | **Anthropic**                        | when `LLM_PROVIDER=anthropic` |                                                                                                         |
@@ -127,13 +127,13 @@ All env vars below are optional unless noted. Copy `.env.example`
 
 ### STT and audio (per [ADR-0006](../../docs/adr/0006-live-audio-stt-pipeline.md))
 
-| Env var                                  | Default                                                                                 |
-| ---------------------------------------- | --------------------------------------------------------------------------------------- |
-| `MEETING_COMPANION_STT_PROVIDER`         | `soniox` (`soniox` \| `mock`). Legacy: `MEETING_COMPANION_STT_MOCK=1` is also accepted. |
-| `SONIOX_API_KEY`                         | — (required when provider is `soniox`)                                                  |
-| `MEETING_COMPANION_SONIOX_MODEL`         | `stt-rt-preview`                                                                        |
-| `MEETING_COMPANION_AUDIO_DISABLED`       | unset (set to skip audio capture; mock STT still emits canned chunks if active)         |
-| `MEETING_COMPANION_STT_MOCK_INTERVAL_MS` | `3000`                                                                                  |
+| Env var                      | Default                                                                         |
+| ---------------------------- | ------------------------------------------------------------------------------- |
+| `AURIS_STT_PROVIDER`         | `soniox` (`soniox` \| `mock`). Legacy: `AURIS_STT_MOCK=1` is also accepted.     |
+| `SONIOX_API_KEY`             | — (required when provider is `soniox`)                                          |
+| `AURIS_SONIOX_MODEL`         | `stt-rt-preview`                                                                |
+| `AURIS_AUDIO_DISABLED`       | unset (set to skip audio capture; mock STT still emits canned chunks if active) |
+| `AURIS_STT_MOCK_INTERVAL_MS` | `3000`                                                                          |
 
 The audio source per meeting (local ScreenCaptureKit vs. a remote
 `/audio` WS-bound device) is selected at runtime via the
@@ -146,25 +146,25 @@ The agent fires hybrid: token threshold OR sentence count OR silence
 window OR hard cap (whichever first). Each is independently tunable;
 defaults work well in practice.
 
-| Env var                              | Default  | Notes                                                     |
-| ------------------------------------ | -------- | --------------------------------------------------------- |
-| `AGENT_TRIGGER_TOKENS`               | `200`    | New transcript tokens that trigger a fire.                |
-| `AGENT_TRIGGER_SENTENCES`            | `4`      | New sentences that trigger a fire.                        |
-| `AGENT_TRIGGER_SILENCE_MS`           | `4000`   | Silence (no new chunks) that triggers a fire.             |
-| `AGENT_TRIGGER_MAX_MS`               | `30000`  | Hard cap between fires while a meeting is active.         |
-| `SUMMARY_TRIGGER_TOKENS`             | `500`    | Tokens since last summary fire.                           |
-| `SUMMARY_BOOTSTRAP_TOKENS`           | `100`    | Min tokens before the first summary fires.                |
-| `SUMMARY_TRIGGER_MAX_MS`             | `300000` | Hard ceiling for summary refresh (5 min).                 |
-| `MEETING_COMPANION_MOMENT_WINDOW_MS` | `60000`  | Window of transcript context the moment summarizer reads. |
-| `MEETING_COMPANION_MOMENT_GRACE_MS`  | `5000`   | Grace after the moment timestamp to accumulate context.   |
+| Env var                    | Default  | Notes                                                     |
+| -------------------------- | -------- | --------------------------------------------------------- |
+| `AGENT_TRIGGER_TOKENS`     | `200`    | New transcript tokens that trigger a fire.                |
+| `AGENT_TRIGGER_SENTENCES`  | `4`      | New sentences that trigger a fire.                        |
+| `AGENT_TRIGGER_SILENCE_MS` | `4000`   | Silence (no new chunks) that triggers a fire.             |
+| `AGENT_TRIGGER_MAX_MS`     | `30000`  | Hard cap between fires while a meeting is active.         |
+| `SUMMARY_TRIGGER_TOKENS`   | `500`    | Tokens since last summary fire.                           |
+| `SUMMARY_BOOTSTRAP_TOKENS` | `100`    | Min tokens before the first summary fires.                |
+| `SUMMARY_TRIGGER_MAX_MS`   | `300000` | Hard ceiling for summary refresh (5 min).                 |
+| `AURIS_MOMENT_WINDOW_MS`   | `60000`  | Window of transcript context the moment summarizer reads. |
+| `AURIS_MOMENT_GRACE_MS`    | `5000`   | Grace after the moment timestamp to accumulate context.   |
 
 ### mnemo (per [ADR-0008](../../docs/adr/0008-mnemo-memory-integration.md))
 
-| Env var                               | Default                                   |
-| ------------------------------------- | ----------------------------------------- |
-| `MEETING_COMPANION_MNEMO_URL`         | unset (integration disabled when missing) |
-| `MEETING_COMPANION_MNEMO_API_KEY`     | unset (integration disabled when missing) |
-| `MEETING_COMPANION_MNEMO_WORKSTATION` | `gethostname()`                           |
+| Env var                   | Default                                   |
+| ------------------------- | ----------------------------------------- |
+| `AURIS_MNEMO_URL`         | unset (integration disabled when missing) |
+| `AURIS_MNEMO_API_KEY`     | unset (integration disabled when missing) |
+| `AURIS_MNEMO_WORKSTATION` | `gethostname()`                           |
 
 ## Persistence
 
@@ -201,7 +201,7 @@ check that file exists and points at `/usr/lib/swift`.
 Before debugging anything else with audio:
 
 ```bash
-cargo run -p meeting-companion-server --example screencapturekit_spike
+cargo run -p auris-server --example screencapturekit_spike
 afplay /tmp/spike-audio.wav
 ```
 
@@ -216,11 +216,11 @@ If you hear yourself clearly at the correct speed, the audio capture
 just live-smoke
 ```
 
-Boots the server with mock STT (`MEETING_COMPANION_STT_MOCK=1`) +
-`MEETING_COMPANION_LLM_DISABLED=1` + `MEETING_COMPANION_AUDIO_DISABLED=1`.
+Boots the server with mock STT (`AURIS_STT_MOCK=1`) +
+`AURIS_LLM_DISABLED=1` + `AURIS_AUDIO_DISABLED=1`.
 Mock STT emits canned chunks; LLM calls return empty. Useful for
 iterating on the UI without burning Soniox / LLM credits. Note that
-this recipe leaves Auth0 enabled — set `MEETING_COMPANION_AUTH_DISABLED=1`
+this recipe leaves Auth0 enabled — set `AURIS_AUTH_DISABLED=1`
 manually if you want to skip auth too.
 
 ## Manual smoke
@@ -228,7 +228,7 @@ manually if you want to skip auth too.
 In one terminal:
 
 ```bash
-just server-run-noauth     # MEETING_COMPANION_AUTH_DISABLED=1
+just server-run-noauth     # AURIS_AUTH_DISABLED=1
 ```
 
 In another:
@@ -255,7 +255,7 @@ every push to main and on tags. Pull from a deploy host:
 
 ```bash
 docker login ghcr.io   # PAT classic with read:packages
-docker pull ghcr.io/tiagodeoliveira/meeting-companion-server:latest
+docker pull ghcr.io/tiagodeoliveira/auris-server:latest
 ```
 
 `docker-compose.deploy.yml` at the repo root brings up Postgres +

@@ -1,5 +1,5 @@
 [package]
-name = "meeting-companion-contract"
+name = "auris-contract"
 version = "0.1.0"
 # Literal values (not `edition.workspace = true`) because this crate
 # isn't a member of the root cargo workspace yet — it's a standalone
@@ -10,7 +10,7 @@ version = "0.1.0"
 edition = "2021"
 license = "Proprietary"
 publish = false
-description = "Wire protocol types for the Meeting Companion server + clients (prost-generated)."
+description = "Wire protocol types for the Auris server + clients (prost-generated)."
 
 [dependencies]
 prost = "0.13"

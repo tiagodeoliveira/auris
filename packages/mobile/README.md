@@ -1,4 +1,4 @@
-# @meeting-companion/mobile
+# @auris/mobile
 
 Native iOS + Android client built with Expo + React Native + Expo
 Router. Companion to the PWA and the Mac menu-bar app; same server
@@ -55,7 +55,7 @@ From the workspace root:
 
 ```sh
 pnpm install
-pnpm --filter @meeting-companion/mobile start
+pnpm --filter @auris/mobile start
 ```
 
 The dev server prints a QR code; scan with Expo Go on the device.
@@ -63,8 +63,8 @@ The dev server prints a QR code; scan with Expo Go on the device.
 To open directly on a simulator:
 
 ```sh
-pnpm --filter @meeting-companion/mobile ios
-pnpm --filter @meeting-companion/mobile android
+pnpm --filter @auris/mobile ios
+pnpm --filter @auris/mobile android
 ```
 
 ## Configuration

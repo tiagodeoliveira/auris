@@ -5,7 +5,7 @@ ships JS-only updates over-the-air to already-built mobile binaries.
 
 | File                | Surface            | Output                                                                       |
 | ------------------- | ------------------ | ---------------------------------------------------------------------------- |
-| `server-image.yml`  | Rust server        | Docker image at `ghcr.io/<owner>/meeting-companion-server`                   |
+| `server-image.yml`  | Rust server        | Docker image at `ghcr.io/<owner>/auris-server`                               |
 | `mac-bundle.yml`    | SwiftUI Mac app    | Unsigned `.app` zip as workflow artifact + Release asset on tag              |
 | `mobile-build.yml`  | Expo iOS + Android | EAS Build (cloud), matrix over `[ios, android]` — artifacts in EAS dashboard |
 | `mobile-update.yml` | Expo JS bundle     | EAS Update — pushed to deployed binaries on next launch                      |
@@ -35,16 +35,16 @@ Configure under **Settings → Secrets and variables → Actions**.
 `secret` = masked in logs, accessed via `${{ secrets.NAME }}`.
 `variable` = visible in logs, accessed via `${{ vars.NAME }}`.
 
-| Name                           | Kind     | Used by               | Purpose                                                                          |
-| ------------------------------ | -------- | --------------------- | -------------------------------------------------------------------------------- |
-| `GITHUB_TOKEN`                 | built-in | server-image.yml      | GHCR push auth. No setup needed.                                                 |
-| `EXPO_TOKEN`                   | secret   | mobile-{build,update} | EAS access token. Generate with `eas account:tokens:create`.                     |
-| `SPARKLE_PRIVATE_KEY`          | secret   | mac-bundle.yml        | EdDSA private key signing OTA update bundles.                                    |
-| `SPARKLE_PUBLIC_KEY`           | variable | mac-bundle.yml        | Matching public key, embedded in Info.plist via envsubst.                        |
-| `MEETING_COMPANION_SERVER_URL` | variable | mac-bundle.yml        | WebSocket endpoint baked into the Mac bundle (`wss://...`).                      |
-| `AUTH0_DOMAIN`                 | variable | mac-bundle.yml        | Auth0 tenant host for the Mac bundle (e.g., `dev-xyz.us.auth0.com`).             |
-| `AUTH0_API_AUDIENCE`           | variable | mac-bundle.yml        | Auth0 API identifier for the Mac bundle (e.g., `https://meeting-companion.api`). |
-| `AUTH0_MAC_CLIENT_ID`          | variable | mac-bundle.yml        | Client ID of the **Native** Auth0 application registered for the Mac.            |
+| Name                  | Kind     | Used by               | Purpose                                                               |
+| --------------------- | -------- | --------------------- | --------------------------------------------------------------------- |
+| `GITHUB_TOKEN`        | built-in | server-image.yml      | GHCR push auth. No setup needed.                                      |
+| `EXPO_TOKEN`          | secret   | mobile-{build,update} | EAS access token. Generate with `eas account:tokens:create`.          |
+| `SPARKLE_PRIVATE_KEY` | secret   | mac-bundle.yml        | EdDSA private key signing OTA update bundles.                         |
+| `SPARKLE_PUBLIC_KEY`  | variable | mac-bundle.yml        | Matching public key, embedded in Info.plist via envsubst.             |
+| `AURIS_SERVER_URL`    | variable | mac-bundle.yml        | WebSocket endpoint baked into the Mac bundle (`wss://...`).           |
+| `AUTH0_DOMAIN`        | variable | mac-bundle.yml        | Auth0 tenant host for the Mac bundle (e.g., `dev-xyz.us.auth0.com`).  |
+| `AUTH0_API_AUDIENCE`  | variable | mac-bundle.yml        | Auth0 API identifier for the Mac bundle (e.g., `https://auris.api`).  |
+| `AUTH0_MAC_CLIENT_ID` | variable | mac-bundle.yml        | Client ID of the **Native** Auth0 application registered for the Mac. |
 
 ### EAS side (mobile only)
 
@@ -65,10 +65,10 @@ Set them once per environment, e.g.:
 
 ```sh
 cd packages/mobile
-eas env:create --scope project --environment production --name EXPO_PUBLIC_SERVER_URL --value 'wss://meeting-companion.example.com:7331' --visibility plaintext
+eas env:create --scope project --environment production --name EXPO_PUBLIC_SERVER_URL --value 'wss://auris.example.com:7331' --visibility plaintext
 eas env:create --scope project --environment production --name EXPO_PUBLIC_AUTH0_DOMAIN --value 'dev-xyz.us.auth0.com' --visibility plaintext
 eas env:create --scope project --environment production --name EXPO_PUBLIC_AUTH0_MOBILE_CLIENT_ID --value '<client_id>' --visibility plaintext
-eas env:create --scope project --environment production --name EXPO_PUBLIC_AUTH0_API_AUDIENCE --value 'https://meeting-companion.api' --visibility plaintext
+eas env:create --scope project --environment production --name EXPO_PUBLIC_AUTH0_API_AUDIENCE --value 'https://auris.api' --visibility plaintext
 ```
 
 For **local dev**, put the same values in `packages/mobile/.env.local`
@@ -173,7 +173,7 @@ Apple Developer enrollment. Real-device builds (`preview` or
 
 1. **GHCR**
    - First push of `server-image.yml` creates the package as public.
-     Flip to **private** under **Packages → meeting-companion-server
+     Flip to **private** under **Packages → auris-server
      → Package settings**.
 
 2. **EAS / mobile-build.yml**

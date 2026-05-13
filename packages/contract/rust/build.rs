@@ -1,6 +1,6 @@
 // Generates Rust types from the .proto sources at compile time.
-// Output lands in $OUT_DIR/meeting_companion.v1.rs and is `include!`'d
-// from src/lib.rs — no committed generated code in the Rust tree.
+// Output lands in $OUT_DIR/auris.v1.rs and is `include!`'d from
+// src/lib.rs — no committed generated code in the Rust tree.
 //
 // Requires `protoc` available on PATH at build time. CI installs it
 // via `apt-get install -y protobuf-compiler` on Linux runners; locally
@@ -15,9 +15,9 @@ fn main() {
         .join("proto");
 
     let protos = [
-        proto_root.join("meeting_companion/v1/common.proto"),
-        proto_root.join("meeting_companion/v1/intents.proto"),
-        proto_root.join("meeting_companion/v1/events.proto"),
+        proto_root.join("auris/v1/common.proto"),
+        proto_root.join("auris/v1/intents.proto"),
+        proto_root.join("auris/v1/events.proto"),
     ];
 
     for p in &protos {
@@ -33,7 +33,7 @@ fn main() {
     // who only care about prost don't pay.
     if cfg!(feature = "serde") {
         config.type_attribute(
-            ".meeting_companion.v1",
+            ".auris.v1",
             "#[derive(::serde::Serialize, ::serde::Deserialize)]\
              #[serde(rename_all = \"snake_case\")]",
         );

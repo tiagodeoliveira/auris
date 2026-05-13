@@ -1,4 +1,4 @@
-// Server-mediated STT client. Connects to the meeting-companion
+// Server-mediated STT client. Connects to the auris
 // server's `/stt` WebSocket; the server holds the upstream provider's
 // API key and can swap providers without a client redeploy.
 //

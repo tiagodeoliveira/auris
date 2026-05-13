@@ -8,8 +8,8 @@
 //! ground-truth speech rather than progressively-rephrased derivatives.
 //!
 //! All HTTP calls are fire-and-forget: failure logs a warning but does not
-//! block the meeting flow. If `MEETING_COMPANION_MNEMO_URL` or
-//! `MEETING_COMPANION_MNEMO_API_KEY` is unset, the integration is silently
+//! block the meeting flow. If `AURIS_MNEMO_URL` or
+//! `AURIS_MNEMO_API_KEY` is unset, the integration is silently
 //! disabled (good for dev and tests).
 
 pub mod client;

@@ -44,11 +44,11 @@ pub async fn spawn_test_server_with_token(_token: &str) -> TestServer {
     // `dev|local` user. Removes the JWT validation path from the
     // critical path of these integration tests; the auth-on path is
     // exercised separately in the auth-focused unit tests.
-    std::env::set_var("MEETING_COMPANION_AUTH_DISABLED", "1");
+    std::env::set_var("AURIS_AUTH_DISABLED", "1");
     // Disable LLM extraction in tests by default. The actual extract path
     // never fires from spawn_extraction; the LlmClient is constructed only
     // because the run_server signature requires one.
-    std::env::set_var("MEETING_COMPANION_LLM_DISABLED", "1");
+    std::env::set_var("AURIS_LLM_DISABLED", "1");
     // Prevent the AWS credential chain from blocking on IMDS / SSO if the
     // dev machine has no real credentials configured.
     if std::env::var("AWS_ACCESS_KEY_ID").is_err() {
@@ -60,22 +60,21 @@ pub async fn spawn_test_server_with_token(_token: &str) -> TestServer {
     // any previous test that left a meeting active (ended_at IS NULL)
     // would be resurrected on the next test's boot, polluting state.
     // Production servers always set this off (default).
-    std::env::set_var("MEETING_COMPANION_SKIP_BOOT_RECOVERY", "1");
+    std::env::set_var("AURIS_SKIP_BOOT_RECOVERY", "1");
 
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
     let addr = listener.local_addr().expect("addr");
     let (tx, rx) = oneshot::channel();
 
     let llm = std::sync::Arc::new(
-        meeting_companion_server::llm::LlmClient::from_env()
+        auris_server::llm::LlmClient::from_env()
             .await
             .expect("LLM client init in tests"),
     );
 
-    let auth = meeting_companion_server::ws::AuthMode::Disabled;
+    let auth = auris_server::ws::AuthMode::Disabled;
     tokio::spawn(async move {
-        let _ =
-            meeting_companion_server::ws::run_server_with_listener(listener, auth, llm, rx).await;
+        let _ = auris_server::ws::run_server_with_listener(listener, auth, llm, rx).await;
     });
     TestServer {
         addr,
@@ -113,7 +112,7 @@ pub fn ws_url(addr: SocketAddr, token: &str) -> Request {
 }
 
 pub async fn spawn_test_server_fast_heartbeat() -> TestServer {
-    std::env::set_var("MEETING_COMPANION_HEARTBEAT_MS", "300");
+    std::env::set_var("AURIS_HEARTBEAT_MS", "300");
     let s = spawn_test_server().await;
     s
 }

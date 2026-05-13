@@ -1,4 +1,4 @@
-# Meeting Companion — Forward Plan
+# Auris — Forward Plan
 
 What's next, in order of priority. Past phases are captured in
 git history and `docs/adr/`. The current shape of the system lives in

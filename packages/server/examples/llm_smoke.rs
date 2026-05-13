@@ -1,8 +1,8 @@
 //! Manual smoke for the rig LLM client.
 //! Usage:
-//!   cargo run -p meeting-companion-server --example llm_smoke -- "your description"
+//!   cargo run -p auris-server --example llm_smoke -- "your description"
 
-use meeting_companion_server::llm::LlmClient;
+use auris_server::llm::LlmClient;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {

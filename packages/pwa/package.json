@@ -1,5 +1,5 @@
 {
-  "name": "@meeting-companion/pwa",
+  "name": "@auris/pwa",
   "private": true,
   "version": "0.1.0",
   "type": "module",
@@ -8,7 +8,7 @@
     "dev:sim": "concurrently -n vite,sim -c blue,green \"vite\" \"wait-on http://localhost:5173 && evenhub-simulator http://localhost:5173 --automation-port 9898\"",
     "dev:qr": "evenhub qr --url http://$(ipconfig getifaddr en0):5173",
     "build": "vite build",
-    "pack": "tsx scripts/sync-whitelist.ts && evenhub pack app.json dist -o meeting-companion.ehpk",
+    "pack": "tsx scripts/sync-whitelist.ts && evenhub pack app.json dist -o auris.ehpk",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",

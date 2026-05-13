@@ -1,5 +1,5 @@
 {
-  "name": "@meeting-companion/mobile",
+  "name": "@auris/mobile",
   "private": true,
   "version": "0.1.0",
   "main": "expo-router/entry",

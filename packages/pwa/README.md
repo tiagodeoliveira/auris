@@ -1,4 +1,4 @@
-# @meeting-companion/pwa
+# @auris/pwa
 
 TypeScript Progressive Web App that runs inside the EvenHub Flutter
 WebView. Mirrors the server's meeting state, drives the G2 glasses
@@ -12,23 +12,23 @@ Design system + interaction patterns: [`docs/UX.md`](../../docs/UX.md).
 ## Run
 
 ```bash
-pnpm -F @meeting-companion/pwa dev          # vite dev server only
-pnpm -F @meeting-companion/pwa dev:sim      # vite + EvenHub simulator
-pnpm -F @meeting-companion/pwa dev:qr       # QR code for real glasses sideload
+pnpm -F @auris/pwa dev          # vite dev server only
+pnpm -F @auris/pwa dev:sim      # vite + EvenHub simulator
+pnpm -F @auris/pwa dev:qr       # QR code for real glasses sideload
 ```
 
 ## Test
 
 ```bash
-pnpm -F @meeting-companion/pwa test         # unit tests + typecheck
-pnpm -F @meeting-companion/pwa test:integration  # simulator HTTP tests
+pnpm -F @auris/pwa test         # unit tests + typecheck
+pnpm -F @auris/pwa test:integration  # simulator HTTP tests
 ```
 
 ## Pack for distribution
 
 ```bash
-pnpm -F @meeting-companion/pwa build
-pnpm -F @meeting-companion/pwa pack         # → meeting-companion.ehpk
+pnpm -F @auris/pwa build
+pnpm -F @auris/pwa pack         # → auris.ehpk
 ```
 
 ## Configuration
@@ -48,7 +48,7 @@ the WS auto-connects with the JWT on the query string.
 
 ## Manual hardware checklist (G2 sideload)
 
-1. Sideload to G2: `pnpm -F @meeting-companion/pwa dev:qr`, scan QR in
+1. Sideload to G2: `pnpm -F @auris/pwa dev:qr`, scan QR in
    the Even Realities companion app.
 2. Sign in with Auth0 on first launch.
 3. Verify the idle "NEW MEETING" surface renders.

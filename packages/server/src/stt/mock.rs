@@ -1,5 +1,5 @@
 //! Mock STT backend — emits canned transcript chunks at a fixed cadence.
-//! Enabled via `MEETING_COMPANION_STT_PROVIDER=mock`.
+//! Enabled via `AURIS_STT_PROVIDER=mock`.
 
 use crate::stt::TranscriptChunk;
 use std::time::Duration;
@@ -23,7 +23,7 @@ pub struct MockStt {
 
 impl MockStt {
     pub fn from_env() -> Self {
-        let interval_ms: u64 = std::env::var("MEETING_COMPANION_STT_MOCK_INTERVAL_MS")
+        let interval_ms: u64 = std::env::var("AURIS_STT_MOCK_INTERVAL_MS")
             .ok()
             .and_then(|s| s.parse().ok())
             .unwrap_or(3000);

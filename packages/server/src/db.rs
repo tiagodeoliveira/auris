@@ -4,7 +4,7 @@
 //! at the repo root brings up a local Postgres on `5432` matching the
 //! default in `.env.example`.
 //!
-//! `<DATA_DIR>` (env var `MEETING_COMPANION_DATA_DIR`, default `./data`)
+//! `<DATA_DIR>` (env var `AURIS_DATA_DIR`, default `./data`)
 //! is still used for blob storage — transcript JSONL, moment screenshots
 //! — but no longer hosts the relational store. The two surfaces are
 //! independent so the server can scale horizontally with Postgres in
@@ -28,7 +28,7 @@ use tracing::info;
 /// it doesn't exist yet. Hosts `blobs/` for transcript JSONL and
 /// moment screenshots; the relational store lives in Postgres.
 pub fn data_dir() -> Result<PathBuf> {
-    let raw = crate::env::var_or("MEETING_COMPANION_DATA_DIR", "./data");
+    let raw = crate::env::var_or("AURIS_DATA_DIR", "./data");
     let expanded = if let Some(stripped) = raw.strip_prefix("~/") {
         let home = std::env::var("HOME").context("HOME not set; cannot expand ~")?;
         PathBuf::from(home).join(stripped)
@@ -44,8 +44,8 @@ pub fn data_dir() -> Result<PathBuf> {
 /// migrations. Idempotent on already-migrated databases.
 pub async fn open_pool() -> Result<PgPool> {
     let url = std::env::var("DATABASE_URL").context(
-        "DATABASE_URL is required (e.g. postgres://meeting_companion:dev@localhost:5432/meeting_companion). \
-         Run `docker compose up -d postgres` from the repo root for a local instance."
+        "DATABASE_URL is required (e.g. postgres://auris:dev@localhost:5432/auris). \
+         Run `docker compose up -d postgres` from the repo root for a local instance.",
     )?;
     let pool = open_pool_at(&url).await?;
     info!("postgres ready");

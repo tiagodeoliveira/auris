@@ -1,4 +1,4 @@
-# Reverse proxy in front of the meeting-companion server.
+# Reverse proxy in front of the auris server.
 #
 # TLS is terminated here using a Cloudflare Origin Certificate. The
 # Origin Cert is signed by Cloudflare's internal CA and is therefore

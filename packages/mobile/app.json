@@ -1,15 +1,21 @@
 {
   "expo": {
-    "name": "Meeting Companion",
-    "slug": "meeting-companion",
+    "name": "Auris",
+    "slug": "auris",
     "version": "0.1.0",
     "orientation": "portrait",
-    "scheme": "meetingcompanion",
+    "scheme": "auris",
     "userInterfaceStyle": "automatic",
+    "icon": "./assets/icon.png",
+    "splash": {
+      "image": "./assets/splash.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#f4f1ec"
+    },
     "assetBundlePatterns": ["**/*"],
     "ios": {
       "supportsTablet": false,
-      "bundleIdentifier": "sh.tiago.meetingcompanion",
+      "bundleIdentifier": "sh.tiago.auris",
       "infoPlist": {
         "NSAppTransportSecurity": {
           "NSAllowsArbitraryLoads": true
@@ -18,7 +24,14 @@
       }
     },
     "android": {
-      "package": "sh.tiago.meetingcompanion"
+      "package": "sh.tiago.auris",
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#d97757"
+      }
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
     },
     "plugins": ["expo-router", "expo-secure-store"],
     "experiments": {

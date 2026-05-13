@@ -1,5 +1,5 @@
 //! REST client for the server's `/meetings` endpoints. Mirror of
-//! `packages/mac/Sources/MeetingCompanion/Net/MeetingsAPI.swift`.
+//! `packages/mac/Sources/Auris/Net/MeetingsAPI.swift`.
 //!
 //! Convention: API URL = WS URL with scheme upgraded (`ws→http`,
 //! `wss→https`) and port bumped by +1, matching the server's

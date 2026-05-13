@@ -105,7 +105,7 @@ async fn process_one(
     llm: &Arc<LlmClient>,
     req: &ArtifactCreated,
 ) -> anyhow::Result<()> {
-    if crate::env::flag("MEETING_COMPANION_LLM_DISABLED") {
+    if crate::env::flag("AURIS_LLM_DISABLED") {
         debug!(artifact_id = %req.artifact_id, "LLM disabled; skipping artifact summary");
         return Ok(());
     }

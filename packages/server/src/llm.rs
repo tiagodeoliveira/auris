@@ -32,7 +32,7 @@ pub const DEFAULT_BEDROCK_MODEL_ID: &str = "us.anthropic.claude-sonnet-4-7-20251
 // gpt-4o is materially better than gpt-4.1-mini at multi-tool
 // reasoning (the agent loop's core need); gpt-4.1-mini struggled
 // to follow the dedup + mode-discrimination rules. Override with
-// `MEETING_COMPANION_LLM_MODEL_ID` if cost-sensitive.
+// `AURIS_LLM_MODEL_ID` if cost-sensitive.
 pub const DEFAULT_OPENAI_MODEL_ID: &str = "gpt-4o";
 // Opus 4.7 has a 1M-token context window at standard pricing with
 // no long-context premium and no beta header required (per
@@ -306,28 +306,26 @@ impl LlmClient {
 
     /// Construct a `LlmClient` from environment variables.
     ///
-    /// Reads `MEETING_COMPANION_LLM_PROVIDER` (default: `bedrock`) and
+    /// Reads `AURIS_LLM_PROVIDER` (default: `bedrock`) and
     /// provider-specific configuration variables.
     ///
     /// Does **not** make an API call. Credential validation happens at first
     /// `extract` invocation.
     pub async fn from_env() -> Result<Self, LlmInitError> {
         // All env reads go through `crate::env::var_or` so that a
-        // docker-compose-passed empty string (`MEETING_COMPANION_*=""`)
+        // docker-compose-passed empty string (`AURIS_*=""`)
         // is treated as "unset" rather than "explicit empty". The
         // previous `std::env::var(...).unwrap_or_else(...)` shape
         // accepted empty values straight into the HTTP request,
         // which Anthropic rejected with
         // "model: String should have at least 1 character".
-        let provider_str = crate::env::var_or("MEETING_COMPANION_LLM_PROVIDER", "bedrock");
+        let provider_str = crate::env::var_or("AURIS_LLM_PROVIDER", "bedrock");
         let provider = parse_provider(&provider_str)?;
 
         let (extractor, backend) = match provider {
             Provider::Bedrock => {
-                let region =
-                    crate::env::var_or("MEETING_COMPANION_LLM_REGION", DEFAULT_BEDROCK_REGION);
-                let model_id =
-                    crate::env::var_or("MEETING_COMPANION_LLM_MODEL_ID", DEFAULT_BEDROCK_MODEL_ID);
+                let region = crate::env::var_or("AURIS_LLM_REGION", DEFAULT_BEDROCK_REGION);
+                let model_id = crate::env::var_or("AURIS_LLM_MODEL_ID", DEFAULT_BEDROCK_MODEL_ID);
 
                 let bedrock_client: BedrockClient = rig_bedrock::client::ClientBuilder::default()
                     .region(&region)
@@ -351,12 +349,10 @@ impl LlmClient {
             Provider::OpenAI => {
                 let api_key = crate::env::var_opt("OPENAI_API_KEY").ok_or_else(|| {
                     LlmInitError::MissingProviderCredentials(
-                        "OPENAI_API_KEY is required when MEETING_COMPANION_LLM_PROVIDER=openai"
-                            .to_string(),
+                        "OPENAI_API_KEY is required when AURIS_LLM_PROVIDER=openai".to_string(),
                     )
                 })?;
-                let model_id =
-                    crate::env::var_or("MEETING_COMPANION_LLM_MODEL_ID", DEFAULT_OPENAI_MODEL_ID);
+                let model_id = crate::env::var_or("AURIS_LLM_MODEL_ID", DEFAULT_OPENAI_MODEL_ID);
 
                 let openai_client = rig::providers::openai::Client::new(&api_key)
                     .map_err(|e| LlmInitError::Provider(e.to_string()))?;
@@ -378,14 +374,11 @@ impl LlmClient {
             Provider::Anthropic => {
                 let api_key = crate::env::var_opt("ANTHROPIC_API_KEY").ok_or_else(|| {
                     LlmInitError::MissingProviderCredentials(
-                        "ANTHROPIC_API_KEY is required when MEETING_COMPANION_LLM_PROVIDER=anthropic"
+                        "ANTHROPIC_API_KEY is required when AURIS_LLM_PROVIDER=anthropic"
                             .to_string(),
                     )
                 })?;
-                let model_id = crate::env::var_or(
-                    "MEETING_COMPANION_LLM_MODEL_ID",
-                    DEFAULT_ANTHROPIC_MODEL_ID,
-                );
+                let model_id = crate::env::var_or("AURIS_LLM_MODEL_ID", DEFAULT_ANTHROPIC_MODEL_ID);
 
                 let anthropic_client = rig::providers::anthropic::Client::new(&api_key)
                     .map_err(|e| LlmInitError::Provider(e.to_string()))?;

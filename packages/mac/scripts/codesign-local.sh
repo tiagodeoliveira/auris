@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Sign a downloaded MeetingCompanion.app with your local Developer ID
+# Sign a downloaded Auris.app with your local Developer ID
 # certificate so macOS Gatekeeper stops nagging on every launch.
 #
 # Usage:
-#   ./packages/mac/scripts/codesign-local.sh ~/Downloads/MeetingCompanion.app
+#   ./packages/mac/scripts/codesign-local.sh ~/Downloads/Auris.app
 #
 # Prerequisites:
 #   - A "Developer ID Application: <your name>" cert in your login keychain.
@@ -20,7 +20,7 @@ set -euo pipefail
 
 APP_PATH="${1:-}"
 if [[ -z "$APP_PATH" || ! -d "$APP_PATH" ]]; then
-  echo "usage: $0 <path-to-MeetingCompanion.app>" >&2
+  echo "usage: $0 <path-to-Auris.app>" >&2
   exit 1
 fi
 

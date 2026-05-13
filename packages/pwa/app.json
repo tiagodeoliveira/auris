@@ -1,7 +1,7 @@
 {
-  "package_id": "com.tiago.meetingcompanion",
+  "package_id": "com.tiago.auris",
   "edition": "202601",
-  "name": "Meeting Companion",
+  "name": "Auris",
   "version": "0.1.0",
   "min_app_version": "2.0.0",
   "min_sdk_version": "0.0.10",
@@ -13,7 +13,7 @@
     },
     {
       "name": "network",
-      "desc": "Connect to the Meeting Companion server on the user's local network for real-time meeting state.",
+      "desc": "Connect to the Auris server on the user's local network for real-time meeting state.",
       "whitelist": ["http://localhost:7331"]
     }
   ],

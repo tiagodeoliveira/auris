@@ -20,7 +20,7 @@ async fn extraction_no_description() {
         let _ = next_event(&mut ws, T).await;
     }
     // After 2.5s, no extraction event should arrive (description was empty,
-    // and the LLM is disabled in tests anyway via MEETING_COMPANION_LLM_DISABLED).
+    // and the LLM is disabled in tests anyway via AURIS_LLM_DISABLED).
     let res = tokio::time::timeout(Duration::from_millis(2500), async {
         loop {
             let evt = next_event(&mut ws, Duration::from_secs(10)).await;

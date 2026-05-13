@@ -30,11 +30,11 @@
 
 | Action | Path | Responsibility |
 |---|---|---|
-| Modify | `Sources/MeetingCompanion/Net/Protocol.swift` | Extend `ChatIntent` with `attachmentIds` |
-| Modify | `Sources/MeetingCompanion/Net/MeetingsAPI.swift` | Add `uploadChatAttachment(meetingId:png:)` |
-| Modify | `Sources/MeetingCompanion/AppModel.swift` | Add `ChatAttachmentDraft`, `pendingChatAttachments`, capture/upload/remove/send methods, idle-state cleanup |
-| Modify | `Sources/MeetingCompanion/MeetingOverlayView.swift` | Add `ChatAttachmentStrip` + `ChatAttachmentChip` views; slot camera button into chat compose row |
-| Create | `Tests/MeetingCompanionTests/AppModelChatAttachmentTests.swift` | Unit tests for AppModel state machine |
+| Modify | `Sources/Auris/Net/Protocol.swift` | Extend `ChatIntent` with `attachmentIds` |
+| Modify | `Sources/Auris/Net/MeetingsAPI.swift` | Add `uploadChatAttachment(meetingId:png:)` |
+| Modify | `Sources/Auris/AppModel.swift` | Add `ChatAttachmentDraft`, `pendingChatAttachments`, capture/upload/remove/send methods, idle-state cleanup |
+| Modify | `Sources/Auris/MeetingOverlayView.swift` | Add `ChatAttachmentStrip` + `ChatAttachmentChip` views; slot camera button into chat compose row |
+| Create | `Tests/AurisTests/AppModelChatAttachmentTests.swift` | Unit tests for AppModel state machine |
 
 ---
 
@@ -145,7 +145,7 @@ Create `packages/server/tests/chat_attachments_db.rs`. Pattern matches the exist
 ```rust
 //! DB-layer tests for chat_attachments table.
 
-use meeting_companion_server::db;
+use auris_server::db;
 
 async fn seed_meeting(user_id: &str) -> String {
     let pool = db::open_pool().await.expect("open pool");
@@ -397,7 +397,7 @@ Create `packages/server/tests/chat_attachments.rs`. **Test harness notes** (veri
 mod common;
 use common::spawn_test_server;
 
-use meeting_companion_server::db;
+use auris_server::db;
 
 // Each test uses ulid-based ids to avoid colliding with other tests
 // that share the same Postgres pool. The auth-disabled harness pins
@@ -544,7 +544,7 @@ async fn rejects_cross_tenant_meeting() {
 }
 ```
 
-> The `rejects_unauthenticated` HTTP case from the spec is **not** representable in this test harness — `MEETING_COMPANION_AUTH_DISABLED=1` is set unconditionally in `spawn_test_server_with_token`, so every request maps to `dev|local`. Coverage for the unauthenticated path stays as a manual verification step (or a new auth-on harness in a follow-up). Document this gap in the test file's module docstring.
+> The `rejects_unauthenticated` HTTP case from the spec is **not** representable in this test harness — `AURIS_AUTH_DISABLED=1` is set unconditionally in `spawn_test_server_with_token`, so every request maps to `dev|local`. Coverage for the unauthenticated path stays as a manual verification step (or a new auth-on harness in a follow-up). Document this gap in the test file's module docstring.
 
 - [ ] **Step 5: Run integration tests; expect pass**
 
@@ -1157,7 +1157,7 @@ async fn chat_with_one_attachment_happy() {
 
     // No error event should arrive within 2s. (We don't assert on
     // the agent's text reply — that requires a real LLM; the harness
-    // has MEETING_COMPANION_LLM_DISABLED=1.)
+    // has AURIS_LLM_DISABLED=1.)
     let evt = tokio::time::timeout(
         Duration::from_secs(2),
         common::next_event(&mut ws, Duration::from_secs(5)),
@@ -1317,12 +1317,12 @@ EOF
 ## Task 6: Mac Protocol + MeetingsAPI
 
 **Files:**
-- Modify: `packages/mac/Sources/MeetingCompanion/Net/Protocol.swift` (extend `ChatIntent`)
-- Modify: `packages/mac/Sources/MeetingCompanion/Net/MeetingsAPI.swift` (add `uploadChatAttachment`)
+- Modify: `packages/mac/Sources/Auris/Net/Protocol.swift` (extend `ChatIntent`)
+- Modify: `packages/mac/Sources/Auris/Net/MeetingsAPI.swift` (add `uploadChatAttachment`)
 
 - [ ] **Step 1: Extend `ChatIntent`**
 
-Replace the current `ChatIntent` (around line 189 of `packages/mac/Sources/MeetingCompanion/Net/Protocol.swift`):
+Replace the current `ChatIntent` (around line 189 of `packages/mac/Sources/Auris/Net/Protocol.swift`):
 
 ```swift
 /// User-typed question to the agent during an active meeting. The
@@ -1352,7 +1352,7 @@ struct ChatIntent: Encodable {
 
 - [ ] **Step 2: Add `uploadChatAttachment` to `MeetingsAPI`**
 
-Add right after `uploadMomentScreenshot` in `packages/mac/Sources/MeetingCompanion/Net/MeetingsAPI.swift` (around line 245). Mirror the existing pattern exactly — `URLRequest` direct construction, `URLSession.shared.upload(for:from:)`, `MeetingsAPIError` enum:
+Add right after `uploadMomentScreenshot` in `packages/mac/Sources/Auris/Net/MeetingsAPI.swift` (around line 245). Mirror the existing pattern exactly — `URLRequest` direct construction, `URLSession.shared.upload(for:from:)`, `MeetingsAPIError` enum:
 
 ```swift
 /// POST raw PNG bytes to `/meetings/<id>/chat_attachments` and return
@@ -1402,8 +1402,8 @@ Expected: clean build.
 - [ ] **Step 4: Commit**
 
 ```bash
-git add packages/mac/Sources/MeetingCompanion/Net/Protocol.swift \
-        packages/mac/Sources/MeetingCompanion/Net/MeetingsAPI.swift
+git add packages/mac/Sources/Auris/Net/Protocol.swift \
+        packages/mac/Sources/Auris/Net/MeetingsAPI.swift
 git commit -m "$(cat <<'EOF'
 feat(mac): ChatIntent.attachmentIds + uploadChatAttachment API
 
@@ -1419,12 +1419,12 @@ EOF
 ## Task 7: Mac AppModel — capture, upload, queue, send
 
 **Files:**
-- Modify: `packages/mac/Sources/MeetingCompanion/AppModel.swift`
-- Create: `packages/mac/Tests/MeetingCompanionTests/AppModelChatAttachmentTests.swift`
+- Modify: `packages/mac/Sources/Auris/AppModel.swift`
+- Create: `packages/mac/Tests/AurisTests/AppModelChatAttachmentTests.swift`
 
 - [ ] **Step 1: Add `ChatAttachmentDraft` + state machine**
 
-Add at the top of `packages/mac/Sources/MeetingCompanion/AppModel.swift` (after the existing top-level type definitions, before the `AppModel` class):
+Add at the top of `packages/mac/Sources/Auris/AppModel.swift` (after the existing top-level type definitions, before the `AppModel` class):
 
 ```swift
 /// Upload state for a single staged chat attachment.
@@ -1461,7 +1461,7 @@ struct ChatAttachmentDraft: Identifiable, Equatable {
 
 - [ ] **Step 2: Add `AppModel` state + the methods**
 
-Inside the `AppModel` class in `packages/mac/Sources/MeetingCompanion/AppModel.swift`, add (look for the existing chat-related properties / methods around `sendChat` at line 787 — keep the additions near them for cohesion):
+Inside the `AppModel` class in `packages/mac/Sources/Auris/AppModel.swift`, add (look for the existing chat-related properties / methods around `sendChat` at line 787 — keep the additions near them for cohesion):
 
 ```swift
 // MARK: - Chat attachments
@@ -1560,11 +1560,11 @@ var canSendChatNow: Bool {
 }
 ```
 
-`currentMeetingId` is the existing accessor on `AppModel` that the moments code uses to attach a moment to the right meeting (`grep -n "currentMeetingId\|activeMeetingId" packages/mac/Sources/MeetingCompanion/AppModel.swift`). If the field is named differently, use the correct one.
+`currentMeetingId` is the existing accessor on `AppModel` that the moments code uses to attach a moment to the right meeting (`grep -n "currentMeetingId\|activeMeetingId" packages/mac/Sources/Auris/AppModel.swift`). If the field is named differently, use the correct one.
 
 - [ ] **Step 3: Extend `sendChat` to drain attachments and ship the typed intent**
 
-Find `sendChat` at line 787 in `packages/mac/Sources/MeetingCompanion/AppModel.swift`. Replace its body:
+Find `sendChat` at line 787 in `packages/mac/Sources/Auris/AppModel.swift`. Replace its body:
 
 ```swift
 func sendChat(_ text: String) async {
@@ -1617,11 +1617,11 @@ to that same reset point.
 
 - [ ] **Step 5: Write Mac unit tests**
 
-Create `packages/mac/Tests/MeetingCompanionTests/AppModelChatAttachmentTests.swift`:
+Create `packages/mac/Tests/AurisTests/AppModelChatAttachmentTests.swift`:
 
 ```swift
 import XCTest
-@testable import MeetingCompanion
+@testable import Auris
 
 @MainActor
 final class AppModelChatAttachmentTests: XCTestCase {
@@ -1699,8 +1699,8 @@ Expected: the four new tests pass; no existing tests regress.
 - [ ] **Step 7: Commit**
 
 ```bash
-git add packages/mac/Sources/MeetingCompanion/AppModel.swift \
-        packages/mac/Tests/MeetingCompanionTests/AppModelChatAttachmentTests.swift
+git add packages/mac/Sources/Auris/AppModel.swift \
+        packages/mac/Tests/AurisTests/AppModelChatAttachmentTests.swift
 git commit -m "$(cat <<'EOF'
 feat(mac): AppModel staging + send-time drain of chat attachments
 
@@ -1718,11 +1718,11 @@ EOF
 ## Task 8: Mac UI — chip strip + camera button
 
 **Files:**
-- Modify: `packages/mac/Sources/MeetingCompanion/MeetingOverlayView.swift`
+- Modify: `packages/mac/Sources/Auris/MeetingOverlayView.swift`
 
 - [ ] **Step 1: Add `ChatAttachmentStrip` and `ChatAttachmentChip` views**
 
-Append to `packages/mac/Sources/MeetingCompanion/MeetingOverlayView.swift` (near where other compose-related views live):
+Append to `packages/mac/Sources/Auris/MeetingOverlayView.swift` (near where other compose-related views live):
 
 ```swift
 struct ChatAttachmentStrip: View {
@@ -1811,7 +1811,7 @@ struct ChatAttachmentChip: View {
 
 - [ ] **Step 2: Slot the strip and camera button into the chat compose region**
 
-In `packages/mac/Sources/MeetingCompanion/MeetingOverlayView.swift`, find where the chat input is rendered (search for `TextField` or `sendChat` to locate it — there's only one chat input in the codebase). Wrap the existing input row in a `VStack` so the strip sits above it. Add the camera button just before the existing send button inside the input row:
+In `packages/mac/Sources/Auris/MeetingOverlayView.swift`, find where the chat input is rendered (search for `TextField` or `sendChat` to locate it — there's only one chat input in the codebase). Wrap the existing input row in a `VStack` so the strip sits above it. Add the camera button just before the existing send button inside the input row:
 
 ```swift
 VStack(spacing: 4) {
@@ -1886,7 +1886,7 @@ In the running app:
 - [ ] **Step 4: Commit**
 
 ```bash
-git add packages/mac/Sources/MeetingCompanion/MeetingOverlayView.swift
+git add packages/mac/Sources/Auris/MeetingOverlayView.swift
 git commit -m "$(cat <<'EOF'
 feat(mac): chat compose strip + camera button for screenshot attachments
 

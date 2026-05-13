@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-  Info.plist for the Meeting Companion menu-bar app. Used by the
+  Info.plist for the Auris menu-bar app. Used by the
   CI bundling step (.github/workflows/mac-bundle.yml) to wrap the
   SwiftPM-built executable into a `.app` structure.
 
@@ -21,19 +21,22 @@
     <string>en</string>
 
     <key>CFBundleExecutable</key>
-    <string>MeetingCompanion</string>
+    <string>Auris</string>
 
     <key>CFBundleIdentifier</key>
-    <string>sh.tiago.meetingcompanion</string>
+    <string>sh.tiago.auris</string>
 
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
 
     <key>CFBundleName</key>
-    <string>MeetingCompanion</string>
+    <string>Auris</string>
 
     <key>CFBundleDisplayName</key>
-    <string>Meeting Companion</string>
+    <string>Auris</string>
+
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
 
     <key>CFBundlePackageType</key>
     <string>APPL</string>
@@ -92,8 +95,8 @@
          into AppSettings / Auth0Client (i.e. `swift run` keeps
          working without any env config). See
          .github/workflows/README.md for the full variable surface. -->
-    <key>MeetingCompanionServerURL</key>
-    <string>${MEETING_COMPANION_SERVER_URL}</string>
+    <key>AurisServerURL</key>
+    <string>${AURIS_SERVER_URL}</string>
 
     <key>Auth0Domain</key>
     <string>${AUTH0_DOMAIN}</string>
@@ -110,7 +113,7 @@
          and offers the user an install/relaunch prompt. CI updates
          the appcast on each tag push (mac-bundle.yml). -->
     <key>SUFeedURL</key>
-    <string>https://github.com/tiagodeoliveira/meeting_companion/releases/latest/download/appcast.xml</string>
+    <string>https://github.com/tiagodeoliveira/auris/releases/latest/download/appcast.xml</string>
 
     <!-- EdDSA public key — paired with the SPARKLE_PRIVATE_KEY GH
          secret. Generated once with Sparkle's `generate_keys` tool;

@@ -35,7 +35,7 @@ sparkle_pub.txt
 
 # Server data dir (sqlite + future blobs). Default location used by
 # `just server-run`; production / docker mount their own path via
-# MEETING_COMPANION_DATA_DIR.
+# AURIS_DATA_DIR.
 /data
 **/data/server.db
 **/data/server.db-journal

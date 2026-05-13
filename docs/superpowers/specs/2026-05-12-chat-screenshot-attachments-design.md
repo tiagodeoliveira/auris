@@ -208,7 +208,7 @@ On success it appends a draft in `.uploading` state and fires the upload Task. O
 
 ### 7.4 Protocol additions
 
-`packages/mac/Sources/MeetingCompanion/Net/Protocol.swift`:
+`packages/mac/Sources/Auris/Net/Protocol.swift`:
 
 ```swift
 struct ChatIntent: Encodable {
