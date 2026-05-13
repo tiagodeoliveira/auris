@@ -96,6 +96,17 @@ mac-run:
     AUTH0_API_AUDIENCE=https://auris.tiago.tools \
     swift run
 
+# Regenerate the mobile native dirs (`packages/mobile/ios/` and
+# `packages/mobile/android/`) from `app.json`. Both dirs are
+# gitignored — purely Expo prebuild output, safe to wipe.
+#
+# Run this after any change to `app.json` that affects native config
+# (name, slug, bundleIdentifier, icon, splash, scheme, etc.) so the
+# installed dev client picks up the new metadata. Without it the sim
+# / emulator keeps showing the previously-baked Info.plist values.
+mobile-prebuild:
+    cd packages/mobile && pnpm exec expo prebuild --clean
+
 # Build + launch the Expo dev client on the iOS Simulator.
 #
 # Uses `expo run:ios` (rather than `expo start --ios`) so a fresh
