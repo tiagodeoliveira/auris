@@ -54,6 +54,56 @@ struct SettingsView: View {
     }
 }
 
+// MARK: - Auris brand mark
+
+/// Auris brand mark — two nested ear arcs opening left + a coral
+/// focal-point dot. Stroke colour follows `currentColor` (primary
+/// foreground) so it adapts to light/dark mode automatically.
+///
+/// Pair with a `Text("auris")` in a horizontal stack for the full
+/// wordmark lockup, or use the mark on its own (it stands alone).
+struct AurisMark: View {
+    /// Outer-arc diameter in points. The whole mark sits in a
+    /// `size × size` square (arc width drives layout).
+    var size: CGFloat = 22
+
+    var body: some View {
+        Canvas { ctx, canvasSize in
+            let c = CGPoint(x: canvasSize.width / 2, y: canvasSize.height / 2)
+            let outerR = canvasSize.width * 0.42
+            let innerR = canvasSize.width * 0.22
+            let strokeW = canvasSize.width * 0.13
+            // Two arcs, both opening to the left (half-circles facing right).
+            for r in [outerR, innerR] {
+                var p = Path()
+                p.addArc(
+                    center: c,
+                    radius: r,
+                    startAngle: .degrees(-90),
+                    endAngle: .degrees(90),
+                    clockwise: false
+                )
+                ctx.stroke(
+                    p,
+                    with: .color(.primary),
+                    style: StrokeStyle(lineWidth: strokeW, lineCap: .round)
+                )
+            }
+            // Coral focal dot, just left of centre.
+            let dotR = canvasSize.width * 0.07
+            let dot = Path(ellipseIn: CGRect(
+                x: c.x - canvasSize.width * 0.18 - dotR,
+                y: c.y - dotR,
+                width: dotR * 2,
+                height: dotR * 2
+            ))
+            ctx.fill(dot, with: .color(SettingsTheme.blue))
+        }
+        .frame(width: size, height: size)
+        .accessibilityHidden(true)
+    }
+}
+
 // MARK: - Account tab
 
 /// Identity surface — Auth0 sign-in / sign-out. The button label is
@@ -68,6 +118,20 @@ private struct AccountTab: View {
 
     var body: some View {
         Form {
+            // Auris brand header — only on the Account tab so it sits
+            // above the user's identity row. The other tabs are pure
+            // utility surfaces and don't need the lockup.
+            Section {
+                HStack(spacing: 10) {
+                    AurisMark(size: 28)
+                    Text("auris")
+                        .font(.system(size: 26, weight: .semibold))
+                        .tracking(-0.5)
+                        .foregroundStyle(.primary)
+                    Spacer()
+                }
+                .padding(.vertical, 4)
+            }
             Section {
                 if let id = model.auth0.identity {
                     HStack(spacing: 12) {
@@ -1487,9 +1551,12 @@ private enum SettingsTheme {
     /// safest mapping.
     static let border = Color.secondary.opacity(0.3)
     /// Brand accent. Kept as an explicit hex (not `Color.accentColor`)
-    /// so the sign-in button reads as Auris-blue regardless of the
-    /// user's system accent setting.
-    static let blue = Color(hex: 0x2563EB)
+    /// so the sign-in button + slider tint always read as Auris coral
+    /// regardless of the user's system accent setting.
+    ///
+    /// Name `.blue` is legacy — kept so existing `SettingsTheme.blue`
+    /// call sites don't have to be touched. The value is coral.
+    static let blue = Color(hex: 0xD97757)
 }
 
 private extension Color {

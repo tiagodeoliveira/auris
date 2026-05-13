@@ -12,10 +12,19 @@
   --text-light: #17212e;
   --text-muted: #6b7b8e;
 
-  --brand-blue: #2563eb;
-  --brand-blue-light: #3b82f6;
-  --brand-blue-soft: #dbeafe;
-  --brand-blue-glow: rgba(37, 99, 235, 0.25);
+  /* Auris brand accent (coral). The `--brand-blue` names below are
+     kept as legacy aliases so the ~44 existing references across this
+     file don't have to be touched — every `var(--brand-blue)` reads
+     coral now. New code should prefer the `--brand-coral` names. */
+  --brand-coral: #d97757;
+  --brand-coral-light: #e58c70;
+  --brand-coral-soft: #fbe7df;
+  --brand-coral-glow: rgba(217, 119, 87, 0.25);
+
+  --brand-blue: var(--brand-coral);
+  --brand-blue-light: var(--brand-coral-light);
+  --brand-blue-soft: var(--brand-coral-soft);
+  --brand-blue-glow: var(--brand-coral-glow);
 
   --moment-amber: #f2b705;
   --moment-amber-soft: #fff5c7;
@@ -321,6 +330,20 @@ button.cta:disabled {
   position: sticky;
   top: 0;
   z-index: 10;
+}
+.top-bar-brand {
+  /* Auris ear-arcs mark. `currentColor` (inherited from
+     top-bar-status's text color) drives the arc stroke; the inner
+     dot stays coral via an inline `fill="var(--brand-coral)"`. */
+  display: inline-flex;
+  align-items: center;
+  color: var(--oil-black);
+  margin-right: 4px;
+}
+.top-bar-brand svg {
+  width: 22px;
+  height: 22px;
+  display: block;
 }
 .top-bar-status {
   /* Borderless inline indicator — the dot + label carry enough

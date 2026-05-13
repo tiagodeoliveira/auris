@@ -1,9 +1,15 @@
 import { router } from "expo-router";
 import { useState } from "react";
-import { Alert, Pressable, SafeAreaView, StyleSheet, Text, View } from "react-native";
+import { Alert, Image, Pressable, SafeAreaView, StyleSheet, Text, View } from "react-native";
 
 import { auth0Configured } from "@/src/config";
 import { useAppStore } from "@/src/store";
+
+// Brand lockup uses the pre-rasterized coral icon (already has the
+// rounded squircle baked in at the SVG level). 80pt is roughly the
+// iPhone home-screen icon size — recognisable without being
+// overbearing on the sign-in screen.
+const auriLogo = require("../assets/icon.png");
 
 export default function LoginScreen() {
   const signIn = useAppStore((s) => s.signIn);
@@ -41,7 +47,8 @@ export default function LoginScreen() {
   return (
     <SafeAreaView style={styles.root}>
       <View style={styles.body}>
-        <Text style={styles.title}>Sign in</Text>
+        <Image source={auriLogo} style={styles.logo} accessibilityLabel="Auris" />
+        <Text style={styles.wordmark}>auris</Text>
         <Text style={styles.hint}>Auth0 universal login opens in the system browser.</Text>
         <Pressable
           style={[styles.button, busy && styles.buttonDisabled]}
@@ -57,15 +64,25 @@ export default function LoginScreen() {
 
 const styles = StyleSheet.create({
   root: { flex: 1 },
-  body: { flex: 1, padding: 16, gap: 12, justifyContent: "center" },
+  body: { flex: 1, padding: 24, gap: 14, justifyContent: "center", alignItems: "center" },
+  logo: { width: 80, height: 80, borderRadius: 18 },
+  wordmark: { fontSize: 32, fontWeight: "600", letterSpacing: -1, marginTop: 4 },
   title: { fontSize: 22, fontWeight: "600", textAlign: "center" },
-  hint: { color: "#647386", fontSize: 14, lineHeight: 20, textAlign: "center" },
+  hint: {
+    color: "#647386",
+    fontSize: 14,
+    lineHeight: 20,
+    textAlign: "center",
+    paddingHorizontal: 8,
+  },
   button: {
-    marginTop: 8,
-    backgroundColor: "#2563eb",
+    marginTop: 12,
+    backgroundColor: "#d97757", // Auris coral
     paddingVertical: 14,
+    paddingHorizontal: 32,
     borderRadius: 10,
     alignItems: "center",
+    alignSelf: "stretch",
   },
   buttonDisabled: { opacity: 0.6 },
   buttonText: { color: "#fff", fontSize: 16, fontWeight: "600" },

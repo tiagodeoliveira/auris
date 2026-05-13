@@ -13,6 +13,15 @@ export function mountTopBar(parent: HTMLElement, store: Store, onSettings: () =>
   bar.className = "top-bar";
   parent.appendChild(bar);
 
+  // Auris brand mark — small ear-arcs icon left of the status pill.
+  // Built via createElementNS so no innerHTML risk and arcs inherit
+  // `currentColor` from the parent.
+  const brand = document.createElement("div");
+  brand.className = "top-bar-brand";
+  brand.setAttribute("aria-label", "Auris");
+  bar.appendChild(brand);
+  brand.appendChild(makeBrandMark());
+
   const status = document.createElement("div");
   status.className = "top-bar-status";
   bar.appendChild(status);
@@ -91,6 +100,37 @@ export function mountTopBar(parent: HTMLElement, store: Store, onSettings: () =>
     b.innerHTML = svgHtml;
     b.addEventListener("click", onClick);
     return b;
+  }
+
+  /// Auris brand mark — two nested ear arcs + coral focal dot.
+  /// Built via createElementNS so the result is a real SVG tree
+  /// (currentColor inheritance works) without resorting to innerHTML.
+  function makeBrandMark(): SVGSVGElement {
+    const NS = "http://www.w3.org/2000/svg";
+    const svg = document.createElementNS(NS, "svg");
+    svg.setAttribute("viewBox", "0 0 44 44");
+    svg.setAttribute("aria-hidden", "true");
+    const outer = document.createElementNS(NS, "path");
+    outer.setAttribute("d", "M 26 8 A 14 14 0 0 0 26 36");
+    outer.setAttribute("fill", "none");
+    outer.setAttribute("stroke", "currentColor");
+    outer.setAttribute("stroke-width", "3");
+    outer.setAttribute("stroke-linecap", "round");
+    svg.appendChild(outer);
+    const inner = document.createElementNS(NS, "path");
+    inner.setAttribute("d", "M 26 14 A 8 8 0 0 0 26 30");
+    inner.setAttribute("fill", "none");
+    inner.setAttribute("stroke", "currentColor");
+    inner.setAttribute("stroke-width", "3");
+    inner.setAttribute("stroke-linecap", "round");
+    svg.appendChild(inner);
+    const dot = document.createElementNS(NS, "circle");
+    dot.setAttribute("cx", "22");
+    dot.setAttribute("cy", "22");
+    dot.setAttribute("r", "2.5");
+    dot.setAttribute("fill", "var(--brand-coral)");
+    svg.appendChild(dot);
+    return svg;
   }
 
   function render() {
