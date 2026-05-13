@@ -221,13 +221,113 @@ pub enum LlmInitError {
 }
 
 /// Errors that can occur during metadata extraction.
+///
+/// Variants intentionally mirror rig's `extractor::ExtractionError`
+/// surface so callers / log sites can distinguish "provider rejected
+/// the call" (quota, auth, rate limit, network — surface to operator)
+/// from "model returned malformed output" (schema drift — retry or
+/// log and move on). The previous flat `Extract(String)` blended
+/// these and produced "Extraction failed: missing field `…`" log
+/// lines for what was actually a billing error.
 #[derive(Debug, Error)]
 pub enum ExtractionError {
     #[error("LLM call exceeded timeout of {0:?}")]
     Timeout(Duration),
 
+    /// rig's `DeserializationError` — model emitted content but it
+    /// didn't satisfy the requested JSON schema. Usually means the
+    /// model produced a natural-language refusal / apology instead of
+    /// structured output. Not retryable at this layer.
+    #[error("LLM output did not match schema: {0}")]
+    Schema(String),
+
+    /// rig's `CompletionError` — the provider call itself failed
+    /// (HTTP error, rate limit, auth, network — but NOT billing /
+    /// quota; those route to [`Self::QuotaExhausted`] via the
+    /// [`looks_like_quota`] predicate). Carries the raw provider
+    /// message so operators can tell networking from auth.
+    #[error("LLM provider error: {0}")]
+    Provider(String),
+
+    /// Provider rejected the call because the account is out of
+    /// credits / over quota / billing-blocked. Distinct from
+    /// `Provider` so downstream can:
+    ///   - Skip retries (retrying a billing failure won't fix it).
+    ///   - Surface a billing-specific UI affordance ("buy credits")
+    ///     instead of a generic "something went wrong."
+    ///   - Page differently in monitoring (billing = self-inflicted,
+    ///     not a provider outage).
+    /// Detected via [`looks_like_quota`] applied to the rig error
+    /// message; see that fn for the keyword strategy.
+    #[error("LLM quota exhausted: {0}")]
+    QuotaExhausted(String),
+
+    /// rig's `NoData` — model accepted the request but didn't emit a
+    /// structured response (didn't call the `submit` tool). Distinct
+    /// from `Schema` (output was emitted but malformed).
+    #[error("LLM returned no data")]
+    NoData,
+
+    /// Local errors in our wrapper that aren't from rig — building
+    /// messages, base64-encoding, etc. Kept as a catch-all so we
+    /// don't have to invent a variant for every bookkeeping failure.
     #[error("Extraction failed: {0}")]
     Extract(String),
+}
+
+/// Map rig's structured extractor error into our [`ExtractionError`].
+///
+/// This is the single funnel through which rig errors enter our
+/// error model — every log site downstream renders whatever variant
+/// and `Display` this function produces. Keep the mapping cheap and
+/// allocation-light; the slow path (formatting for logs) handles
+/// presentation.
+fn classify_rig(e: rig::extractor::ExtractionError) -> ExtractionError {
+    use rig::extractor::ExtractionError as Rig;
+    match e {
+        Rig::NoData => ExtractionError::NoData,
+        Rig::DeserializationError(serde) => ExtractionError::Schema(serde.to_string()),
+        Rig::CompletionError(c) => {
+            let msg = c.to_string();
+            if looks_like_quota(&msg) {
+                ExtractionError::QuotaExhausted(msg)
+            } else {
+                ExtractionError::Provider(msg)
+            }
+        }
+    }
+}
+
+/// Returns true when `msg` (the stringified body of a rig
+/// `CompletionError`) looks like a quota / billing rejection rather
+/// than a transient network or auth issue.
+///
+/// The three providers we support phrase this differently:
+///   - Anthropic:  "Your credit balance is too low to access the
+///                  Anthropic API. Please go to Plans & Billing..."
+///   - OpenAI:     ".....type":"insufficient_quota","code":"insufficient_quota"..."
+///   - Bedrock:    "ServiceQuotaExceededException: ..."
+///                 (NOT ThrottlingException — that's transient and
+///                  should retry; NOT AccessDeniedException — that's
+///                  config, not billing.)
+///
+/// False positives are bad — they'd mask real auth/network issues
+/// behind a billing UI. False negatives are recoverable — operators
+/// still see the raw string in the `Provider` log. Lean
+/// conservative.
+///
+/// Unit tests below capture the intent; flesh out the body to make
+/// them pass.
+fn looks_like_quota(_msg: &str) -> bool {
+    // TODO: implement. ~5–10 lines. Decide:
+    //   - Which substrings? (case-insensitive match is fine — lowercase
+    //     once at the top and compare.)
+    //   - Include "rate_limit" / "rate limit"? (They throttle, not
+    //     bill — arguably distinct, but operationally similar UX:
+    //     "please try later" vs "please pay".)
+    //   - Match on parts of the JSON shape ("insufficient_quota") or
+    //     just human prose ("credit balance")?
+    false
 }
 
 // ─── Provider parsing ─────────────────────────────────────────────────────────
@@ -421,19 +521,19 @@ impl LlmClient {
                 tokio::time::timeout(EXTRACTION_TIMEOUT, e.extract(prompt.as_str()))
                     .await
                     .map_err(|_| ExtractionError::Timeout(EXTRACTION_TIMEOUT))?
-                    .map_err(|e| ExtractionError::Extract(e.to_string()))?
+                    .map_err(classify_rig)?
             }
             LlmExtractor::OpenAI(e) => {
                 tokio::time::timeout(EXTRACTION_TIMEOUT, e.extract(prompt.as_str()))
                     .await
                     .map_err(|_| ExtractionError::Timeout(EXTRACTION_TIMEOUT))?
-                    .map_err(|e| ExtractionError::Extract(e.to_string()))?
+                    .map_err(classify_rig)?
             }
             LlmExtractor::Anthropic(e) => {
                 tokio::time::timeout(EXTRACTION_TIMEOUT, e.extract(prompt.as_str()))
                     .await
                     .map_err(|_| ExtractionError::Timeout(EXTRACTION_TIMEOUT))?
-                    .map_err(|e| ExtractionError::Extract(e.to_string()))?
+                    .map_err(classify_rig)?
             }
         };
 
@@ -471,7 +571,7 @@ impl LlmClient {
                     .build()
                     .extract_with_usage(user_input)
                     .await
-                    .map_err(|e| ExtractionError::Extract(e.to_string())),
+                    .map_err(classify_rig),
                 LlmBackend::OpenAI { client, model_id } => client
                     .extractor::<T>(model_id.as_str())
                     .preamble(system_prompt)
@@ -479,7 +579,7 @@ impl LlmClient {
                     .build()
                     .extract_with_usage(user_input)
                     .await
-                    .map_err(|e| ExtractionError::Extract(e.to_string())),
+                    .map_err(classify_rig),
                 LlmBackend::Anthropic { client, model_id } => client
                     .extractor::<T>(model_id.as_str())
                     .preamble(system_prompt)
@@ -487,7 +587,7 @@ impl LlmClient {
                     .build()
                     .extract_with_usage(user_input)
                     .await
-                    .map_err(|e| ExtractionError::Extract(e.to_string())),
+                    .map_err(classify_rig),
             }
         };
         let resp = tokio::time::timeout(EXTRACTION_TIMEOUT, extractor_call)
@@ -565,7 +665,7 @@ impl LlmClient {
                     .build()
                     .extract_with_usage(message.clone())
                     .await
-                    .map_err(|e| ExtractionError::Extract(e.to_string())),
+                    .map_err(classify_rig),
                 LlmBackend::OpenAI { client, model_id } => client
                     .extractor::<T>(model_id.as_str())
                     .preamble(system_prompt)
@@ -573,7 +673,7 @@ impl LlmClient {
                     .build()
                     .extract_with_usage(message.clone())
                     .await
-                    .map_err(|e| ExtractionError::Extract(e.to_string())),
+                    .map_err(classify_rig),
                 LlmBackend::Anthropic { client, model_id } => client
                     .extractor::<T>(model_id.as_str())
                     .preamble(system_prompt)
@@ -581,7 +681,7 @@ impl LlmClient {
                     .build()
                     .extract_with_usage(message.clone())
                     .await
-                    .map_err(|e| ExtractionError::Extract(e.to_string())),
+                    .map_err(classify_rig),
             }
         };
         // Vision calls run longer than text-only — bump from
@@ -666,7 +766,7 @@ impl LlmClient {
                     .build()
                     .extract_with_usage(message.clone())
                     .await
-                    .map_err(|e| ExtractionError::Extract(e.to_string())),
+                    .map_err(classify_rig),
                 LlmBackend::OpenAI { client, model_id } => client
                     .extractor::<T>(model_id.as_str())
                     .preamble(system_prompt)
@@ -674,7 +774,7 @@ impl LlmClient {
                     .build()
                     .extract_with_usage(message.clone())
                     .await
-                    .map_err(|e| ExtractionError::Extract(e.to_string())),
+                    .map_err(classify_rig),
                 LlmBackend::Anthropic { client, model_id } => client
                     .extractor::<T>(model_id.as_str())
                     .preamble(system_prompt)
@@ -682,7 +782,7 @@ impl LlmClient {
                     .build()
                     .extract_with_usage(message.clone())
                     .await
-                    .map_err(|e| ExtractionError::Extract(e.to_string())),
+                    .map_err(classify_rig),
             }
         };
         // PDF processing runs longer than image — multi-page docs
@@ -732,6 +832,88 @@ fn into_map(m: ExtractedMetadata) -> HashMap<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ─── looks_like_quota ───────────────────────────────────────────────
+    //
+    // These cases seed the design. Each string is shaped like what
+    // rig actually surfaces from the corresponding provider when
+    // billing/quota fails. Implement `looks_like_quota` so the
+    // POSITIVES return true and the NEGATIVES return false.
+
+    #[test]
+    fn looks_like_quota_anthropic_credits() {
+        // Anthropic's "out of credits" body (HTTP 400, invalid_request_error).
+        let s = r#"ProviderError: {"type":"error","error":{"type":"invalid_request_error","message":"Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits."}}"#;
+        assert!(
+            looks_like_quota(s),
+            "Anthropic credit-balance body should match"
+        );
+    }
+
+    #[test]
+    fn looks_like_quota_openai_insufficient() {
+        // OpenAI's `insufficient_quota` body (HTTP 429).
+        let s = r#"ResponseError: HTTP 429 {"error":{"message":"You exceeded your current quota, please check your plan and billing details.","type":"insufficient_quota","code":"insufficient_quota"}}"#;
+        assert!(
+            looks_like_quota(s),
+            "OpenAI insufficient_quota body should match"
+        );
+    }
+
+    #[test]
+    fn looks_like_quota_bedrock_service_quota() {
+        // Bedrock's account-level quota (distinct from per-second throttling).
+        let s = "ServiceQuotaExceededException: You have exceeded the quota for this account.";
+        assert!(
+            looks_like_quota(s),
+            "Bedrock ServiceQuotaExceededException should match"
+        );
+    }
+
+    #[test]
+    fn looks_like_quota_negatives() {
+        // Transient / unrelated failures — must NOT match, otherwise
+        // we'd surface a billing UI for a network blip or a bad key.
+        let cases = [
+            "HttpError: connection reset by peer",
+            "ResponseError: HTTP 401 {\"error\":\"invalid_api_key\"}",
+            "ProviderError: model_not_found",
+            "ResponseError: HTTP 500 Internal Server Error",
+            // ThrottlingException is per-second pressure, recoverable
+            // by retry — debatable. Default: NOT quota. Flip in the
+            // predicate if you'd rather surface "please try later".
+            "ThrottlingException: Rate exceeded",
+        ];
+        for s in cases {
+            assert!(!looks_like_quota(s), "false positive on: {s}");
+        }
+    }
+
+    #[test]
+    fn classify_rig_routes_quota_through_predicate() {
+        // Sanity: when the predicate fires, classify_rig surfaces
+        // QuotaExhausted; when it doesn't, Provider. This guards the
+        // wiring — separate from whether the predicate itself is
+        // accurate (those tests above).
+        use rig::completion::CompletionError;
+        use rig::extractor::ExtractionError as Rig;
+
+        let billing = Rig::CompletionError(CompletionError::ProviderError(
+            "Your credit balance is too low".to_string(),
+        ));
+        assert!(matches!(
+            classify_rig(billing),
+            ExtractionError::QuotaExhausted(_)
+        ));
+
+        let network = Rig::CompletionError(CompletionError::ProviderError(
+            "connection reset by peer".to_string(),
+        ));
+        assert!(matches!(
+            classify_rig(network),
+            ExtractionError::Provider(_)
+        ));
+    }
 
     #[test]
     fn into_map_drops_empty_title_only() {

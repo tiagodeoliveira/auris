@@ -1389,6 +1389,9 @@ fn short_error(e: &crate::llm::ExtractionError) -> String {
     use crate::llm::ExtractionError::*;
     match e {
         Timeout(_) => "Metadata extraction timed out".to_string(),
+        QuotaExhausted(_) => "LLM account out of credits / over quota".to_string(),
+        Provider(_) => "LLM provider rejected the request".to_string(),
+        Schema(_) | NoData => "Metadata extraction returned no usable data".to_string(),
         Extract(_) => "Metadata extraction failed".to_string(),
     }
 }

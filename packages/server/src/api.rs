@@ -145,6 +145,7 @@ pub fn make_router(state: ApiState) -> Router {
         .route("/moments/:moment_id", axum::routing::delete(delete_moment))
         .route("/artifacts", get(list_artifacts).post(upload_artifact))
         .route("/artifacts/:id", get(get_artifact).delete(delete_artifact))
+        .route("/artifacts/:id/retry-summary", post(retry_artifact_summary))
         .route("/meetings/:meeting_id/artifacts", post(attach_artifact))
         .route(
             "/meetings/:meeting_id/artifacts/:artifact_id",
@@ -939,6 +940,57 @@ async fn delete_artifact(
         }
     }
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Re-queue summary generation for an artifact whose previous attempt
+/// failed. Resets `summary_status` to `pending` (clearing any stale
+/// short/long text) and re-publishes on `artifact_created_tx` so the
+/// async summary worker picks it up exactly the way it would on a
+/// fresh upload.
+///
+/// State guard: only `failed` artifacts can be retried.
+///   - `pending` is in-flight — retrying would race the worker.
+///   - `done` already has a summary — nothing to retry.
+/// Both yield 400 with a self-describing message; the Mac UI only
+/// surfaces the button for `failed` rows, so a 400 here means the
+/// state flipped between fetch and click (concurrent retry, or the
+/// worker just finished).
+async fn retry_artifact_summary(
+    State(state): State<ApiState>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+) -> Result<Json<ArtifactDto>, ApiError> {
+    let user_id = require_user(&headers, &state).await?;
+    let row = crate::db::get_artifact_for_user(&state.db, &id, &user_id)
+        .await
+        .map_err(|e| ApiError::Db(downcast_db(e)))?
+        .ok_or(ApiError::NotFound)?;
+    if row.summary_status != "failed" {
+        return Err(ApiError::BadRequest(format!(
+            "artifact summary_status is `{}`; only `failed` artifacts can be retried",
+            row.summary_status
+        )));
+    }
+    // Flip back to pending. Empty short/long are correct here —
+    // a failed row never wrote useful summary text, and even if it
+    // had, the retry is meant to supersede.
+    crate::db::update_artifact_summaries(&state.db, &row.id, "", "", "pending")
+        .await
+        .map_err(|e| ApiError::Db(downcast_db(e)))?;
+    let _ = state.artifact_created_tx.send(ArtifactCreated {
+        artifact_id: row.id.clone(),
+        user_id: user_id.clone(),
+        name: row.name.clone(),
+        mime_type: row.mime_type.clone(),
+        asset_path: row.asset_path.clone(),
+    });
+    // Return the freshly-pending row so the client can update local
+    // state without a follow-up GET.
+    let updated = crate::db::get_artifact_for_user(&state.db, &row.id, &user_id)
+        .await
+        .map_err(|e| ApiError::Db(downcast_db(e)))?
+        .ok_or_else(|| ApiError::Internal("artifact vanished after retry update".into()))?;
+    Ok(Json(ArtifactDto::from(updated)))
 }
 
 #[derive(Debug, Deserialize)]

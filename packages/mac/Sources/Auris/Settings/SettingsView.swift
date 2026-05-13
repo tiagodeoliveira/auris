@@ -71,17 +71,19 @@ struct AurisMark: View {
 
     var body: some View {
         ZStack {
-            // Outer arc — right half of a circle (opens left).
-            // Circle paths start at 3 o'clock and trace clockwise;
-            // trim(0, 0.5) → bottom half, rotated -90° → right half.
+            // Outer arc — left half of a circle (opens right).
+            // Matches the master SVG (`assets/branding/auris-master.svg`)
+            // and the PWA mark. Circle paths start at 3 o'clock and
+            // trace clockwise; trim(0, 0.5) → bottom half, rotated +90°
+            // → left half (the `(` shape, mouth facing right).
             arc(radius: size * 0.42)
             // Inner arc — same shape, smaller radius.
             arc(radius: size * 0.22)
-            // Coral focal dot, sitting inside the opening (left of centre).
+            // Coral focal dot, sitting inside the opening (right of centre).
             Circle()
                 .fill(SettingsTheme.blue)
                 .frame(width: size * 0.14, height: size * 0.14)
-                .offset(x: -size * 0.18)
+                .offset(x: size * 0.18)
         }
         .frame(width: size, height: size)
         .accessibilityHidden(true)
@@ -91,7 +93,7 @@ struct AurisMark: View {
     private func arc(radius: CGFloat) -> some View {
         Circle()
             .trim(from: 0, to: 0.5)
-            .rotation(.degrees(-90))
+            .rotation(.degrees(90))
             .stroke(
                 Color.primary,
                 style: StrokeStyle(lineWidth: size * 0.13, lineCap: .round)
@@ -1271,9 +1273,11 @@ private struct ArtifactsTab: View {
             ScrollView {
                 LazyVStack(spacing: 8) {
                     ForEach(artifacts) { a in
-                        ArtifactRow(artifact: a) {
-                            Task { await deleteArtifact(id: a.id) }
-                        }
+                        ArtifactRow(
+                            artifact: a,
+                            onDelete: { Task { await deleteArtifact(id: a.id) } },
+                            onRetry: { Task { await retrySummary(id: a.id) } }
+                        )
                     }
                 }
                 .padding(16)
@@ -1373,6 +1377,24 @@ private struct ArtifactsTab: View {
         }
     }
 
+    /// POST /artifacts/:id/retry-summary. On success the server flips
+    /// `summary_status` back to `pending` and re-queues the worker;
+    /// we splice the updated row into the local list and kick the
+    /// pending-poll so the row flips to `done` (or `failed` again)
+    /// without needing the reload button.
+    private func retrySummary(id: String) async {
+        guard let api = await makeAPI() else { return }
+        do {
+            let updated = try await api.retrySummary(id: id)
+            if let i = artifacts.firstIndex(where: { $0.id == id }) {
+                artifacts[i] = updated
+            }
+            scheduleAutoRefresh()
+        } catch {
+            loadError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+        }
+    }
+
     /// Best-effort mime-type guess from the URL's extension. Covers
     /// the formats the server's whitelist accepts (text/markdown,
     /// text/plain, text/html, text/csv, application/json,
@@ -1402,8 +1424,14 @@ private struct ArtifactsTab: View {
 private struct ArtifactRow: View {
     let artifact: Artifact
     let onDelete: () -> Void
+    let onRetry: () -> Void
     @State private var confirmDelete = false
     @State private var isExpanded = false
+    /// Disables the retry button while the request is in flight so a
+    /// double-tap doesn't fire two POSTs. The server's `failed → pending`
+    /// state guard would reject the second anyway, but disabling
+    /// prevents the user from seeing a spurious 400.
+    @State private var retrying = false
 
     /// Long summary is shown only when the artifact is `done` and
     /// actually has content. Pending/failed artifacts have no
@@ -1483,9 +1511,23 @@ private struct ArtifactRow: View {
                             .foregroundStyle(.secondary)
                     }
                     if artifact.summaryStatus == "failed" {
-                        Text("Summary failed — server logs may have more.")
-                            .font(.caption)
-                            .foregroundStyle(.red)
+                        HStack(spacing: 6) {
+                            Text("Summary failed — server logs may have more.")
+                                .font(.caption)
+                                .foregroundStyle(.red)
+                            Button {
+                                retrying = true
+                                onRetry()
+                            } label: {
+                                Label("Retry", systemImage: "arrow.clockwise")
+                                    .labelStyle(.titleAndIcon)
+                                    .font(.caption)
+                            }
+                            .buttonStyle(.borderless)
+                            .controlSize(.small)
+                            .disabled(retrying)
+                            .help("Re-run the summary worker for this artifact")
+                        }
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .topLeading)

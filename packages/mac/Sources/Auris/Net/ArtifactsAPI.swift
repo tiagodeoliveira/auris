@@ -95,6 +95,34 @@ struct ArtifactsAPI: Sendable {
         }
     }
 
+    /// Re-queue summary generation for a `failed` artifact. The server
+    /// flips `summaryStatus` back to `pending` and the async worker
+    /// retries from scratch. Returns the updated artifact row so the
+    /// caller can replace its local copy without a follow-up GET.
+    /// Server returns 400 if the artifact isn't currently `failed`
+    /// (race with the worker, or stale UI state).
+    func retrySummary(id: String) async throws -> Artifact {
+        let url = baseURL.appendingPathComponent("artifacts/\(id)/retry-summary")
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        let data: Data
+        let resp: URLResponse
+        do {
+            (data, resp) = try await URLSession.shared.data(for: req)
+        } catch {
+            throw MeetingsAPIError.transport(error)
+        }
+        try expectOK(resp)
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .custom(decodeRFC3339DateForArtifacts)
+        do {
+            return try decoder.decode(Artifact.self, from: data)
+        } catch {
+            throw MeetingsAPIError.decode(error)
+        }
+    }
+
     func delete(id: String) async throws {
         let url = baseURL.appendingPathComponent("artifacts/\(id)")
         var req = URLRequest(url: url)
