@@ -117,12 +117,13 @@ services:
       AURIS_MOMENT_GRACE_MS: ${AURIS_MOMENT_GRACE_MS:-5000}
 
       # ─── mnemo memory layer (optional integration) ──────────────────
-      # Unset = integration disabled. URL + M2M client_id + client_secret
-      # are all required to enable. Names use the AURIS_MNEMO_ prefix per
-      # the server's `mnemo::client` module.
+      # Unset = integration disabled. Both URL and API_KEY required to
+      # enable. Names use the AURIS_ prefix per the server's
+      # `mnemo::client` module — passing plain `MNEMO_URL` silently
+      # disables the integration because the server can't find the
+      # expected key.
       AURIS_MNEMO_URL: ${AURIS_MNEMO_URL:-}
-      AURIS_MNEMO_M2M_CLIENT_ID: ${AURIS_MNEMO_M2M_CLIENT_ID:-}
-      AURIS_MNEMO_M2M_CLIENT_SECRET: ${AURIS_MNEMO_M2M_CLIENT_SECRET:-}
+      AURIS_MNEMO_API_KEY: ${AURIS_MNEMO_API_KEY:-}
       AURIS_MNEMO_WORKSTATION: ${AURIS_MNEMO_WORKSTATION:-}
     ports:
       # Bound to loopback only: public traffic comes through the
