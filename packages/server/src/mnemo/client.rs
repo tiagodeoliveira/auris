@@ -146,12 +146,10 @@ impl MnemoClient {
             return Err(MnemoError::BadStatus { status, body });
         }
         let parsed: RecalledContext = resp.json().await?;
+        let total_items: usize = parsed.dimensions.iter().map(|d| d.items.len()).sum();
         debug!(
-            preferences = parsed.preferences.len(),
-            facts = parsed.facts.len(),
-            episodes = parsed.episodes.len(),
-            has_project = parsed.project.is_some(),
-            "mnemo recall ok"
+            dimensions = parsed.dimensions.len(),
+            total_items, "mnemo recall ok"
         );
         Ok(parsed)
     }

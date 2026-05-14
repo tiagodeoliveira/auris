@@ -20,7 +20,7 @@ pub mod recaller;
 
 pub use client::MnemoClient;
 pub use payload::{build_sentence_event, IngestEvent, IngestRequest, Turn, TurnRole};
-pub use recall::{RecallParams, RecalledContext, RecalledMemory};
+pub use recall::{RecallParams, RecalledContext, RecalledDimension, RecalledItem};
 
 use std::sync::Arc;
 

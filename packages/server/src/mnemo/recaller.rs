@@ -144,12 +144,11 @@ fn trigger_recall(
                 if ctx.is_empty() {
                     debug!(user_id = %user_id, "mnemo recall returned no records");
                 } else {
+                    let total_items: usize = ctx.dimensions.iter().map(|d| d.items.len()).sum();
                     info!(
                         user_id = %user_id,
-                        preferences = ctx.preferences.len(),
-                        facts = ctx.facts.len(),
-                        episodes = ctx.episodes.len(),
-                        has_project = ctx.project.is_some(),
+                        dimensions = ctx.dimensions.len(),
+                        total_items,
                         "mnemo recall populated prior context"
                     );
                 }
