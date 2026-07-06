@@ -50,6 +50,8 @@ env:
 jobs:
   publish:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read # checkout only; the update publishes to EAS via EXPO_TOKEN
     env:
       EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
     steps:

@@ -52,6 +52,8 @@ env:
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read # checkout only; the build runs on EAS via EXPO_TOKEN
     strategy:
       # Don't bail one platform when the other fails — independent
       # builds shouldn't cancel each other.
