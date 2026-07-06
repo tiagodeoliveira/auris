@@ -43,7 +43,13 @@ gethostname = "0.5"
 # keeping accept/reject semantics aligned. http 1.x is already in the
 # tree via axum — this is a direct declaration, not a new crate.
 http = "1"
-jsonwebtoken = "9"
+# v10 made the crypto backend pluggable (rustls CryptoProvider) and no
+# longer picks one by default — you must enable exactly one of
+# `aws_lc_rs` / `rust_crypto`. We pick `aws_lc_rs` because aws-lc-rs is
+# already in the tree (rustls + the AWS SDK via rig-bedrock), so this
+# adds no new crypto dependency. Default `use_pem` stays on for
+# EncodingKey::from_rsa_pem in tests.
+jsonwebtoken = { version = "10", features = ["aws_lc_rs"] }
 opentelemetry = { version = "0.28", default-features = false, features = ["metrics"] }
 opentelemetry-otlp = { version = "0.28", default-features = false, features = ["metrics", "http-proto", "reqwest-client"] }
 opentelemetry_sdk = { version = "0.28", default-features = false, features = ["metrics", "rt-tokio", "experimental_metrics_periodicreader_with_async_runtime"] }
