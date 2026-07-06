@@ -52,7 +52,7 @@ http = "1"
 jsonwebtoken = { version = "10", features = ["aws_lc_rs"] }
 opentelemetry = { version = "0.28", default-features = false, features = ["metrics"] }
 opentelemetry-otlp = { version = "0.28", default-features = false, features = ["metrics", "http-proto", "reqwest-client"] }
-opentelemetry_sdk = { version = "0.28", default-features = false, features = ["metrics", "rt-tokio", "experimental_metrics_periodicreader_with_async_runtime"] }
+opentelemetry_sdk = { version = "0.32", default-features = false, features = ["metrics", "rt-tokio", "experimental_metrics_periodicreader_with_async_runtime"] }
 # PDF generation for the meeting-export endpoint. printpdf's built-in
 # Type 1 fonts (Helvetica family) cover all the typography we need
 # for English transcripts, so no TTF bundling required.
@@ -83,7 +83,7 @@ uuid = { version = "1", features = ["v4", "serde"] }
 [dev-dependencies]
 # `testing` unlocks InMemoryMetricExporter for the metrics unit tests
 # (observability/metrics.rs). Dev-profile only.
-opentelemetry_sdk = { version = "0.28", default-features = false, features = ["metrics", "rt-tokio", "experimental_metrics_periodicreader_with_async_runtime", "testing"] }
+opentelemetry_sdk = { version = "0.32", default-features = false, features = ["metrics", "rt-tokio", "experimental_metrics_periodicreader_with_async_runtime", "testing"] }
 tokio = { version = "1", features = ["full", "test-util"] }
 tokio-tungstenite = "0.24"
 tower = { version = "0.5", features = ["util"] }
