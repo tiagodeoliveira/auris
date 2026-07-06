@@ -18,6 +18,6 @@
     "typescript": "^5.5.0"
   },
   "dependencies": {
-    "protobufjs": "^7.4.0"
+    "protobufjs": "^8.7.0"
   }
 }
