@@ -54,7 +54,7 @@
     "@babel/core": "^7.20.0",
     "@types/react": "~19.2.14",
     "typescript": "~5.9.3",
-    "vitest": "^1.6.0"
+    "vitest": "^3.2.6"
   },
   "expo": {
     "doctor": {
