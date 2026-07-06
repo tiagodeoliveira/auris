@@ -20,5 +20,19 @@
   },
   "lint-staged": {
     "*.{ts,tsx,js,json,md,yml,yaml}": "prettier --write"
+  },
+  "pnpm": {
+    "//": "Security overrides for transitive deps flagged by Dependabot. Within-major bumps only (semver-compatible); per-major keys for ws/js-yaml so consumers of one major aren't forced onto another. The four mobile-runtime transitive majors (uuid, linkify-it, fast-xml-parser, markdown-it) are intentionally NOT forced here — they need a mobile-verified upgrade of react-native-markdown-display / expo, not a blind sub-dep override.",
+    "overrides": {
+      "shell-quote": "^1.8.4",
+      "protobufjs": "^7.6.3",
+      "form-data": "^4.0.6",
+      "joi": "^17.13.4",
+      "ws@6": "^6.2.4",
+      "ws@7": "^7.5.11",
+      "ws@8": "^8.21.0",
+      "js-yaml@3": "^3.15.0",
+      "js-yaml@4": "^4.2.0"
+    }
   }
 }
