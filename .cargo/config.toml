@@ -1,0 +1,19 @@
+# Cargo workspace config — see https://doc.rust-lang.org/cargo/reference/config.html
+#
+# macOS Swift runtime rpath for the `screencapturekit` crate's Swift bridge.
+# Without this, any binary that links against screencapturekit fails at runtime:
+#
+#   dyld: Library not loaded: @rpath/libswift_Concurrency.dylib
+#
+# We point at /usr/lib/swift — the dyld-shared-cache location for the
+# system-shipped Swift runtime on macOS 14+. This matches the rpath the
+# screencapturekit crate's bundled Swift dylib also uses, so both the main
+# binary and the Swift bridge resolve the same libswift_Concurrency.dylib;
+# no duplicate-class loads. (`ls /usr/lib/swift` may show empty because the
+# files live in the dyld shared cache; dyld resolves them at load time.)
+
+[target.'cfg(target_os = "macos")']
+rustflags = [
+    "-C",
+    "link-arg=-Wl,-rpath,/usr/lib/swift",
+]

@@ -1,0 +1,15 @@
+node_modules
+dist
+target
+**/target
+Cargo.lock
+pnpm-lock.yaml
+*.tsbuildinfo
+
+# Heavily structured docs (ASCII art, hand-aligned tables) — keep as-authored.
+docs/ARCHITECTURE.md
+docs/superpowers/plans/
+docs/specs/
+
+# Generated audit catalog (3.3MB) — prettier OOMs on it; keep as-generated.
+improvements.md

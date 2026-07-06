@@ -1,0 +1,152 @@
+# Build the mobile app via EAS Build (Expo's cloud build service).
+# Matrixed across [ios, android] so a single workflow file covers
+# both platforms; on push events both fire in parallel, on
+# workflow_dispatch the operator picks one (or both).
+#
+# Default profile on push: `preview-simulator` for iOS, `preview` for
+# Android (no equivalent of "simulator-only" on Android — emulator
+# images run real APKs). Switch via workflow_dispatch inputs.
+#
+# Required secrets: EXPO_TOKEN. See .github/workflows/README.md for
+# first-time setup of the iOS + Android keystores via
+# `eas credentials --platform <ios|android>`.
+
+name: Mobile build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+    paths:
+      - "packages/mobile/**"
+      - ".github/workflows/mobile-build.yml"
+  pull_request:
+    paths:
+      - "packages/mobile/**"
+      - ".github/workflows/mobile-build.yml"
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: "Platform(s) to build"
+        required: false
+        default: "all"
+        type: choice
+        options:
+          - all
+          - ios
+          - android
+      profile:
+        description: "EAS build profile"
+        required: false
+        default: "preview"
+        type: choice
+        options:
+          - development
+          - preview-simulator
+          - preview
+          - production
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      # Don't bail one platform when the other fails — independent
+      # builds shouldn't cancel each other.
+      fail-fast: false
+      matrix:
+        platform: ${{ fromJSON(inputs.platform == 'ios' && '["ios"]' || inputs.platform == 'android' && '["android"]' || '["ios","android"]') }}
+    env:
+      EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+    steps:
+      # Soft preflight: if EXPO_TOKEN isn't set, print a notice and
+      # skip the rest of the steps. The workflow exits green so the
+      # repo's status badge doesn't go red purely because the
+      # optional cloud-build secret hasn't been configured yet.
+      - name: Check EAS configuration
+        id: preflight
+        run: |
+          if [[ -z "$EXPO_TOKEN" ]]; then
+            echo "::notice::EXPO_TOKEN secret is not set; skipping EAS build. See .github/workflows/README.md to enable."
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - if: steps.preflight.outputs.configured == 'true'
+        uses: actions/checkout@v4
+
+      - if: steps.preflight.outputs.configured == 'true'
+        # Don't pass `version:` here — `pnpm/action-setup@v4` refuses
+        # to pick when both the action input AND root package.json's
+        # `packageManager` field name a version. Letting
+        # `packageManager` (pnpm@9.0.0) be the single source of truth
+        # avoids ERR_PNPM_BAD_PM_VERSION on bumps.
+        uses: pnpm/action-setup@v4
+
+      - if: steps.preflight.outputs.configured == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - if: steps.preflight.outputs.configured == 'true'
+        # node-linker=hoisted lives at the workspace root .npmrc.
+        # See mobile-update.yml for the rationale.
+        working-directory: packages/mobile
+        run: pnpm install --frozen-lockfile
+
+      - if: steps.preflight.outputs.configured == 'true'
+        uses: expo/expo-github-action@v8
+        with:
+          eas-version: latest
+          token: ${{ secrets.EXPO_TOKEN }}
+
+      - name: EAS build (queue, do not wait)
+        if: steps.preflight.outputs.configured == 'true' && github.event_name != 'pull_request'
+        working-directory: packages/mobile
+        env:
+          PLATFORM: ${{ matrix.platform }}
+          # Profile selection by event:
+          #   - workflow_dispatch with inputs.profile  -> that profile
+          #   - tag push (vX.Y.Z)                      -> production
+          #   - main push (iOS)                        -> preview-simulator
+          #   - main push (Android)                    -> preview
+          # Tag pushes are release events and build the production IPA
+          # / APK signed for distribution. Main pushes stay cheap so we
+          # don't burn EAS quota on every commit. Inputs (.platform,
+          # .ref_type) are controlled by GitHub itself; none of these
+          # are user-supplied strings.
+          PROFILE: ${{ inputs.profile || (github.ref_type == 'tag' && 'production') || (matrix.platform == 'ios' && 'preview-simulator' || 'preview') }}
+          # Auto-submit only on tag pushes, and only for iOS. EAS chains
+          # the submission server-side after the build completes, so CI
+          # finishes in ~1 min while the build + TestFlight delivery
+          # runs in the background. Android stays opt-in (no Play
+          # Console configured; APKs distributed directly).
+          AUTO_SUBMIT_FLAG: ${{ (github.ref_type == 'tag' && matrix.platform == 'ios') && '--auto-submit' || '' }}
+        run: |
+          # `EXPO_PUBLIC_*` build-time config (server URL, Auth0
+          # domain / client_id / audience) lives in EAS environment
+          # variables, NOT here. Set them once via
+          # `eas env:create --scope project --environment <env>`;
+          # EAS injects them into every build queued from any
+          # machine. See .github/workflows/README.md.
+          eas build \
+            --platform "$PLATFORM" \
+            --profile "$PROFILE" \
+            --non-interactive \
+            --no-wait \
+            $AUTO_SUBMIT_FLAG
+
+      - name: Lint-only on PRs
+        if: steps.preflight.outputs.configured == 'true' && github.event_name == 'pull_request'
+        working-directory: packages/mobile
+        run: |
+          # Run typecheck once per matrix platform — cheap and catches
+          # platform-specific TS issues (e.g., an iOS-only API used in
+          # shared code). `eas build:configure` validates eas.json on
+          # the active platform without queueing a real build.
+          pnpm exec tsc --noEmit
+          eas build:configure --platform "${{ matrix.platform }}" --non-interactive || true

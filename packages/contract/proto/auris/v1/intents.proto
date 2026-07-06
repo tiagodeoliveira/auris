@@ -1,0 +1,123 @@
+// Intents — messages the client sends to the server. Mirrors the
+// `Intent` enum in `packages/server/src/contract.rs`.
+//
+// proto3 doesn't have first-class tagged unions; we model the
+// existing `Intent` enum as a wrapper message holding a `oneof`.
+// The discriminator is the `kind` field's set variant — wire-level
+// equivalent of the current `{"type": "..."}` JSON discriminator.
+//
+// Adding a new intent:
+//   1. Define a new message `MyIntent` below.
+//   2. Add `MyIntent my_intent = N;` to the `kind` oneof, picking
+//      the next free field number. Numbers must never be reused.
+//   3. Server: pattern-match the new variant in the intent
+//      dispatcher; unknown variants today produce an `Error` event
+//      with code `unknown_intent`.
+//
+// Removing an intent: `reserved <num>;` in the oneof so the field
+// number can never be reused for something else.
+
+syntax = "proto3";
+
+package auris.v1;
+
+import "auris/v1/common.proto";
+
+// Idle → Active. If `description` is present and `metadata` empty,
+// server fires LLM extraction in background.
+// `audio_source_device_id` binds a registered device's `/audio`
+// stream as the meeting's audio source.
+message StartMeeting {
+  optional string description = 1;
+  map<string, string> metadata = 2;
+  optional string audio_source_device_id = 3;
+}
+
+// Active → Idle. Clears items, metadata, recalled context,
+// in-flight extraction. Pushes the summary bundle to mnemo.
+message StopMeeting {}
+
+// Switch the current mode. Mode tab clicks on any client.
+message SetMode {
+  string mode = 1;
+}
+
+// Insert / replace / delete one metadata key. `null` value (i.e.
+// `value` field unset) deletes the key. Always emits
+// `metadata_changed`.
+message SetMetadata {
+  string key = 1;
+  optional string value = 2;
+}
+
+// Capability-bearing client (Mac, future glasses) declares itself.
+// Server replies `device_registered` to the sender and
+// `devices_changed` to the user's other clients.
+message RegisterDevice {
+  string hostname = 1;
+  repeated Capability capabilities = 2;
+}
+
+// Insert a moment row at timestamp `t` (ms since meeting start).
+// If a `screen_capture`-capable device is bound, server sends it
+// `capture_moment_screenshot`; the device uploads via REST. Vision-LLM
+// summarizer fires on the upload.
+message MarkMoment {
+  uint64 t = 1;
+  optional string note = 2;
+}
+
+// Asks the agent to fill the item's `detail` field. Agent emits
+// `item_updated` for the current mode with the enriched item.
+message ExpandItem {
+  string item_id = 1;
+}
+
+// User question for the agent during an active meeting. Renders as
+// a Q+A bubble pair in chat mode (Replace strategy, single pair —
+// each new question replaces the previous exchange).
+message Chat {
+  string text = 1;
+}
+
+// Upsert a user-curated quick ask ("prompt with a mnemonic label").
+// `id` is client-minted UUID for fresh entries; reused on edits.
+// `label` is the short mnemonic shown on glasses + chat-chip rows.
+// `text` is the full multiline prompt sent as a Chat intent when
+// the user picks the ask. `position` orders the user's library
+// (lower first; integers with gaps for cheap reorders).
+message UpsertQuickAsk {
+  string id = 1;
+  string label = 2;
+  string text = 3;
+  int32 position = 4;
+}
+
+// Delete a user's quick ask by id. Idempotent — unknown ids are a
+// no-op on the server.
+message DeleteQuickAsk {
+  string id = 1;
+}
+
+// Top-level intent envelope. `kind` carries exactly one variant;
+// the server's dispatcher pattern-matches on which variant is set.
+// Reserved field numbers (must never be reused per proto3 evolution
+// rules; `reserved` is forbidden inside a oneof, so it lives at the
+// message scope):
+//   3, 4 — Pause / Resume (removed in favor of client-local mute)
+//   7    — ExtractMetadata (removed; server auto-extracts on start_meeting)
+message Intent {
+  reserved 3, 4, 7;
+  oneof kind {
+    StartMeeting start_meeting = 1;
+    StopMeeting stop_meeting = 2;
+    SetMode set_mode = 5;
+    SetMetadata set_metadata = 6;
+    RegisterDevice register_device = 8;
+    MarkMoment mark_moment = 9;
+    ExpandItem expand_item = 10;
+    Chat chat = 11;
+    UpsertQuickAsk upsert_quick_ask = 12;
+    DeleteQuickAsk delete_quick_ask = 13;
+  }
+}

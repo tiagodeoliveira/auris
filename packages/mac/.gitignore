@@ -1,0 +1,7 @@
+# Output of `just mac-bundle-signed` / `scripts/bundle-signed.sh`:
+# the assembled .app and its distributable zip. The notarization
+# ticket is stapled into the .app, so the zip is the artifact users
+# install. CI builds the same bundle and attaches it to releases —
+# no value in committing local builds.
+Auris.app/
+Auris-*.zip

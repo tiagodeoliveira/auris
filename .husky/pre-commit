@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# Husky 9's wrapper at .husky/_/h invokes us via `sh -e`, which
+# ignores the shebang line above and breaks `set -o pipefail`
+# (POSIX `sh` / Debian's `dash` doesn't support it). Re-exec under
+# bash so the body of this script gets the shell it was written for.
+[ -n "${BASH_VERSION:-}" ] || exec bash "$0" "$@"
+set -euo pipefail
+
+STAGED="$(git diff --cached --name-only --diff-filter=ACMR)"
+
+# 1. Prettier on staged JS/TS/JSON/MD/YAML files (auto-fix + re-stage).
+pnpm exec lint-staged
+
+# 2. Mobile package: mirror what CI / EAS run before pushing.
+#    - tsc --noEmit catches TS errors that main-branch pushes would
+#      otherwise skip (mobile-build.yml only typechecks on PRs).
+#    - expo-doctor mirrors what EAS Build runs server-side: SDK
+#      alignment, React Native Directory metadata, duplicate native
+#      modules, peer deps. Doctor warnings on EAS are non-fatal but
+#      we'd rather catch them here than read them off a failed
+#      release build.
+if echo "$STAGED" | grep -qE '^packages/mobile/'; then
+  (
+    cd packages/mobile
+    pnpm exec tsc --noEmit
+    pnpm dlx expo-doctor
+  )
+fi
+
+# 3. Rust: fmt is cheap, clippy is the real lint gate (`lint:rust` in
+#    root package.json runs both). CI doesn't currently invoke this
+#    on PR — pre-commit is the only checkpoint.
+if echo "$STAGED" | grep -qE '\.rs$'; then
+  cargo fmt --all -- --check
+  cargo clippy --workspace -- -D warnings
+fi

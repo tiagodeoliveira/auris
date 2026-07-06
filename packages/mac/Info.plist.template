@@ -1,0 +1,144 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Info.plist for the Auris menu-bar app. Used by the
+  CI bundling step (.github/workflows/mac-bundle.yml) to wrap the
+  SwiftPM-built executable into a `.app` structure.
+
+  `${VERSION}` and `${BUILD}` are filled in by `envsubst` during the
+  workflow — VERSION is the semver-ish marketing version (from the
+  git tag, or `0.1.0-<sha>` on main pushes) and BUILD is the
+  GitHub Actions run number.
+
+  Permission usage descriptions are required for the OS to surface
+  the runtime prompts; without them the corresponding APIs return
+  immediate denial. ScreenCaptureKit / microphone use the strings
+  in NSScreenCapture* / NSMicrophoneUsageDescription respectively.
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>en</string>
+
+    <key>CFBundleExecutable</key>
+    <string>Auris</string>
+
+    <key>CFBundleIdentifier</key>
+    <string>tools.tiago.auris.desktop</string>
+
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+
+    <key>CFBundleName</key>
+    <string>Auris</string>
+
+    <key>CFBundleDisplayName</key>
+    <string>Auris</string>
+
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
+
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+
+    <key>CFBundleShortVersionString</key>
+    <string>${VERSION}</string>
+
+    <key>CFBundleVersion</key>
+    <string>${BUILD}</string>
+
+    <key>LSMinimumSystemVersion</key>
+    <string>15.0</string>
+
+    <!-- Menu-bar app: hide from Dock + ⌘-Tab. -->
+    <key>LSUIElement</key>
+    <true/>
+
+    <key>NSPrincipalClass</key>
+    <string>NSApplication</string>
+
+    <key>NSHumanReadableCopyright</key>
+    <string>Copyright © Tiago Oliveira</string>
+
+    <!-- Permission usage descriptions. Required for the OS to show
+         the corresponding runtime prompt; missing strings here means
+         the API returns immediate denial. -->
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Capture meeting audio for live transcription and summarization.</string>
+
+    <key>NSScreenCaptureUsageDescription</key>
+    <string>Capture screen snippets when you mark a moment, so the agent can include visual context in the meeting summary.</string>
+
+    <key>NSCameraUsageDescription</key>
+    <string>Attach a photo to a meeting moment.</string>
+
+    <!-- ────────────  App Transport Security  ────────────
+         Disable ATS so we can talk to the server over plain `ws://`
+         (Tailscale provides transport-layer encryption between
+         authenticated nodes, so the lack of TLS at the websocket
+         layer doesn't expose tokens or transcript data on the
+         wire). Required for personal Tailscale-routed deploys; if
+         we ever publish a server with a public TLS cert, switch
+         the bundle to `wss://` and remove this key.
+
+         App-Store-distributed apps would need a justification for
+         this; we don't ship through the App Store. -->
+    <key>NSAppTransportSecurity</key>
+    <dict>
+        <key>NSAllowsArbitraryLoads</key>
+        <true/>
+    </dict>
+
+    <!-- ────────────  Build-time environment values  ────────────
+         All baked in from repo variables via envsubst in
+         mac-bundle.yml. Empty strings fall back to defaults coded
+         into AppSettings / Auth0Client (i.e. `swift run` keeps
+         working without any env config). See
+         .github/workflows/README.md for the full variable surface. -->
+    <key>AurisServerURL</key>
+    <string>${AURIS_SERVER_URL}</string>
+
+    <key>Auth0Domain</key>
+    <string>${AUTH0_DOMAIN}</string>
+
+    <key>Auth0ClientID</key>
+    <string>${AUTH0_MAC_CLIENT_ID}</string>
+
+    <key>Auth0Audience</key>
+    <string>${AUTH0_API_AUDIENCE}</string>
+
+    <!-- ────────────  Sparkle auto-update  ────────────
+         The bundle reads SUFeedURL on a schedule, parses the appcast
+         XML it returns, verifies signed enclosures with SUPublicEDKey,
+         and offers the user an install/relaunch prompt. CI updates
+         the appcast on each tag push (mac-bundle.yml). -->
+    <key>SUFeedURL</key>
+    <string>https://github.com/tiagodeoliveira/auris/releases/latest/download/appcast.xml</string>
+
+    <!-- EdDSA public key — paired with the SPARKLE_PRIVATE_KEY GH
+         secret. Generated once with Sparkle's `generate_keys` tool;
+         see .github/workflows/README.md. The CI bundling step
+         template-substitutes ${SPARKLE_PUBLIC_KEY} from a repo
+         variable so we don't have to commit it inline.
+
+         If empty (e.g. local `swift run` without the env var set)
+         Sparkle refuses to install any update — fail-closed against
+         tampered bundles. -->
+    <key>SUPublicEDKey</key>
+    <string>${SPARKLE_PUBLIC_KEY}</string>
+
+    <key>SUEnableAutomaticChecks</key>
+    <true/>
+
+    <!-- Daily background check (24h in seconds). Sparkle's prompt is
+         non-modal; the user can dismiss and stay on the current
+         version. -->
+    <key>SUScheduledCheckInterval</key>
+    <integer>86400</integer>
+
+    <!-- Don't apply silently — surface the update prompt and let the
+         user choose. Menu-bar app + silent restart would be jarring. -->
+    <key>SUAutomaticallyUpdate</key>
+    <false/>
+</dict>
+</plist>

@@ -1,0 +1,169 @@
+# Build the PWA bundle and pack it into an `.ehpk` for sideloading
+# to EvenHub G2 glasses. The .ehpk is what the Even companion app
+# accepts as a custom app install — same artifact format whether
+# you sideload via QR or upload to the developer portal.
+#
+# Triggers:
+#   - push to main          -> builds + publishes rolling `pwa-nightly`
+#                              release (stable download URL, force-
+#                              updated on every push)
+#   - push of a `v*` tag    -> attaches the versioned .ehpk to the
+#                              tag's GitHub Release
+#   - pull_request          -> build + pack only (no upload), validates
+#                              that the bundle still packs cleanly
+#                              before merge
+#   - workflow_dispatch     -> manual rebuild from any branch (artifact
+#                              only, no release)
+#
+# Path filter mirrors the actual inputs of the bundle so server /
+# Mac / mobile churn doesn't trigger rebuilds here.
+
+name: PWA ehpk
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+    paths:
+      - "packages/pwa/**"
+      - "packages/contract/**"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
+      - ".github/workflows/pwa-ehpk.yml"
+  pull_request:
+    paths:
+      - "packages/pwa/**"
+      - "packages/contract/**"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
+      - ".github/workflows/pwa-ehpk.yml"
+  workflow_dispatch:
+
+# Opt every JavaScript action in this workflow into Node 24 to clear
+# the deprecation warnings. Match the env block in server-image.yml.
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  build:
+    name: Build & publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # needed for release attach + rolling nightly
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        # Don't pass `version:` — `packageManager` in package.json
+        # pins it, and passing both causes action-setup to bail.
+        uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install dependencies
+        # `--frozen-lockfile` mirrors the local dev contract; if the
+        # lockfile drifted from package.json the build fails fast.
+        run: pnpm install --frozen-lockfile
+
+      - name: Resolve version
+        id: version
+        run: |
+          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+            # Tagged releases use the semver from the tag (strip the
+            # leading `v`). The .ehpk's app.json `version` field is
+            # informational for the EvenHub host; the wire identity
+            # is the tag.
+            VERSION="${GITHUB_REF_NAME#v}"
+          else
+            # Non-tag builds: read the baseline version from app.json
+            # and suffix with sha7 so the nightly artifact name is
+            # unique per commit.
+            BASE=$(jq -r '.version' packages/pwa/app.json)
+            VERSION="${BASE}-${GITHUB_SHA::7}"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Build + pack
+        # `pack` script in packages/pwa/package.json chains
+        # sync-whitelist + vite build + evenhub pack. Output lands
+        # at packages/pwa/auris.ehpk.
+        #
+        # `run` is required. Without it, pnpm interprets `pack`
+        # as its built-in `pnpm pack` command (tarball publishing
+        # helper) and fails with `Unknown option: 'recursive'` on
+        # the `-F` filter. Justfile already uses `run pack`.
+        #
+        # Vite reads `VITE_*` env vars at build time and inlines
+        # them into the JS bundle (via `import.meta.env.VITE_*`).
+        # Locally `packages/pwa/.env` provides these values; in CI
+        # the `.env` file isn't present (gitignored), so without
+        # this env block the bundle falls back to
+        # `ws://localhost:7331` and clients can't reach the
+        # production server. All four values are PUBLIC (Auth0
+        # client IDs aren't secrets — they end up in browser
+        # DevTools either way), so repo variables are appropriate.
+        env:
+          VITE_SERVER_URL: ${{ vars.AURIS_SERVER_URL }}
+          VITE_AUTH0_DOMAIN: ${{ vars.AUTH0_DOMAIN }}
+          VITE_AUTH0_API_AUDIENCE: ${{ vars.AUTH0_API_AUDIENCE }}
+          VITE_AUTH0_PWA_CLIENT_ID: ${{ vars.AUTH0_PWA_CLIENT_ID }}
+        run: pnpm -F @auris/pwa run pack
+
+      - name: Rename ehpk with version
+        working-directory: packages/pwa
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          # Versioned name keeps multiple builds distinguishable
+          # when uploaded side-by-side to a release.
+          cp auris.ehpk "auris-pwa-${VERSION}.ehpk"
+
+      - name: Upload build artifact
+        # Always upload — covers PRs (inspection), workflow_dispatch
+        # (download from the Actions tab), and serves as a backup
+        # for tag / nightly publishes if the release step ever fails.
+        uses: actions/upload-artifact@v4
+        with:
+          name: auris-pwa-${{ steps.version.outputs.version }}
+          path: packages/pwa/auris-pwa-${{ steps.version.outputs.version }}.ehpk
+          retention-days: 14
+
+      # ---------- Tagged release ----------
+      - name: Attach to release on tag
+        if: github.event_name == 'push' && github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            packages/pwa/auris-pwa-${{ steps.version.outputs.version }}.ehpk
+          fail_on_unmatched_files: true
+
+      # ---------- Rolling nightly (main pushes only) ----------
+      # Attaches the PWA .ehpk to the shared `nightly` release. The
+      # Mac workflow attaches its .zip to the same release; both run
+      # race-safely (see `attach-nightly.sh` for the strategy).
+      - name: Publish to rolling nightly release
+        if: |
+          github.event_name == 'push'
+          && github.ref == 'refs/heads/main'
+        working-directory: packages/pwa
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.version.outputs.version }}
+          COMMIT: ${{ github.sha }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          # Stable filename for a copy-pasteable download URL. The
+          # version-pinned copy is intentionally NOT uploaded — the
+          # `nightly` release is rolling-only so its asset list
+          # stays at fixed size. People who want a pinned build cut
+          # a real `v*` tag instead.
+          cp "auris-pwa-${VERSION}.ehpk" "auris-pwa-nightly.ehpk"
+
+          "${GITHUB_WORKSPACE}/.github/workflows/scripts/attach-nightly.sh" \
+            "auris-pwa-nightly.ehpk"

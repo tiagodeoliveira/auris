@@ -1,0 +1,76 @@
+{
+  "expo": {
+    "name": "Auris",
+    "slug": "aurismobile",
+    "version": "0.17.0",
+    "orientation": "portrait",
+    "scheme": "auris",
+    "userInterfaceStyle": "automatic",
+    "icon": "./assets/icon.png",
+    "splash": {
+      "image": "./assets/splash.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#f4f1ec"
+    },
+    "assetBundlePatterns": ["**/*"],
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "tools.tiago.auris.mobile",
+      "infoPlist": {
+        "NSAppTransportSecurity": {
+          "NSAllowsArbitraryLoads": true
+        },
+        "ITSAppUsesNonExemptEncryption": false,
+        "NSMicrophoneUsageDescription": "Auris needs microphone access to capture meeting audio.",
+        "UIBackgroundModes": ["audio"]
+      }
+    },
+    "android": {
+      "package": "tools.tiago.auris.mobile",
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#d97757"
+      },
+      "permissions": [
+        "RECORD_AUDIO",
+        "FOREGROUND_SERVICE",
+        "FOREGROUND_SERVICE_MICROPHONE",
+        "POST_NOTIFICATIONS"
+      ]
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "plugins": [
+      "expo-router",
+      "expo-secure-store",
+      "expo-sharing",
+      "expo-web-browser",
+      "expo-build-properties",
+      "expo-font",
+      [
+        "expo-audio",
+        {
+          "microphonePermission": "Auris needs microphone access to capture meeting audio.",
+          "enableBackgroundRecording": true
+        }
+      ],
+      "./plugins/withSwiftVersionPin"
+    ],
+    "experiments": {
+      "typedRoutes": true
+    },
+    "extra": {
+      "eas": {
+        "projectId": "be9e897f-4625-4a99-b1c8-9fe7c970375c"
+      }
+    },
+    "owner": "tiagodeoliveira",
+    "runtimeVersion": {
+      "policy": "appVersion"
+    },
+    "updates": {
+      "url": "https://u.expo.dev/be9e897f-4625-4a99-b1c8-9fe7c970375c"
+    }
+  }
+}

@@ -1,0 +1,36 @@
+[package]
+name = "auris-contract"
+version = "0.1.0"
+# Literal values (not `edition.workspace = true`) because this crate
+# isn't a member of the root cargo workspace yet — it's a standalone
+# Rust project that consumers can opt into when they're ready to
+# migrate. To wire it into the workspace later: add it to the root
+# `Cargo.toml`'s `[workspace] members`, then flip these lines back
+# to `.workspace = true`.
+edition = "2021"
+license = "Proprietary"
+publish = false
+description = "Wire protocol types for the Auris server + clients (prost-generated)."
+
+[dependencies]
+prost = "0.13"
+# serde derives are added to the generated types via prost-build
+# `type_attribute`s so the server's REST handlers can return them as
+# JSON without a parallel hand-written shape. Optional via the
+# `serde` feature; the contract crate compiles fine without it for
+# pure-protobuf callers.
+serde = { version = "1", features = ["derive"], optional = true }
+
+[features]
+default = ["serde"]
+serde = ["dep:serde"]
+
+[build-dependencies]
+prost-build = "0.13"
+
+# Empty `[workspace]` declares this crate as its own root. Without
+# it, cargo auto-discovers the parent `Cargo.toml` and refuses to
+# build because this crate isn't in the parent's `members` list.
+# The "right" fix is to add the crate to the parent workspace —
+# we'll do that when a server / client takes a real dependency on it.
+[workspace]

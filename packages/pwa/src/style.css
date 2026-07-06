@@ -1,0 +1,3080 @@
+/* ============================================
+   PWA Design System — Light Glass
+   See ../../docs/UX.md
+   ============================================ */
+
+:root {
+  /* Color palette — tuned to match the Even Hub native app palette
+     so the PWA reads as a first-party page when it's hosted inside
+     their WebView. iOS-style grouped table: very light gray canvas
+     with pure-white card surfaces. */
+  --bg-primary: #f2f2f7;
+  --bg-secondary: #ffffff;
+  --bg-card: #ffffff;
+  --text-primary: #1c1c1e;
+  --text-light: #1c1c1e;
+  --text-muted: #6e6e73;
+
+  /* Auris brand accent (coral). Retained ONLY as a signature accent
+     for moments where 'this is auris' should read through: the
+     listening pulse, the moment-mark dot, the brand mark on idle/
+     boot screens, focus rings. CTAs use --cta-* tokens (solid
+     black) to match the Even Hub palette. The `--brand-blue`
+     names below are kept as legacy aliases so the ~44 existing
+     references across this file don't have to be touched. */
+  --brand-coral: #d97757;
+  --brand-coral-light: #e58c70;
+  --brand-coral-soft: #fbe7df;
+  --brand-coral-glow: rgba(217, 119, 87, 0.25);
+
+  --brand-blue: var(--brand-coral);
+  --brand-blue-light: var(--brand-coral-light);
+  --brand-blue-soft: var(--brand-coral-soft);
+  --brand-blue-glow: var(--brand-coral-glow);
+
+  /* Primary CTA — solid black pill, white label. Matches the
+     'Start stream' / 'Add task' / 'Connect' style across Even Hub
+     screens. Use these tokens (NOT --brand-* values) for any
+     button that's the page's principal action. */
+  --cta-bg: #000000;
+  --cta-bg-hover: #1c1c1e;
+  --cta-bg-active: #2c2c2e;
+  --cta-text: #ffffff;
+  --cta-bg-disabled: #c7c7cc;
+
+  --moment-amber: #f2b705;
+  --moment-amber-soft: #fff5c7;
+  --danger-red: #e5484d;
+  --danger-red-soft: #ffe2e3;
+
+  --link-blue: var(--brand-blue);
+  --accent-cyan: #0891b2;
+
+  --steel-gray: #8e8e93;
+  --oil-black: #1c1c1e;
+
+  --border-dark: #d1d1d6;
+  --border-light: #e5e5ea;
+
+  --error: var(--danger-red);
+
+  /* Typography — system font stack so the PWA renders in SF (iOS
+     WebView), Segoe UI (Windows), Roboto (Android), and BlinkMac
+     SystemFont (macOS) without shipping a webfont. JetBrains Mono
+     is the one exception we still load via @fontsource because we
+     use it for genuinely monospace surfaces (timecodes, IDs,
+     copy-pasteable user IDs). Bebas Neue and Space Grotesk are
+     no longer imported in main.ts; these aliases just resolve to
+     the system stack if anything still references them. */
+  --font-system:
+    -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, "Helvetica Neue", Arial,
+    sans-serif;
+  --font-display: var(--font-system);
+  --font-body: var(--font-system);
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  /* Layout — iOS-grouped table style favors larger radii than the
+     old 6px. Cards and inputs at 12px, primary CTAs at 14px (pill-
+     ish), small chips at 8px. */
+  --radius: 12px;
+  --radius-card: 12px;
+  --radius-button: 14px;
+  --radius-small: 8px;
+
+  /* Spacing scale — multiples of 4. Use these instead of ad-hoc px
+     values so vertical rhythm stays consistent. Components touched
+     in Phase 3 onward should reach for these; older components still
+     have inline px and will be migrated opportunistically. */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 24px;
+  --sp-6: 32px;
+  --sp-7: 48px;
+  --sp-8: 64px;
+
+  /* Legacy aliases — components not yet migrated still reference these.
+     Tasks 2-4 will replace inline-style usages of these with the new
+     tokens. Until then, keeping these aliased prevents the app from
+     rendering broken between intermediate commits. */
+  --bg: var(--bg-primary);
+  --bg-elev: var(--bg-card);
+  --fg: var(--text-light);
+  --fg-dim: var(--text-muted);
+  --accent: var(--brand-blue);
+  --rust-warm: var(--brand-blue);
+  --rust-light: var(--brand-blue-light);
+  --spark-orange: var(--brand-blue-light);
+  --rust-glow: var(--brand-blue-glow);
+  --success: #2ea043;
+  --warn: var(--moment-amber);
+
+  /* Background-tint for the body gradient bloom. Light mode is a
+     warm-coral wash, dark mode swaps to a cooler steel. Defined as
+     a token so the body rule below survives the theme flip without
+     a duplicated selector. */
+  --body-bloom: rgba(217, 119, 87, 0.16);
+}
+
+/* Dark mode is intentionally OMITTED.
+ *
+ * The PWA is hosted inside the Even Hub native app's WebView, whose
+ * chrome (status bar, title, back arrow) is always light gray
+ * regardless of the iOS system preference. Tracking the OS dark
+ * mode for the WebView body created a jarring mismatch: light
+ * Even Hub chrome on top of a dark navy PWA body. The right shape
+ * is for the PWA to always render light, matching the host.
+ *
+ * The settings-modal picker and `initTheme` in `ui/settings-modal.ts`
+ * still write `<html data-theme="…">`, but there are no longer any
+ * CSS rules keyed on it, so toggling does nothing visually. A
+ * future change can remove the picker UI; for now keeping the
+ * write idempotent and harmless. */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+}
+
+body {
+  font-family: var(--font-body);
+  font-size: 15px;
+  line-height: 1.5;
+  color: var(--text-primary);
+  /* Flat solid canvas — matches the grouped-table backdrop the
+     Even Hub native app uses across every screen. The previous
+     warm-coral radial bloom + vertical gradient read as 'auris
+     branded' which we explicitly traded away to feel native
+     inside their WebView. The coral identity now lives only on
+     small accents (brand mark, listening pulse, moment dot). */
+  background: var(--bg-primary);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  overflow-x: hidden;
+  transition: background-color 0.2s ease, color 0.2s ease;
+}
+
+#app {
+  /* height (not min-height) + overflow:hidden so the document doesn't
+     grow past the viewport — the .items-pane child is flex:1 and scrolls
+     internally instead. Keeps the header / metadata / mode tabs / action
+     bar pinned. */
+  height: 100vh;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+/* === SCROLLBAR === */
+::-webkit-scrollbar {
+  width: 8px;
+}
+::-webkit-scrollbar-track {
+  background: var(--bg-secondary);
+}
+::-webkit-scrollbar-thumb {
+  background: var(--steel-gray);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--rust-warm);
+}
+::selection {
+  background: var(--rust-warm);
+  color: var(--text-light);
+}
+
+/* === BUTTONS === */
+button {
+  font-family: var(--font-body);
+  font-size: 14px;
+  cursor: pointer;
+  border: 1px solid var(--border-light);
+  background: var(--bg-card);
+  color: var(--text-light);
+  padding: 10px 16px;
+  border-radius: var(--radius);
+  transition: all 0.2s ease;
+}
+button:hover {
+  border-color: var(--brand-blue);
+}
+button:focus-visible {
+  outline: 1px solid var(--brand-blue);
+  outline-offset: 2px;
+}
+button:active:not(:disabled) {
+  transform: translateY(1px);
+}
+button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+  transform: none;
+}
+
+/* Primary CTA — solid black pill, matches the 'Start stream' /
+   'Add task' / 'Connect' buttons across the Even Hub native app. */
+.btn-primary {
+  background: var(--cta-bg);
+  border-color: transparent;
+  color: var(--cta-text);
+  font-family: var(--font-body);
+  font-size: 15px;
+  font-weight: 500;
+  letter-spacing: 0;
+  text-transform: none;
+  padding: 14px 24px;
+  border-radius: var(--radius-button);
+}
+.btn-primary:hover {
+  border-color: transparent;
+  background: var(--cta-bg-hover);
+  box-shadow: none;
+  filter: none;
+}
+.btn-primary:active:not(:disabled) {
+  background: var(--cta-bg-active);
+}
+.btn-primary:disabled {
+  background: var(--cta-bg-disabled);
+  color: var(--cta-text);
+  opacity: 1;
+}
+
+/* Ghost — bordered, transparent bg */
+.btn-ghost {
+  background: transparent;
+  color: var(--text-primary);
+}
+.btn-ghost:hover {
+  background: rgba(0, 0, 0, 0.04);
+  color: var(--text-light);
+}
+
+/* Danger — red */
+.btn-danger {
+  background: var(--danger-red);
+  border-color: transparent;
+  color: #fff;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+}
+.btn-danger:hover {
+  filter: brightness(1.1);
+  border-color: transparent;
+}
+
+/* === INPUTS === */
+input[type="text"],
+input[type="password"],
+input[type="number"],
+textarea {
+  font-family: var(--font-body);
+  font-size: 15px;
+  /* Themed bg so dark mode actually contrasts. Hardcoded #f8fbff
+     was always light, which against the dark-mode `--text-light`
+     (#e6ebf2) rendered white-on-white. */
+  background: var(--bg-secondary);
+  color: var(--text-light);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+  width: 100%;
+  transition: border-color 0.2s ease;
+}
+input:focus,
+textarea:focus {
+  outline: none;
+  border-color: var(--brand-blue);
+}
+textarea {
+  resize: vertical;
+  min-height: 80px;
+  font-family: var(--font-body);
+}
+
+/* === MONO LABEL UTILITY === */
+.label-mono {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+/* === LEGACY COMPONENT STYLES (kept until tasks 2-4 migrate them) === */
+/* status-bar — task 2 will replace this */
+.status-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  background: var(--bg-elev);
+  border-bottom: 1px solid var(--border-dark);
+  height: 40px;
+}
+.status-bar .dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--fg-dim);
+}
+.status-bar .dot.green {
+  background: var(--success);
+}
+.status-bar .dot.yellow {
+  background: var(--warn);
+}
+.status-bar .dot.red {
+  background: var(--error);
+}
+.status-bar .pill {
+  font-size: 12px;
+  padding: 2px 8px;
+  border-radius: 12px;
+  background: var(--border-light);
+  color: var(--text-primary);
+}
+.status-bar .gear {
+  margin-left: auto;
+  cursor: pointer;
+  padding: 4px 8px;
+  background: none;
+  border: none;
+  color: var(--fg);
+  font-size: 18px;
+}
+
+/* legacy CTA buttons — task 3+4 will replace inline-styled buttons */
+button.cta {
+  padding: 14px 16px;
+  font-size: 16px;
+  font-weight: 500;
+  border: none;
+  border-radius: var(--radius-button);
+  background: var(--cta-bg);
+  color: var(--cta-text);
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+button.cta:hover:not(:disabled) {
+  background: var(--cta-bg-hover);
+}
+button.cta:active:not(:disabled) {
+  background: var(--cta-bg-active);
+}
+button.cta.secondary {
+  background: var(--bg-card);
+  color: var(--text-primary);
+  border: 1px solid var(--border-dark);
+}
+button.cta.secondary:hover:not(:disabled) {
+  background: var(--bg-primary);
+}
+button.cta.danger {
+  background: var(--error);
+}
+button.cta:disabled {
+  background: var(--cta-bg-disabled);
+  color: var(--cta-text);
+  cursor: not-allowed;
+}
+
+@keyframes pulse {
+  0%,
+  100% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.03);
+  }
+}
+
+/* === TOP BAR === */
+/* Slim top bar — WS status on the left, single `…` overflow on
+   the right. The PWA is only ever shown inside the Even Hub
+   WebView, whose chrome already provides the page title + back
+   button, so we don't repeat them here. */
+.top-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--border-light);
+  background: var(--bg-card);
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+.top-bar-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+  font-size: 13px;
+  color: var(--text-muted);
+}
+.top-bar-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  display: inline-block;
+  flex-shrink: 0;
+}
+.top-bar-dot[data-state="ok"] {
+  background: var(--success);
+}
+.top-bar-dot[data-state="pending"] {
+  background: var(--moment-amber);
+  animation: blink 1.2s ease-in-out infinite;
+}
+.top-bar-dot[data-state="off"] {
+  background: var(--steel-gray);
+  opacity: 0.6;
+}
+.top-bar-dot[data-state="error"] {
+  background: var(--danger-red);
+}
+.top-bar-label {
+  white-space: nowrap;
+}
+.top-bar-ble {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.8px;
+  line-height: 1;
+  margin-left: 2px;
+  color: var(--brand-coral);
+}
+@keyframes blink {
+  0%, 100% { opacity: 0.45; }
+  50% { opacity: 1; }
+}
+
+/* `…` overflow button — round 36px hit target with comfortable
+   margins so it lands cleanly under a thumb on mobile. */
+.top-bar-overflow {
+  background: transparent;
+  border: none;
+  color: var(--text-primary);
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background 0.15s ease;
+  flex-shrink: 0;
+}
+.top-bar-overflow svg {
+  width: 22px;
+  height: 22px;
+  display: block;
+}
+.top-bar-overflow:hover {
+  background: rgba(0, 0, 0, 0.06);
+}
+.top-bar-overflow:active {
+  background: rgba(0, 0, 0, 0.10);
+}
+.top-bar-overflow[aria-expanded="true"] {
+  background: rgba(0, 0, 0, 0.08);
+}
+.top-bar-overflow:focus-visible {
+  outline: 2px solid var(--brand-coral);
+  outline-offset: 1px;
+}
+
+/* Overflow dropdown — anchored to the top-right corner of the
+   top bar, full-width card with rounded chrome on mobile. Sits
+   above the page content with a soft drop shadow so it reads as
+   a floating sheet, not part of the bar. */
+.top-bar-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 8px;
+  min-width: 200px;
+  max-width: calc(100vw - 16px);
+  background: var(--bg-card);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-card);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+  padding: 6px;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+.top-bar-menu[hidden] {
+  display: none;
+}
+.top-bar-menu-item {
+  background: transparent;
+  border: none;
+  color: var(--text-primary);
+  font-family: var(--font-body);
+  font-size: 15px;
+  text-align: left;
+  padding: 12px 14px;
+  border-radius: var(--radius-small);
+  cursor: pointer;
+  transition: background 0.12s ease;
+}
+.top-bar-menu-item:hover {
+  background: var(--bg-primary);
+}
+.top-bar-menu-item:active {
+  background: var(--border-light);
+}
+.top-bar-menu-item:focus-visible {
+  outline: 2px solid var(--brand-coral);
+  outline-offset: -2px;
+}
+
+/* === SETTINGS MODAL (new) === */
+.settings-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(36, 48, 68, 0.24);
+  backdrop-filter: blur(10px);
+  z-index: 100;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+.settings-overlay.open {
+  display: flex;
+}
+.settings-modal {
+  background: color-mix(in srgb, var(--bg-card) 96%, transparent);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius);
+  padding: 32px;
+  max-width: 460px;
+  width: 100%;
+  position: relative;
+}
+.settings-modal::before,
+.settings-modal::after {
+  content: "";
+  position: absolute;
+  width: 24px;
+  height: 24px;
+  border: 1px solid var(--steel-gray);
+}
+.settings-modal::before {
+  top: 8px;
+  left: 8px;
+  border-right: none;
+  border-bottom: none;
+}
+.settings-modal::after {
+  bottom: 8px;
+  right: 8px;
+  border-left: none;
+  border-top: none;
+}
+.settings-title {
+  font-family: var(--font-display);
+  font-size: clamp(34px, 5vw, 44px);
+  font-weight: 400;
+  letter-spacing: 2px;
+  margin: 0 0 12px;
+  color: var(--text-light);
+  text-transform: uppercase;
+  line-height: 1;
+}
+.settings-title::after {
+  content: "";
+  display: block;
+  width: 48px;
+  height: 2px;
+  background: linear-gradient(90deg, var(--brand-coral), var(--brand-coral-light));
+  margin-top: 10px;
+}
+/* In a modal header row the title sits next to a cluster of action
+   buttons; switch the header to top-aligned so the underline lives
+   below the title without pushing the actions out of vertical
+   centerline. The settings-title is already a block, so the ::after
+   renders within its own column. */
+.meetings-header,
+.artifacts-header {
+  align-items: flex-start;
+}
+.settings-status-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 24px;
+  padding: 8px 12px;
+  background: var(--bg-secondary);
+  border-radius: var(--radius);
+}
+.settings-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 16px;
+}
+.settings-actions {
+  display: flex;
+  gap: 12px;
+  margin-top: 8px;
+}
+
+/* legacy modal — task 2 will restyle */
+.modal-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.7);
+  align-items: center;
+  justify-content: center;
+  z-index: 150;
+  padding: 16px;
+}
+.modal {
+  background: var(--bg-card);
+  border: 1px solid var(--border-dark);
+  border-radius: var(--radius-card);
+  padding: 24px;
+  width: 100%;
+  max-width: 480px;
+  max-height: 90vh;
+  overflow-y: auto;
+}
+
+/* === COMPOSE — card-based layout ===
+   Mirrors the mobile compose flow (`packages/mobile/app/(tabs)/index.tsx`):
+   each section sits in a white card with a title + optional subtitle
+   + coral underline accent. The screen reads as one cohesive form
+   rather than a stack of unrelated controls. */
+
+/* Outer .compose wrapper is the scroll container for the idle
+   compose stack. `#app` is `overflow: hidden` + flex-column at the
+   viewport, so children that exceed the viewport are clipped
+   unless they own their own scroll. `flex: 1; min-height: 0;
+   overflow-y: auto` makes this region take whatever vertical space
+   is left after the top bar and scroll its own contents — the
+   cards inside don't have to know how tall they are. */
+.compose {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 20px 16px max(20px, env(safe-area-inset-bottom, 0px));
+  max-width: 640px;
+  margin: 0 auto;
+  width: 100%;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  /* Prevent horizontal scroll on devices where the card border
+     would otherwise extend a hair past the viewport at small
+     widths. */
+  overflow-x: hidden;
+}
+
+/* Top-of-screen title block — `NEW MEETING` + coral underline +
+   `DESCRIBE · TAG · CAPTURE` eyebrow. Sits outside the card grid
+   so it reads as the page header, not a section. */
+.compose-title-block {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 4px 4px 0;
+}
+.compose-title {
+  font-family: var(--font-system);
+  font-size: clamp(28px, 7vw, 36px);
+  font-weight: 700;
+  letter-spacing: 0;
+  color: var(--text-primary);
+  margin: 0;
+  line-height: 1.1;
+}
+.compose-title-rule {
+  width: 48px;
+  height: 2px;
+  background: var(--brand-coral);
+  margin-top: 2px;
+}
+.compose-eyebrow {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  margin: 4px 0 0;
+  line-height: 1.4;
+}
+
+/* Section card — white background, 1px border, gentle radius. Holds
+   a header (title + rule + optional subtitle) and a content slot
+   the caller fills with the actual control. */
+.compose-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius-card);
+  padding: 14px 16px;
+}
+.compose-card-head {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.compose-card-title {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  margin: 0;
+  line-height: 1;
+}
+.compose-card-rule {
+  height: 2px;
+  background: var(--brand-coral);
+  margin-top: 2px;
+}
+.compose-card-subtitle {
+  font-family: var(--font-body);
+  font-size: 13px;
+  color: var(--text-muted);
+  margin: 4px 0 0;
+  line-height: 1.4;
+}
+.compose-card-content {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* Sub-section header inside an Attachments card (MEETINGS / ARTIFACTS).
+   Small mono label, no rule — the card already owns one. */
+.compose-subsection-label {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  margin: 0;
+  line-height: 1;
+}
+.compose-subsection {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+/* Small mono caption that sits beneath the display title + coral
+   underline accent. Use sparingly — one per screen at most — to
+   anchor the title in a context the user has already scanned. */
+.display-caption {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  margin: 12px 0 0;
+  line-height: 1.4;
+}
+.compose-input-area {
+  position: relative;
+}
+.compose-input-area textarea {
+  padding-right: 56px;
+  font-size: 16px;
+  min-height: 100px;
+}
+.compose-mic {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  border-radius: 50%;
+  background: transparent;
+  border: 1px solid var(--border-light);
+  color: var(--text-muted);
+  font-size: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.compose-mic:hover {
+  color: var(--brand-blue);
+  border-color: var(--brand-blue);
+}
+.compose-mic.active {
+  color: var(--brand-blue);
+  border-color: var(--brand-blue);
+  background: var(--brand-blue-soft);
+  animation: blink 1.2s ease-in-out infinite;
+}
+.compose-extract-row {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: -12px;
+}
+.compose-extract {
+  background: transparent;
+  border: 1px dashed var(--brand-blue);
+  color: var(--brand-blue);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 1px;
+  padding: 4px 12px;
+  border-radius: 999px;
+}
+.compose-extract:hover:not(:disabled) {
+  color: #fff;
+  background: var(--brand-blue);
+  border-color: var(--brand-blue);
+  border-style: solid;
+}
+.compose-extract:disabled {
+  border-color: var(--border-light);
+  color: var(--text-muted);
+  opacity: 0.5;
+}
+/* === PAIR SCREEN ===
+ *
+ * The pre-auth landing surface that replaces the old Auth0
+ * redirect-based login. Layout is identical to the previous
+ * login screen (centered column, brand-forward title) with an
+ * 8-char code input + Paste-from-phone affordance added below.
+ */
+.pair-screen {
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  padding: 32px 24px max(32px, env(safe-area-inset-bottom, 0px));
+  text-align: center;
+}
+.pair-screen-banner {
+  background: color-mix(in srgb, var(--danger-red) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--danger-red) 50%, transparent);
+  color: var(--danger-red);
+  font-size: 13px;
+  padding: 10px 14px;
+  border-radius: var(--radius);
+  max-width: 360px;
+}
+.pair-screen-title {
+  font-family: var(--font-display);
+  font-size: clamp(36px, 8vw, 56px);
+  letter-spacing: 3px;
+  text-transform: uppercase;
+  color: var(--text-light);
+  margin: 0;
+  line-height: 1;
+}
+.pair-screen-subtitle {
+  color: var(--text-muted);
+  font-size: 14px;
+  max-width: 320px;
+  margin: 0;
+}
+.pair-screen-helper {
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1.5;
+  max-width: 320px;
+  margin: 0 0 12px;
+}
+.pair-screen-form {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 12px;
+  width: 100%;
+  max-width: 320px;
+}
+.pair-screen-input {
+  font-family: var(--font-mono);
+  font-size: clamp(22px, 6vw, 32px);
+  font-weight: 600;
+  letter-spacing: 4px;
+  text-align: center;
+  text-transform: uppercase;
+  padding: 14px 12px;
+  border: 2px solid var(--accent-coral);
+  border-radius: var(--radius);
+  /* High-contrast: dark surface with bright text against the
+     dark-navy app background. The `-webkit-appearance: none` +
+     `appearance: none` pair is load-bearing — without them iOS
+     WKWebView overlays its native input chrome (white background,
+     soft inset) on top of our colors and the field renders white
+     no matter what `background` we set. */
+  -webkit-appearance: none;
+  appearance: none;
+  background: #0d1117 !important;
+  color: #f0f6fc !important;
+  caret-color: var(--accent-coral);
+  outline: none;
+  /* iOS auto-zooms when an input has font-size < 16px on focus;
+     our clamp starts at 22px so we're safe, but the explicit
+     declaration documents the intent. */
+}
+.pair-screen-input::placeholder {
+  color: rgba(240, 246, 252, 0.35);
+}
+.pair-screen-input:focus {
+  border-color: var(--accent-coral);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent-coral) 25%, transparent);
+}
+.pair-screen-paste {
+  background: transparent;
+  border: 1px solid var(--border-light);
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  padding: 10px 14px;
+  border-radius: var(--radius);
+  cursor: pointer;
+}
+.pair-screen-paste:hover {
+  color: var(--text-light);
+  border-color: var(--accent-coral);
+}
+.pair-screen-submit {
+  margin-top: 4px;
+  padding: 14px 32px;
+}
+.pair-screen-submit:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.pair-screen-error {
+  color: var(--danger-red);
+  font-size: 13px;
+  margin: 0;
+  min-height: 1.2em;
+}
+.auth-misconfigured {
+  padding: 24px;
+  margin: 32px auto;
+  max-width: 520px;
+  border: 1px dashed var(--danger-red);
+  color: var(--danger-red);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 1.5;
+  border-radius: var(--radius);
+}
+
+/* === SETTINGS — ACCOUNT === */
+.settings-account {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px;
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius);
+  background: var(--bg-card);
+}
+.settings-account-who {
+  font-size: 14px;
+  color: var(--text-light);
+  font-weight: 500;
+  word-break: break-all;
+}
+.settings-account .btn-ghost {
+  align-self: flex-start;
+  padding: 6px 12px;
+  font-size: 12px;
+}
+
+/* === SETTINGS — V2 (brand lockup + cards + appearance picker) ===
+   Matches the mobile redesign: a centered brand mark + wordmark at
+   the top, then card-shaped sections for Account / Appearance /
+   About. The container itself reuses .settings-modal so the
+   corner-tick chrome and overlay backdrop stay consistent with the
+   meetings and artifacts modals. */
+.settings-modal-v2 {
+  /* Override the v1 padding for a roomier vertical rhythm. */
+  padding: 28px 32px 24px;
+  max-width: 460px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+.settings-brand-lockup {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 0 14px;
+  border-bottom: 1px solid var(--border-light);
+}
+.settings-brand-lockup-mark {
+  /* Drives the SVG stroke color via currentColor. */
+  color: var(--oil-black);
+  display: inline-flex;
+}
+.settings-brand-lockup-mark svg {
+  width: 52px;
+  height: 52px;
+  display: block;
+}
+.settings-brand-lockup-word {
+  font-family: var(--font-display);
+  font-size: 40px;
+  letter-spacing: 4px;
+  line-height: 1;
+  color: var(--text-light);
+  text-transform: lowercase;
+  /* Bebas Neue ignores text-transform: lowercase (it's all-caps by
+     design), so we use the lowercase letters directly when setting
+     textContent and rely on Bebas's uppercase forms. The wordmark
+     reads "AURIS" intentionally — calm display caps. */
+  text-transform: uppercase;
+  margin: 0;
+}
+.settings-brand-lockup-tag {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 2px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+}
+
+/* Card surface — used for Account, Appearance, About sections. */
+.settings-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 16px;
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius);
+  background: var(--bg-card);
+}
+.settings-card-label {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+.settings-card-helper {
+  font-size: 12px;
+  color: var(--text-muted);
+  line-height: 1.45;
+  margin: 0;
+}
+.settings-card-body {
+  font-size: 13.5px;
+  color: var(--text-light);
+  line-height: 1.55;
+  margin: 0;
+}
+.settings-account-email {
+  font-size: 14px;
+  color: var(--text-light);
+  font-weight: 500;
+  word-break: break-all;
+  font-family: var(--font-body);
+}
+/* Secondary rows under the email: sign-in method ("via Google") +
+   user ID. Same vertical rhythm as account-email, lighter weight,
+   sized down so they read as supplementary metadata. */
+.settings-account-meta {
+  font-size: 12px;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  margin-top: 4px;
+  word-break: break-all;
+}
+.settings-account-userid {
+  user-select: text;
+  -webkit-user-select: text;
+}
+/* Glasses-display card — per-mode opt-out checkboxes for the
+   double-tap cycle. Each row reads as a labeled checkbox; disabled
+   rows (the last enabled toggle, locked to prevent stranding the
+   cycle) dim slightly via the disabled checkbox pseudo. */
+.settings-glasses-toggles {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 2px;
+}
+.settings-glasses-toggle-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13.5px;
+  color: var(--text-light);
+  cursor: pointer;
+}
+.settings-glasses-toggle-row input[type="checkbox"]:disabled {
+  cursor: not-allowed;
+}
+.settings-glasses-toggle-row:has(input:disabled) {
+  cursor: default;
+}
+.settings-glasses-toggle-label {
+  font-family: var(--font-body);
+}
+.settings-glasses-toggle-note {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.5px;
+}
+.settings-muted {
+  color: var(--text-muted);
+}
+/* Ghost-destructive — bordered red, transparent background. The
+   sign-out flow is destructive enough to deserve red weight, but a
+   filled red button reads as "danger ahead" for an action the user
+   chose deliberately. */
+.btn-ghost-destructive {
+  align-self: flex-start;
+  background: transparent;
+  border: 1px solid var(--danger-red);
+  color: var(--danger-red);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  padding: 6px 12px;
+  border-radius: var(--radius);
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+.btn-ghost-destructive:hover {
+  background: var(--danger-red-soft);
+  border-color: var(--danger-red);
+}
+
+.settings-about-link {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 1px;
+  color: var(--brand-coral);
+  text-decoration: none;
+}
+.settings-about-link:hover {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+/* Shared modal chrome — round ✕ and reload buttons used in every
+   modal header for a consistent dismiss affordance. The buttons
+   live wherever the modal's header markup chooses to place them,
+   but their own styling (size, hover, focus) lives here so all
+   four modals look identical. */
+.modal-close-btn,
+.modal-reload-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-primary);
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+.modal-close-btn svg,
+.modal-reload-btn svg {
+  width: 18px;
+  height: 18px;
+  display: block;
+}
+.modal-close-btn:hover,
+.modal-reload-btn:hover {
+  background: rgba(0, 0, 0, 0.06);
+}
+.modal-close-btn:active,
+.modal-reload-btn:active {
+  background: rgba(0, 0, 0, 0.10);
+}
+.modal-close-btn:focus-visible,
+.modal-reload-btn:focus-visible {
+  outline: 2px solid var(--brand-coral);
+  outline-offset: 1px;
+}
+.modal-reload-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* Sensitivity picker — three-segment pill matching the compose
+   screen's other primary controls. Used on the idle compose surface
+   AND as a mid-meeting toggle in the overflow menu. */
+.sensitivity-picker {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 0;
+  background: var(--bg-card);
+  border: 1px solid var(--border-dark);
+  border-radius: 999px;
+  padding: 3px;
+}
+.sensitivity-segment {
+  background: transparent;
+  border: none;
+  border-radius: 999px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: 1.2px;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  padding: 7px 8px;
+  cursor: pointer;
+  transition: background 0.18s ease, color 0.18s ease;
+}
+.sensitivity-segment:hover {
+  color: var(--text-primary);
+}
+.sensitivity-segment.active {
+  background: var(--brand-coral);
+  color: #fff;
+}
+.sensitivity-segment:focus-visible {
+  outline: 2px solid var(--brand-coral);
+  outline-offset: 1px;
+}
+
+/* Compose-screen wrapper for the sensitivity row. Provides a tiny
+   label above the picker so the compose surface reads as a form,
+   not a row of unlabeled chrome. */
+.compose-sensitivity {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 0 16px;
+}
+.compose-sensitivity-label {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 1.6px;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+/* Quick-asks uses a simple title-row layout (no reload, no count
+   pill). Pulled here as a shared helper so future modals with the
+   same shape can reuse it. */
+.modal-header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+/* Settings modal: ✕ floats absolutely over the brand lockup so it
+   doesn't push the wordmark off-center. The modal already has its
+   own padding; the offsets just align ✕ with the visible card
+   corner. */
+.settings-modal-close {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  z-index: 2;
+}
+.settings-modal {
+  position: relative;
+}
+
+.compose-audio-source {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 0 24px 16px;
+  max-width: 640px;
+  margin: 0 auto;
+  width: 100%;
+}
+.compose-audio-source-empty {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px dashed var(--border-dark);
+  border-radius: var(--radius);
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1.4;
+}
+.compose-audio-source-empty-icon {
+  font-size: 16px;
+  opacity: 0.8;
+}
+.compose-audio-source-label {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 1px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+}
+.compose-audio-source-select {
+  background: var(--bg-card);
+  border: 1px solid var(--border-dark);
+  color: var(--text-light);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  padding: 8px 12px;
+  border-radius: var(--radius);
+  width: 100%;
+}
+.compose-start-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 0 24px 32px;
+  max-width: 640px;
+  margin: 0 auto;
+  width: 100%;
+}
+.compose-start {
+  width: 100%;
+  padding: 16px 24px;
+}
+.compose-start:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.compose-start-reason {
+  text-align: center;
+  font-size: 12px;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  letter-spacing: 0.3px;
+}
+
+/* === CTA REGION ===
+   Mirrors the Even Hub native app's bottom-action treatment:
+   plain white cards with a thin border, monochrome line-art icon,
+   short uppercase label. No color fills, no system emoji — both
+   read as 'auris-coded' when the surrounding host chrome is
+   monochrome. The Stop button is differentiated by a red label
+   only (the icon stays monochrome) so destructive intent reads
+   without making the whole button visually 'hot'. */
+.cta-region {
+  position: sticky;
+  bottom: 0;
+  background: var(--bg-card);
+  border-top: 1px solid var(--border-light);
+  padding: 12px 16px max(12px, env(safe-area-inset-bottom, 0px));
+  display: flex;
+  flex-direction: row;
+  gap: 8px;
+}
+.cta-region button {
+  flex: 1;
+  min-height: 56px;
+  padding: 8px 12px;
+}
+.cta-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-dark);
+  border-radius: var(--radius-small);
+  color: var(--text-primary);
+  cursor: pointer;
+  transition: background 0.12s ease;
+}
+.cta-btn:hover:not(:disabled) {
+  background: var(--bg-primary);
+}
+.cta-btn:active:not(:disabled) {
+  background: var(--border-light);
+}
+.cta-btn-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  line-height: 1;
+}
+.cta-btn-icon svg {
+  width: 22px;
+  height: 22px;
+  display: block;
+}
+.cta-btn-label {
+  font-size: 11px;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+}
+/* Stop: red label only — icon stays black. The destructive cue is
+   the word 'Stop' itself, supported by the two-step armed pattern
+   below (label flips to 'Confirm?' and the button pulses). */
+.cta-btn-stop .cta-btn-label {
+  color: var(--danger-red);
+}
+/* Armed (waiting for second tap) — pulse + brighter red label so
+   it reads as 'something will happen if I tap again.' */
+.cta-btn-stop.armed {
+  flex: 2;
+  animation: blink 1.2s ease-in-out infinite;
+  border-color: var(--danger-red);
+}
+.cta-btn-stop.armed .cta-btn-label {
+  color: var(--danger-red);
+  font-weight: 600;
+}
+
+/* === LISTENING TRANSCRIPT (placeholder; task 5 polishes) === */
+.listening-transcript {
+  background: var(--bg-card);
+  padding: 12px;
+  border-radius: var(--radius);
+  max-height: 150px;
+  overflow-y: auto;
+  font-size: 14px;
+  line-height: 1.5;
+  min-height: 60px;
+  color: var(--text-light);
+}
+.listening-transcript .interim {
+  color: var(--text-muted);
+}
+
+/* === HEADER STRIP === */
+/* Active-meeting header. Flex column with two rows: a compact meta
+ * row (timer + optional project chip + memory pill) and the title.
+ * Title is truncated with ellipsis; memory pill is a tight icon +
+ * count chip rather than the verbose "★ MEMORY · N RECALLED" form. */
+.header-strip {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 14px 16px 12px;
+  border-bottom: 1px solid var(--border-dark);
+  background: color-mix(in srgb, var(--bg-secondary) 72%, transparent);
+}
+.header-meta-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  letter-spacing: 0.4px;
+  color: var(--text-muted);
+}
+.header-timer {
+  font-variant-numeric: tabular-nums;
+  color: var(--text-light);
+  font-weight: 500;
+}
+.header-project {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--brand-blue-soft);
+  color: var(--text-primary);
+  font-size: 11px;
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.header-memory-badge {
+  margin-left: auto; /* pin to the right of the meta row */
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border: 1px solid var(--brand-blue);
+  color: var(--brand-blue);
+  border-radius: 999px;
+  cursor: help;
+  background: var(--brand-blue-soft);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.header-memory-icon {
+  font-size: 10px;
+  line-height: 1;
+}
+.header-memory-count {
+  font-weight: 500;
+}
+.header-title {
+  font-family: var(--font-body);
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: 0;
+  text-transform: uppercase;
+  color: var(--text-light);
+  margin: 0;
+  line-height: 1.1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* === MODE TABS === */
+.mode-tabs {
+  display: flex;
+  gap: 4px;
+  padding: 4px 12px 0;
+  border-bottom: 1px solid var(--border-dark);
+  background: color-mix(in srgb, var(--bg-secondary) 80%, transparent);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.mode-tabs::-webkit-scrollbar {
+  display: none;
+}
+.mode-tab {
+  background: transparent;
+  border: none;
+  padding: 12px 12px 14px;
+  min-height: 44px;
+  position: relative;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  letter-spacing: 1.6px;
+  text-transform: uppercase;
+  flex-shrink: 0;
+  cursor: pointer;
+  transition: color 160ms ease;
+}
+.mode-tab:hover {
+  color: var(--text-light);
+  border-color: transparent;
+}
+.mode-tab:focus-visible {
+  outline: 2px solid var(--brand-blue);
+  outline-offset: -2px;
+  border-radius: 4px;
+}
+.mode-tab.active {
+  color: var(--brand-blue);
+}
+.mode-tab.active::after {
+  content: "";
+  position: absolute;
+  left: 8px;
+  right: 8px;
+  bottom: -1px;
+  height: 2px;
+  background: linear-gradient(90deg, var(--brand-blue), var(--brand-blue-light));
+}
+
+/* === ITEMS PANE === */
+.items-pane {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--sp-2) 0;
+  position: relative;
+  min-height: 0;
+}
+@keyframes items-fade {
+  from { opacity: 0; transform: translateY(3px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.items-empty {
+  text-align: center;
+  padding: var(--sp-7) var(--sp-5);
+  opacity: 0.5;
+}
+.item {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  column-gap: 12px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--border-dark);
+  animation: items-fade 0.18s ease-out;
+}
+.item-time {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-muted);
+  padding-top: 2px;
+}
+.item-body {
+  color: var(--text-light);
+  line-height: 1.55;
+}
+.item-body::before {
+  content: "▸ ";
+  color: var(--brand-blue);
+  margin-right: 4px;
+}
+.item-meta {
+  grid-column: 2;
+  margin-top: 4px;
+}
+/* Per-item expand affordance — the chevron sits in the top-right of
+   the row's grid; the detail row spans the second column under the
+   body so it visually attaches to the item text, not the timestamp. */
+.item {
+  position: relative;
+}
+.item-chevron {
+  position: absolute;
+  top: 8px;
+  right: 12px;
+  background: none;
+  border: none;
+  padding: 0 6px;
+  font-family: var(--font-mono);
+  font-size: 14px;
+  color: var(--text-muted);
+  cursor: pointer;
+  user-select: none;
+}
+.item-chevron:hover {
+  color: var(--brand-blue);
+}
+.item-detail {
+  grid-column: 2;
+  margin-top: 6px;
+  padding: 8px 10px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-light);
+  background: var(--surface-elev);
+  border-left: 2px solid var(--brand-blue);
+  border-radius: 0 4px 4px 0;
+}
+.item-detail-pending {
+  font-style: italic;
+  opacity: 0.7;
+}
+
+/* === CHAT MODE — bubble pairs (Q+A), Replace strategy === */
+.chat-bubble {
+  max-width: 80%;
+  padding: 10px 14px;
+  margin: 6px 16px;
+  border-radius: 14px;
+  line-height: 1.5;
+  animation: items-fade 0.18s ease-out;
+}
+.chat-bubble-user {
+  margin-left: auto;
+  background: var(--brand-blue);
+  color: #fff;
+  border-bottom-right-radius: 4px;
+}
+.chat-bubble-assistant {
+  margin-right: auto;
+  background: var(--surface-elev);
+  color: var(--text-light);
+  border: 1px solid var(--border-dark);
+  border-bottom-left-radius: 4px;
+}
+.chat-bubble-body {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+/* "Had image attachment(s)" cue on user chat bubbles (live + history).
+   Small, muted, sits under the bubble text. */
+.chat-attachments-badge {
+  display: inline-block;
+  margin-top: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  opacity: 0.85;
+}
+/* Markdown-rendered assistant bubbles emit <p>/<br>/<code>/<a>; we
+   drop pre-wrap on those because marked already normalizes spacing
+   into block elements. Without this override, every soft newline
+   inside a paragraph doubles up. */
+.chat-bubble-assistant .chat-bubble-body {
+  white-space: normal;
+}
+.chat-bubble-assistant .chat-bubble-body p {
+  margin: 0;
+}
+.chat-bubble-assistant .chat-bubble-body p + p {
+  margin-top: 0.5em;
+}
+.chat-bubble-assistant .chat-bubble-body code {
+  background: rgba(0, 0, 0, 0.06);
+  padding: 0 0.25em;
+  border-radius: 3px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.92em;
+}
+.chat-bubble-assistant .chat-bubble-body a {
+  color: var(--brand-coral);
+  text-decoration: underline;
+  text-decoration-color: rgba(217, 119, 87, 0.4);
+  text-underline-offset: 2px;
+}
+.chat-bubble-assistant .chat-bubble-body a:hover {
+  text-decoration-color: var(--brand-coral);
+}
+/* Pending placeholder — three small dots that pulse in sequence,
+   so the user can tell the agent is still working even before the
+   first character of the real reply lands. The dots are emitted by
+   items-mirror.ts when meta.role == "assistant-pending"; the bubble
+   border + alignment use the existing .chat-bubble-assistant rules. */
+.chat-bubble-pending .chat-bubble-body {
+  opacity: 0.85;
+}
+.typing-dots {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 0;
+  /* Match the assistant text baseline so the dots feel like a
+     stand-in for a sentence, not a separate UI element. */
+  min-height: 1.2em;
+}
+.typing-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  display: inline-block;
+  animation: typing-dot-pulse 1.2s ease-in-out infinite;
+}
+.typing-dot:nth-child(2) { animation-delay: 0.15s; }
+.typing-dot:nth-child(3) { animation-delay: 0.3s; }
+@keyframes typing-dot-pulse {
+  0%, 60%, 100% { opacity: 0.3; transform: translateY(0); }
+  30% { opacity: 1; transform: translateY(-2px); }
+}
+
+/* Chat input — fixed at the bottom of the active-meeting layout
+   when chat mode is current. Mounted after items-mirror and
+   self-hides for other modes via inline display:none. */
+.chat-input {
+  display: flex;
+  gap: 8px;
+  padding: 10px 16px;
+  border-top: 1px solid var(--border-dark);
+  background: var(--surface-elev);
+}
+.chat-input-text {
+  flex: 1;
+  padding: 10px 14px;
+  border: 1px solid var(--border-dark);
+  border-radius: var(--radius-small);
+  font-family: inherit;
+  font-size: 15px;
+  background: var(--bg-card);
+  color: var(--text-primary);
+}
+.chat-input-text:focus {
+  outline: none;
+  border-color: var(--text-muted);
+}
+.chat-input-send {
+  padding: 10px 18px;
+  border: none;
+  border-radius: var(--radius-small);
+  background: var(--cta-bg);
+  color: var(--cta-text);
+  font-family: inherit;
+  font-size: 15px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+.chat-input-send:hover:not(:disabled) {
+  background: var(--cta-bg-hover);
+}
+.chat-input-send:disabled {
+  background: var(--cta-bg-disabled);
+  color: var(--cta-text);
+  cursor: not-allowed;
+}
+.chat-input-busy .chat-input-text {
+  opacity: 0.7;
+}
+
+/* === KV EDITOR === */
+.kv-editor {
+  padding: 12px 24px;
+  border-bottom: 1px solid var(--border-dark);
+  background: color-mix(in srgb, var(--bg-secondary) 72%, transparent);
+}
+.kv-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+.kv-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 6px 3px 10px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-light);
+  border-radius: 999px;
+  font-size: 13px;
+}
+.kv-chip:focus-within {
+  border-color: var(--brand-blue);
+}
+.kv-chip-key {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: var(--text-muted);
+}
+.kv-chip-val {
+  background: transparent;
+  border: none;
+  padding: 2px 0;
+  margin: 0;
+  color: var(--text-light);
+  font-family: var(--font-body);
+  font-size: 13px;
+  outline: none;
+  width: auto;
+  min-width: 32px;
+}
+.kv-chip-val:focus {
+  outline: none;
+  border: none;
+}
+.kv-chip-x {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  padding: 0 4px;
+  font-size: 16px;
+  line-height: 1;
+  border-radius: 50%;
+  opacity: 0.4;
+  transition: opacity 0.15s ease, color 0.15s ease;
+}
+.kv-chip:hover .kv-chip-x {
+  opacity: 1;
+}
+.kv-chip-x:hover {
+  color: var(--danger-red);
+  border-color: transparent;
+}
+.kv-add-toggle {
+  background: transparent;
+  border: 1px dashed var(--border-light);
+  color: var(--text-muted);
+  padding: 3px 10px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 1px;
+  border-radius: 999px;
+}
+.kv-add-toggle:hover {
+  color: var(--brand-blue);
+  border-color: var(--brand-blue);
+}
+.kv-chip-new {
+  border-style: dashed;
+  border-color: var(--brand-blue);
+}
+.kv-chip-new:focus-within {
+  border-style: solid;
+}
+.kv-chip-key-input {
+  background: transparent;
+  border: none;
+  padding: 2px 0;
+  margin: 0;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  outline: none;
+  width: auto;
+  min-width: 32px;
+}
+.kv-chip-key-input::placeholder,
+.kv-chip-val::placeholder {
+  color: var(--text-muted);
+  opacity: 0.5;
+}
+
+/* === LISTENING BANNER === */
+.listening-banner {
+  padding: 12px 16px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-dark);
+  border-radius: var(--radius);
+  margin-bottom: 12px;
+}
+.listening-banner-label {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  color: var(--rust-warm);
+  margin-bottom: 8px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.listening-banner-label::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--rust-warm);
+  box-shadow: 0 0 8px var(--rust-glow);
+  animation: blink 1.2s ease-in-out infinite;
+}
+.listening-actions {
+  display: flex;
+  gap: 12px;
+}
+.listening-actions button {
+  flex: 1;
+}
+
+/* === GLOBAL TRANSITIONS + FOCUS === */
+:focus-visible {
+  outline: 1px solid var(--brand-blue);
+  outline-offset: 2px;
+}
+button,
+a,
+.mode-tab,
+input,
+textarea {
+  transition:
+    border-color 0.2s ease,
+    color 0.2s ease,
+    background-color 0.2s ease,
+    opacity 0.2s ease,
+    box-shadow 0.2s ease;
+}
+
+/* Live in-flight transcript row — Soniox tokens not yet promoted to a
+   real Item by a sentence-break flush. Dim italic to read as
+   "still being captured." */
+.item-live {
+  border-bottom: none;
+  opacity: 0.6;
+}
+.item-live .item-body {
+  font-style: italic;
+  color: var(--text-muted);
+}
+.item-live .item-body::before {
+  content: "▸ ";
+  color: var(--steel-gray);
+}
+
+/* Meetings browser modal — reuses .settings-overlay/.settings-modal
+   chrome but overrides the inner sizing for the master/detail layout. */
+.meetings-modal {
+  max-width: 880px;
+  width: 100%;
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  height: min(720px, calc(100vh - 64px));
+}
+.meetings-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+.meetings-header .settings-title {
+  flex: 1;
+  margin: 0;
+}
+.meetings-title-block {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+.meetings-title-block .settings-title {
+  margin: 0;
+}
+.meetings-title-block .display-caption {
+  margin: 0;
+}
+.artifacts-title-block {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+.artifacts-title-block .settings-title {
+  margin: 0;
+}
+.artifacts-title-block .display-caption {
+  margin: 0;
+}
+.meetings-body {
+  flex: 1;
+  display: grid;
+  grid-template-columns: 280px 1fr;
+  gap: 16px;
+  min-height: 0;
+}
+.meetings-list {
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius);
+  background: var(--bg-card);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+.meetings-list.loading {
+  position: relative;
+}
+.meetings-list.loading::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: color-mix(in srgb, var(--bg-secondary) 62%, transparent);
+  display: flex;
+  pointer-events: none;
+}
+.meetings-list.loading::before {
+  content: "";
+  position: absolute;
+  top: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 22px;
+  height: 22px;
+  border: 2px solid var(--border-light);
+  border-top-color: var(--brand-blue);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+  z-index: 1;
+}
+@keyframes spin {
+  to { transform: translateX(-50%) rotate(360deg); }
+}
+@keyframes spin-centered {
+  to { transform: rotate(360deg); }
+}
+.meetings-spinner {
+  width: 28px;
+  height: 28px;
+  margin: 48px auto;
+  border: 2px solid var(--border-light);
+  border-top-color: var(--brand-blue);
+  border-radius: 50%;
+  animation: spin-centered 0.8s linear infinite;
+}
+.meetings-row-wrap {
+  display: flex;
+  align-items: stretch;
+  border-bottom: 1px solid var(--border-light);
+}
+.meetings-row {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding: 10px 12px;
+  background: transparent;
+  border: none;
+  text-align: left;
+  cursor: pointer;
+  color: inherit;
+  font: inherit;
+  transition: background 80ms;
+  min-width: 0;
+}
+.meetings-row:hover {
+  background: rgba(217, 119, 87, 0.06);
+}
+.meetings-row.selected {
+  background: var(--brand-blue-soft);
+}
+.meetings-row-delete {
+  flex: 0 0 auto;
+  min-width: 56px;
+  padding: 0 12px;
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 12px;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: color 80ms, background 80ms;
+}
+.meetings-row-delete:hover,
+.meetings-row-delete:focus-visible {
+  color: #c1453a;
+  background: rgba(193, 69, 58, 0.08);
+  outline: none;
+}
+.meetings-row-title {
+  color: var(--text-light);
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  width: 100%;
+}
+.meetings-row-sub {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+.meetings-detail {
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius);
+  background: var(--bg-card);
+  overflow-y: auto;
+  padding: 16px 18px;
+}
+.meetings-detail-inner {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.meetings-detail-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.meetings-detail-title {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: clamp(28px, 4vw, 38px);
+  font-weight: 400;
+  letter-spacing: 2px;
+  line-height: 1;
+  text-transform: uppercase;
+  color: var(--text-light);
+  flex: 1;
+  word-break: break-word;
+}
+.meetings-detail-title::after {
+  content: "";
+  display: block;
+  width: 40px;
+  height: 2px;
+  background: linear-gradient(90deg, var(--brand-coral), var(--brand-coral-light));
+  margin-top: 8px;
+}
+/* Pull the header row to top-aligned so the underline doesn't push
+   the PDF button off the title baseline. */
+.meetings-detail-header {
+  align-items: flex-start;
+}
+/* Rename (pencil) button — quiet until hovered so it doesn't compete
+   with the title; sits between the title and the PDF button. */
+.meetings-detail-rename {
+  padding: 4px 8px;
+  font-size: 16px;
+  line-height: 1;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+.meetings-detail-rename:hover {
+  border-color: var(--brand-blue);
+  color: var(--brand-blue);
+}
+/* Inline title editor — borrows the display title's scale so the swap
+   is in place, with an editable affordance (border + caret). */
+.meetings-detail-title-input {
+  flex: 1;
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: clamp(28px, 4vw, 38px);
+  font-weight: 400;
+  letter-spacing: 2px;
+  line-height: 1;
+  text-transform: uppercase;
+  color: var(--text-light);
+  background: var(--bg-card);
+  border: 1px solid var(--brand-blue);
+  border-radius: 6px;
+  padding: 4px 8px;
+  min-width: 0;
+}
+.meetings-detail-download {
+  padding: 6px 12px;
+  font-size: 12px;
+  font-family: var(--font-mono);
+  letter-spacing: 0.3px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-light);
+  border-radius: 6px;
+  color: var(--text-primary);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.meetings-detail-download:hover:not(:disabled) {
+  border-color: var(--brand-blue);
+  color: var(--brand-blue);
+}
+.meetings-detail-download:disabled {
+  opacity: 0.6;
+  cursor: progress;
+}
+.meetings-detail-timing {
+  display: flex;
+  gap: 24px;
+}
+.meetings-timing-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.meetings-timing-label {
+  font-size: 10px;
+  color: var(--text-muted);
+}
+.meetings-timing-value {
+  font-size: 13px;
+  color: var(--text-light);
+}
+.meetings-timing-value.in-progress {
+  color: #9a6b00;
+}
+.meetings-detail-block {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+/* Wrap-up extractor status banner. Two variants — `failed` is the
+   loud one (extractor errored; actions/open_questions may be
+   missing), `running` is a subtle hint (still processing; refresh
+   to see results). Both sit at the top of the detail view so the
+   user reads them before scrolling into the meeting content. */
+.meetings-wrap-up-banner {
+  padding: 10px 14px;
+  border-radius: 6px;
+  font-size: 13px;
+  line-height: 1.4;
+  margin-bottom: 8px;
+}
+.meetings-wrap-up-banner-failed {
+  background: #fdecea;
+  color: #8a1a12;
+  border: 1px solid #f5c2bd;
+}
+.meetings-wrap-up-banner-running {
+  background: #fff8e1;
+  color: #6a4a00;
+  border: 1px solid #f1d98c;
+}
+@media (prefers-color-scheme: dark) {
+  .meetings-wrap-up-banner-failed {
+    background: #3a1a17;
+    color: #f5c2bd;
+    border-color: #6a2a24;
+  }
+  .meetings-wrap-up-banner-running {
+    background: #3a2e10;
+    color: #f1d98c;
+    border-color: #6a5a20;
+  }
+}
+.meetings-detail-heading {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  margin-top: 4px;
+}
+.meetings-detail-description-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  background: none;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  text-align: left;
+  color: inherit;
+  font: inherit;
+  width: 100%;
+  min-width: 0;
+}
+.meetings-detail-description-chevron {
+  font-size: 11px;
+  color: var(--text-muted);
+  width: 12px;
+  flex-shrink: 0;
+}
+.meetings-detail-description-head .meetings-detail-heading {
+  margin-top: 0;
+  flex-shrink: 0;
+}
+.meetings-detail-description-snippet {
+  font-size: 13px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+.meetings-detail-description {
+  font-size: 13px;
+  color: var(--text-light);
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: var(--surface-elev, rgba(0, 0, 0, 0.03));
+  border: 1px solid var(--border-dark);
+  border-radius: 6px;
+  padding: 10px 12px;
+  max-height: 280px;
+  overflow-y: auto;
+}
+.meetings-detail-description-collapsed {
+  display: none;
+}
+.meetings-meta-row {
+  display: flex;
+  gap: 10px;
+  font-size: 13px;
+}
+.meetings-meta-key {
+  color: var(--text-muted);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  min-width: 100px;
+}
+.meetings-meta-val {
+  color: var(--text-light);
+}
+.meetings-transcript-row {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 2px 0;
+  font-size: 14px;
+  line-height: 1.45;
+  color: var(--text-light);
+}
+.meetings-transcript-speaker {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.4px;
+  color: var(--text-muted);
+  background: var(--bg-secondary);
+  border-radius: 3px;
+  padding: 1px 5px;
+  flex-shrink: 0;
+}
+.meetings-transcript-text {
+  flex: 1;
+}
+.meetings-empty {
+  color: var(--text-muted);
+  font-size: 13px;
+  padding: 20px;
+  text-align: center;
+}
+.meetings-empty.inline {
+  padding: 8px 0;
+  text-align: left;
+}
+
+/* Meeting-detail per-mode item rows. Mirrors the live overlay
+   items-mirror layout: timestamp pill + body + meta chip. */
+.meetings-item-row {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  column-gap: 12px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border-dark);
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--text-light);
+}
+.meetings-item-row:last-child {
+  border-bottom: none;
+}
+.meetings-item-time {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-muted);
+  padding-top: 2px;
+}
+.meetings-item-body::before {
+  content: "▸ ";
+  color: var(--brand-blue);
+  margin-right: 4px;
+}
+.meetings-item-meta {
+  grid-column: 2;
+  margin-top: 3px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.4px;
+  color: var(--text-muted);
+}
+.meetings-item-detail {
+  grid-column: 2;
+  margin-top: 5px;
+  padding: 6px 10px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-light);
+  background: var(--surface-elev);
+  border-left: 2px solid var(--brand-blue);
+  border-radius: 0 4px 4px 0;
+}
+
+/* Chat bubbles in the meeting-detail view — same shape as the
+   live overlay's bubbles but slightly tighter for the master/
+   detail context. */
+.meetings-chat-bubble {
+  max-width: 80%;
+  padding: 8px 12px;
+  margin: 4px 0;
+  border-radius: 12px;
+  line-height: 1.45;
+  font-size: 14px;
+}
+.meetings-chat-bubble-user {
+  margin-left: auto;
+  background: var(--brand-blue);
+  color: #fff;
+  border-bottom-right-radius: 3px;
+}
+.meetings-chat-bubble-assistant {
+  margin-right: auto;
+  background: var(--surface-elev);
+  color: var(--text-light);
+  border: 1px solid var(--border-dark);
+  border-bottom-left-radius: 3px;
+}
+.meetings-chat-bubble-body {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* Moment cards inside the meeting detail. Thumbnail on the left,
+   timestamp + note + summary stacked on the right. */
+.meetings-moment-card {
+  display: flex;
+  gap: 12px;
+  padding: 8px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-dark);
+  border-radius: var(--radius);
+  margin-bottom: 8px;
+}
+.meetings-moment-thumb {
+  width: 140px;
+  height: 88px;
+  object-fit: cover;
+  border-radius: 6px;
+  border: 1px solid var(--border-light);
+  flex-shrink: 0;
+  background: var(--bg-primary);
+  cursor: zoom-in;
+  transition: border-color 100ms;
+}
+.meetings-moment-thumb:hover {
+  border-color: var(--text-muted);
+}
+.meetings-moment-thumb.failed {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* Fullscreen lightbox for the moment screenshot. Sits above
+   .settings-overlay (z-index 100) so clicking through doesn't
+   close the meetings modal underneath. */
+.meetings-lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  background: rgba(0, 0, 0, 0.88);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: zoom-out;
+}
+.meetings-lightbox-img {
+  max-width: calc(100vw - 64px);
+  max-height: calc(100vh - 64px);
+  object-fit: contain;
+  border-radius: 6px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+  cursor: default;
+}
+.meetings-lightbox-close {
+  position: fixed;
+  top: 16px;
+  right: 16px;
+  width: 36px;
+  height: 36px;
+  border: none;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.12);
+  color: var(--text-light);
+  font-size: 18px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 100ms;
+}
+.meetings-lightbox-close:hover {
+  background: rgba(255, 255, 255, 0.22);
+}
+.meetings-moment-body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.meetings-moment-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.meetings-moment-t {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+.meetings-moment-kind {
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  color: var(--text-muted);
+  background: var(--bg-primary);
+  border-radius: 3px;
+  padding: 1px 5px;
+}
+.meetings-moment-note {
+  font-size: 13px;
+  color: var(--text-light);
+}
+.meetings-moment-summary {
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--text-light);
+}
+.meetings-moment-summary.pending {
+  font-style: italic;
+  color: var(--text-muted);
+}
+.meetings-moment-summary.failed {
+  color: #9a6b00;
+}
+
+/* Date-grouping headings inside the meetings list. */
+.meetings-group {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 1.2px;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  padding: 12px 12px 4px;
+}
+.meetings-group:first-child {
+  padding-top: 8px;
+}
+
+/* Back button in the meetings header — only visible on narrow
+ * viewports when a meeting is selected (CSS rule below). */
+.meetings-back-btn {
+  font-size: 22px;
+  line-height: 1;
+  padding: 0 10px;
+  display: none;
+}
+
+/* === MOBILE BREAKPOINT (≤640px) === */
+@media (max-width: 640px) {
+  body {
+    font-size: 14px;
+  }
+  .top-bar {
+    padding: max(8px, env(safe-area-inset-top, 0px)) 12px 8px;
+  }
+  .top-bar-status {
+    font-size: 11px;
+    padding: 4px 0;
+  }
+  .top-bar-icon-btn {
+    width: 30px;
+    height: 30px;
+  }
+  .top-bar-icon-btn svg {
+    width: 16px;
+    height: 16px;
+  }
+  .compose {
+    padding: 18px 16px;
+    gap: 14px;
+  }
+  .compose-title {
+    font-size: 27px;
+    line-height: 1.12;
+  }
+  .compose-input-area textarea {
+    font-size: 16px; /* keeps iOS Safari from auto-zooming on focus */
+    min-height: 116px;
+  }
+  .compose-audio-source,
+  .compose-start-wrap {
+    padding-left: 16px;
+    padding-right: 16px;
+  }
+  .header-strip {
+    padding: 10px 12px 8px;
+    gap: 4px;
+  }
+  .header-meta-row {
+    font-size: 11px;
+  }
+  .header-title {
+    font-size: 16px;
+  }
+  .kv-editor {
+    padding: 8px 12px;
+  }
+  .mode-tabs {
+    padding: 0 8px;
+  }
+  .mode-tab {
+    min-height: 38px;
+    padding: 9px 9px 10px;
+    font-size: 11px;
+    letter-spacing: 1.1px;
+  }
+  .items-pane {
+    padding: 4px 0;
+  }
+  .item {
+    grid-template-columns: 54px 1fr;
+    column-gap: 8px;
+    padding: 8px 12px;
+  }
+  .item-time {
+    font-size: 11px;
+  }
+  .item-body {
+    line-height: 1.45;
+  }
+  .cta-region {
+    padding: 8px 10px max(8px, env(safe-area-inset-bottom, 0px));
+    gap: 8px;
+  }
+  .cta-region button {
+    min-height: 50px;
+  }
+  .cta-btn-icon {
+    font-size: 17px;
+  }
+  .cta-btn-label {
+    font-size: 10px;
+  }
+
+  .meetings-modal {
+    padding: 12px;
+    height: calc(100dvh - 16px);
+    max-width: 100%;
+    border-radius: 12px;
+  }
+  .meetings-header .settings-title {
+    font-size: 32px;
+  }
+  /* Stack panes: list-only OR detail-only based on `data-pane`. */
+  .meetings-modal .meetings-body {
+    grid-template-columns: 1fr;
+  }
+  .meetings-modal[data-pane="list"] .meetings-detail {
+    display: none;
+  }
+  .meetings-modal[data-pane="detail"] .meetings-list {
+    display: none;
+  }
+  .meetings-modal[data-pane="detail"] .meetings-back-btn {
+    display: inline-flex;
+  }
+  /* When detail is showing, hide Reload — it's a list action. */
+  .meetings-modal[data-pane="detail"] .meetings-header .btn-ghost:not(.meetings-back-btn) {
+    /* keep Close, hide Reload; matched on order via :nth-child below */
+  }
+  .meetings-detail-timing {
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+  .meetings-moment-card {
+    flex-direction: column;
+  }
+  .meetings-moment-thumb {
+    width: 100% !important;
+    height: auto !important;
+    max-height: 200px;
+  }
+}
+
+/* === ARTIFACTS MODAL === */
+/* Reuses .settings-overlay / .settings-modal chrome. Artifacts-
+   specific layout is the header (title + Upload + Reload + Close)
+   plus a vertical list of rows. */
+.artifacts-modal {
+  max-width: 720px;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100vh - 48px);
+  padding: 24px;
+  gap: 16px;
+}
+.artifacts-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.artifacts-header .artifacts-title-block {
+  flex: 1 1 auto;
+  min-width: 0; /* let the title block shrink instead of forcing wrap */
+}
+.artifacts-header .settings-title {
+  margin: 0;
+}
+/* Upload row — primary action under the header. Full-width black
+   pill matching every other primary CTA across the app. */
+.artifacts-upload-row {
+  display: flex;
+}
+.artifacts-upload-btn {
+  flex: 1 1 auto;
+  font-weight: 500;
+  letter-spacing: 0;
+  text-transform: none;
+  font-size: 15px;
+}
+.artifacts-body {
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 200px;
+}
+.artifacts-empty,
+.artifacts-error,
+.artifacts-uploading {
+  padding: 16px;
+  text-align: center;
+  color: var(--steel-gray);
+  font-size: 14px;
+}
+.artifacts-error {
+  color: var(--accent-red, #c53030);
+  text-align: left;
+}
+.artifacts-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.artifact-row {
+  border: 1px solid var(--border-light);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+  background: color-mix(in srgb, var(--bg-card) 70%, transparent);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.artifact-row-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.artifact-status-badge {
+  width: 18px;
+  height: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  font-size: 11px;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+.artifact-row.status-done .artifact-status-badge {
+  background: rgba(46, 160, 67, 0.15);
+  color: rgb(28, 113, 49);
+}
+.artifact-row.status-pending .artifact-status-badge {
+  background: rgba(120, 144, 168, 0.18);
+  color: var(--steel-gray);
+  /* Subtle pulse so the user notices it's working. */
+  animation: artifact-pulse 1.4s ease-in-out infinite;
+}
+.artifact-row.status-failed .artifact-status-badge {
+  background: rgba(229, 72, 77, 0.15);
+  color: rgb(180, 36, 40);
+}
+@keyframes artifact-pulse {
+  0%,
+  100% {
+    opacity: 0.5;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+.artifact-name {
+  font-weight: 500;
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.artifact-mime,
+.artifact-size {
+  font-size: 10px;
+  color: var(--steel-gray);
+  flex-shrink: 0;
+}
+.artifact-mime {
+  background: rgba(120, 144, 168, 0.12);
+  padding: 1px 5px;
+  border-radius: 3px;
+  letter-spacing: 0.04em;
+}
+.artifact-chev,
+.artifact-del {
+  padding: 2px 6px;
+  font-size: 12px;
+  flex-shrink: 0;
+}
+.artifact-del.armed {
+  background: rgba(229, 72, 77, 0.12);
+  color: rgb(180, 36, 40);
+  font-weight: 600;
+  border-radius: 4px;
+  padding: 2px 8px;
+  font-size: 11px;
+}
+.artifact-short {
+  color: var(--steel-gray);
+  font-size: 13px;
+  padding-left: 26px;
+  line-height: 1.4;
+}
+.artifact-note {
+  color: var(--steel-gray);
+  font-size: 12px;
+  font-style: italic;
+  padding-left: 26px;
+}
+.artifact-note-failed {
+  color: rgb(180, 36, 40);
+  font-style: normal;
+}
+.artifact-long {
+  margin-top: 6px;
+  padding: 10px 12px;
+  background: rgba(120, 144, 168, 0.08);
+  border-radius: var(--radius);
+  font-size: 13px;
+  line-height: 1.5;
+  user-select: text;
+  white-space: pre-wrap;
+}
+
+/* === COMPOSE-REGION ARTIFACT CHIP STRIP === */
+.compose-artifacts-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 4px 0 0;
+}
+.compose-artifact-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 4px 3px 8px;
+  border: 1px solid var(--border-light);
+  background: color-mix(in srgb, var(--bg-card) 70%, transparent);
+  border-radius: 999px;
+  font-size: 11px;
+  line-height: 1.2;
+}
+.compose-artifact-chip-name {
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.compose-artifact-chip-x {
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0 4px;
+  font-size: 13px;
+  line-height: 1;
+  color: var(--steel-gray);
+}
+.compose-artifact-chip-x:hover {
+  color: var(--ink);
+}
+.compose-artifact-add {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  border: 1px dashed rgba(217, 119, 87, 0.45);
+  background: transparent;
+  color: var(--brand-coral);
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+}
+.compose-artifact-add:hover {
+  background: rgba(217, 119, 87, 0.08);
+}
+
+/* === ARTIFACT PICKER MODAL === */
+.artifact-picker-modal {
+  max-width: 560px;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100vh - 48px);
+  padding: 0;
+  overflow: hidden;
+}
+.artifact-picker-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  padding: 16px 20px 12px;
+  border-bottom: 1px solid var(--border-light);
+}
+.artifact-picker-counter {
+  font-size: 11px;
+  color: var(--steel-gray);
+}
+.artifact-picker-body {
+  overflow-y: auto;
+  padding: 12px;
+  min-height: 200px;
+  max-height: 60vh;
+}
+.artifact-picker-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.artifact-picker-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 8px 10px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  text-align: left;
+  width: 100%;
+  cursor: pointer;
+  font: inherit;
+}
+.artifact-picker-row:hover:not(.disabled) {
+  background: rgba(120, 144, 168, 0.06);
+}
+.artifact-picker-row.checked {
+  background: rgba(217, 119, 87, 0.08);
+  border-color: rgba(217, 119, 87, 0.28);
+}
+.artifact-picker-row.disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.artifact-picker-checkbox {
+  font-size: 16px;
+  color: var(--brand-coral);
+  flex-shrink: 0;
+}
+.artifact-picker-row:not(.checked) .artifact-picker-checkbox {
+  color: var(--steel-gray);
+}
+.artifact-picker-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+.artifact-picker-info .artifact-name {
+  font-weight: 500;
+  font-size: 14px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.artifact-picker-info .artifact-short {
+  font-size: 12px;
+  color: var(--steel-gray);
+  padding: 0;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.artifact-picker-info .artifact-note {
+  font-size: 11px;
+  color: var(--steel-gray);
+  padding: 0;
+  font-style: italic;
+}
+.artifact-picker-info .artifact-note-failed {
+  color: rgb(180, 36, 40);
+  font-style: normal;
+}
+.artifact-picker-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 12px 20px;
+  border-top: 1px solid var(--border-light);
+}

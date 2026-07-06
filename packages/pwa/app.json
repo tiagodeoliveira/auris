@@ -1,0 +1,26 @@
+{
+  "package_id": "tools.tiago.auris",
+  "edition": "202601",
+  "name": "Auris",
+  "version": "0.17.0",
+  "min_app_version": "2.0.0",
+  "min_sdk_version": "0.0.10",
+  "entrypoint": "index.html",
+  "permissions": [
+    {
+      "name": "g2-microphone",
+      "desc": "Capture an optional spoken meeting description from the G2 mic before each meeting starts."
+    },
+    {
+      "name": "network",
+      "desc": "Connect to the Auris server on the user's local network for real-time meeting state.",
+      "whitelist": [
+        "http://localhost:7331",
+        "https://auris.tiago.tools",
+        "http://192.168.4.86:5173",
+        "ws://192.168.4.86:5173"
+      ]
+    }
+  ],
+  "supported_languages": ["en"]
+}

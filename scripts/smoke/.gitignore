@@ -1,0 +1,9 @@
+# Real env file with secrets — never commit
+.env.test
+
+# Per-run output: server logs, captured WS events, DB dumps
+artifacts/
+
+# Python bytecode cache
+__pycache__/
+*.pyc

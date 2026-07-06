@@ -1,0 +1,5 @@
+packages:
+  - "packages/*"
+  # The contract package is multi-language (Rust + TS + Swift), each
+  # in its own subdir. Only the TS portion is a pnpm workspace member.
+  - "packages/contract/ts"

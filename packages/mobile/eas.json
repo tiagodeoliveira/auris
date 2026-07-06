@@ -1,0 +1,65 @@
+{
+  "$schema": "https://raw.githubusercontent.com/expo/eas-cli/main/packages/eas-cli/schema/eas.schema.json",
+  "cli": {
+    "version": ">= 12.0.0",
+    "appVersionSource": "remote"
+  },
+  "build": {
+    "development": {
+      "developmentClient": true,
+      "distribution": "internal",
+      "channel": "development",
+      "environment": "development",
+      "ios": {
+        "image": "latest",
+        "simulator": true
+      },
+      "android": {
+        "image": "latest",
+        "buildType": "apk"
+      }
+    },
+    "preview-simulator": {
+      "distribution": "internal",
+      "channel": "preview",
+      "environment": "preview",
+      "ios": {
+        "image": "latest",
+        "simulator": true
+      }
+    },
+    "preview": {
+      "distribution": "internal",
+      "channel": "preview",
+      "environment": "preview",
+      "ios": {
+        "image": "latest",
+        "simulator": false
+      },
+      "android": {
+        "image": "latest",
+        "buildType": "apk"
+      }
+    },
+    "production": {
+      "channel": "production",
+      "environment": "production",
+      "autoIncrement": true,
+      "distribution": "store",
+      "ios": {
+        "image": "latest"
+      },
+      "android": {
+        "image": "latest",
+        "buildType": "apk"
+      }
+    }
+  },
+  "submit": {
+    "production": {
+      "ios": {
+        "ascAppId": "6769936142"
+      }
+    }
+  }
+}

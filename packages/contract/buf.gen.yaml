@@ -1,0 +1,27 @@
+version: v2
+inputs:
+  - directory: proto
+plugins:
+  # Rust generation is driven by the Rust crate's `build.rs` via
+  # prost-build, NOT by buf. prost-build needs to run from cargo's
+  # incremental build context (output to OUT_DIR, integrates with
+  # workspace target/), and trying to dual-source generation would
+  # cause drift. So we only list TS + Swift here.
+
+  - remote: buf.build/community/stephenh-ts-proto
+    out: ts/src/gen
+    opt:
+      - esModuleInterop=true
+      - useOptionals=messages
+      - outputServices=false
+      - outputClientImpl=false
+      - oneof=unions
+      # Wire format is binary protobuf, so field numbers are the
+      # identity; ts-proto's default camelCase naming is idiomatic
+      # for TS without any wire-level cost.
+      - forceLong=number # u64 → number; safe for our ms-since-meeting-start values
+
+  - remote: buf.build/apple/swift
+    out: swift/Sources/AurisContract/Generated
+    opt:
+      - Visibility=Public

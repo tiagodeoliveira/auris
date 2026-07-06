@@ -1,0 +1,407 @@
+# Build the Mac menu-bar app and bundle it into a `.app` structure.
+# Output is uploaded as a workflow artifact on push events and
+# attached to the GitHub Release on tag pushes.
+#
+# PR runs do `swift build` (compile validation) only — they skip
+# bundle / zip / upload, since PR checks should be cheap and we
+# don't ship from PR contexts anyway.
+#
+# Signing + notarization runs on ALL push events (main + tags),
+# gated only on event_name == 'push' so fork-PR contexts never see
+# the cert. The rolling nightly published from main is therefore
+# fully signed + notarized — no right-click-to-Open friction for
+# testers. Sparkle's appcast feed + EdDSA-signed update bundle stay
+# tag-only: nightlies don't enter the auto-update channel, they're
+# a manual download for the current-main testing track.
+#
+# Required secrets (for tagged release builds):
+#   APPLE_CERT_P12                   - base64-encoded .p12 of the
+#                                      Developer ID Application cert
+#                                      + private key
+#   APPLE_CERT_PASSWORD              - password used when exporting
+#                                      the .p12 from Keychain Access
+#   APP_STORE_CONNECT_API_KEY_ID     - Key ID from App Store Connect
+#   APP_STORE_CONNECT_API_ISSUER_ID  - Issuer ID from App Store Connect
+#   APP_STORE_CONNECT_API_KEY        - contents of the .p8 file (raw,
+#                                      including the BEGIN/END lines)
+
+name: Mac bundle
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+    paths:
+      - "packages/mac/**"
+      - ".github/workflows/mac-bundle.yml"
+  pull_request:
+    paths:
+      - "packages/mac/**"
+      - ".github/workflows/mac-bundle.yml"
+  workflow_dispatch:
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  build:
+    # macos-15 ships Xcode 16, which carries the macOS 15 SDK that
+    # `Package.swift` declares as the minimum (SCStream's microphone
+    # capture path requires macOS 15). macos-14 / macos-latest alias
+    # to Xcode 15 → max SDK is 14.5 → "minimum platform version 15.0
+    # but this target supports 14.5" build failure.
+    runs-on: macos-15
+    permissions:
+      contents: write # write needed when attaching to a Release on tag
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache SwiftPM build
+        uses: actions/cache@v4
+        with:
+          path: packages/mac/.build
+          # `v2` cache-bust prefix: introduced when the repo was renamed
+          # meeting_companion → auris. Old caches contained `.build/`
+          # manifest files with absolute paths to the previous repo
+          # checkout dir; the broad `restore-keys` fallback was happily
+          # restoring them and breaking Sparkle's XCFramework lookup.
+          # Bump the prefix to invalidate on any future churn that
+          # poisons build-dir absolute paths.
+          key: ${{ runner.os }}-swift-v2-${{ hashFiles('packages/mac/Package.swift', 'packages/mac/Package.resolved') }}-${{ hashFiles('packages/mac/Sources/**/*.swift') }}
+          restore-keys: |
+            ${{ runner.os }}-swift-v2-${{ hashFiles('packages/mac/Package.swift', 'packages/mac/Package.resolved') }}-
+            ${{ runner.os }}-swift-v2-
+
+      - name: Resolve version
+        id: version
+        run: |
+          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+          else
+            # Marketing version on non-tag pushes is a semver-ish
+            # ${baseline}-${sha7}. Bump the baseline when shipping a
+            # tagged release.
+            VERSION="0.11.0-${GITHUB_SHA::7}"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "build=${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+
+      - name: Build (universal release binary)
+        working-directory: packages/mac
+        run: |
+          swift build \
+            -c release \
+            --arch arm64 \
+            --arch x86_64
+
+      - name: Bundle into .app
+        if: github.event_name != 'pull_request'
+        working-directory: packages/mac
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          BUILD: ${{ steps.version.outputs.build }}
+          # Embedded into Info.plist by envsubst. All are repo
+          # variables (not secrets) — these values get baked into
+          # the bundle anyway, secrecy is meaningless. If a value is
+          # unset the corresponding Info.plist key gets an empty
+          # string; the app's runtime code falls back to its coded
+          # defaults (localhost server, dev Auth0 tenant).
+          AURIS_SERVER_URL: ${{ vars.AURIS_SERVER_URL }}
+          AUTH0_DOMAIN: ${{ vars.AUTH0_DOMAIN }}
+          AUTH0_MAC_CLIENT_ID: ${{ vars.AUTH0_MAC_CLIENT_ID }}
+          AUTH0_API_AUDIENCE: ${{ vars.AUTH0_API_AUDIENCE }}
+          # Sparkle public key — fail-closes auto-update if unset.
+          SPARKLE_PUBLIC_KEY: ${{ vars.SPARKLE_PUBLIC_KEY }}
+        run: |
+          BUNDLE="Auris.app"
+          rm -rf "$BUNDLE"
+          mkdir -p "$BUNDLE/Contents/MacOS" "$BUNDLE/Contents/Resources" "$BUNDLE/Contents/lib"
+          # SwiftPM with multiple --arch produces a universal binary
+          # under .build/apple/Products/Release.
+          cp .build/apple/Products/Release/Auris "$BUNDLE/Contents/MacOS/"
+          envsubst < Info.plist.template > "$BUNDLE/Contents/Info.plist"
+
+          # App icon. Info.plist points CFBundleIconFile at "AppIcon";
+          # Finder + Dock look for AppIcon.icns under Contents/Resources/.
+          # The .icns is committed under packages/mac/Resources/.
+          cp Resources/AppIcon.icns "$BUNDLE/Contents/Resources/"
+
+          # Sparkle ships as a binary-target xcframework. The linked
+          # binary's rpath is `@executable_path/../lib`, so we copy
+          # the framework into Contents/lib/ to match (rather than
+          # the more conventional Contents/Frameworks/, which would
+          # require install_name_tool surgery on the rpath). Find
+          # it dynamically so SwiftPM artifact-path changes between
+          # toolchain versions don't break the bundle step.
+          SPARKLE_FW=$(find .build -path "*/Sparkle.framework" -type d -maxdepth 8 2>/dev/null | head -1)
+          if [[ -z "$SPARKLE_FW" ]]; then
+            echo "::error::Sparkle.framework not found under .build/. SwiftPM artifact layout may have changed."
+            exit 1
+          fi
+          echo "Copying Sparkle.framework from: $SPARKLE_FW"
+          # `cp -R` follows symlinks; Sparkle's .framework is a
+          # bundle-of-symlinks (Versions/A -> Current style), so use
+          # `ditto` which preserves symlink + bundle metadata
+          # correctly.
+          ditto "$SPARKLE_FW" "$BUNDLE/Contents/lib/Sparkle.framework"
+
+      # ----------  Code signing + notarization (push events only)  ----------
+      # Runs on all push events (main + tags); PRs are excluded so
+      # fork contexts never receive the signing cert. The rolling
+      # nightly published from main pushes is therefore fully signed
+      # + notarized — testers can double-click it like any normal
+      # app, no Gatekeeper friction.
+      #
+      # The cert is imported into an ephemeral keychain that is
+      # destroyed at job end via the post-step; nothing persists on
+      # the runner across jobs (each macOS runner is single-use).
+
+      - name: Import Developer ID certificate
+        if: github.event_name == 'push'
+        env:
+          CERT_P12: ${{ secrets.APPLE_CERT_P12 }}
+          CERT_PASSWORD: ${{ secrets.APPLE_CERT_PASSWORD }}
+        run: |
+          if [[ -z "${CERT_P12:-}" || -z "${CERT_PASSWORD:-}" ]]; then
+            echo "::error::APPLE_CERT_P12 and APPLE_CERT_PASSWORD secrets are required for tagged release builds."
+            exit 1
+          fi
+          KEYCHAIN_PATH="$RUNNER_TEMP/auris-build.keychain-db"
+          KEYCHAIN_PASSWORD="$(openssl rand -hex 32)"
+          CERT_PATH="$RUNNER_TEMP/cert.p12"
+          echo "$CERT_P12" | base64 --decode > "$CERT_PATH"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERT_PATH" \
+            -P "$CERT_PASSWORD" \
+            -A -t cert -f pkcs12 \
+            -k "$KEYCHAIN_PATH"
+          # Add to the search list so codesign can find the identity
+          # without us having to pass --keychain explicitly.
+          security list-keychain -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | tr -d '"')
+          # Allow codesign to use the private key without an interactive
+          # prompt. -T flags the tools that may use the key without prompt.
+          security set-key-partition-list \
+            -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          rm -f "$CERT_PATH"
+          # Surface the identity name so the next step can codesign by
+          # name (Developer ID Application: ...). Mask it for log safety
+          # even though the cert subject is also embedded in the
+          # signed bundle.
+          IDENTITY=$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" \
+            | awk -F'"' '/Developer ID Application/ {print $2; exit}')
+          if [[ -z "$IDENTITY" ]]; then
+            echo "::error::No Developer ID Application cert found in imported keychain."
+            exit 1
+          fi
+          echo "::add-mask::$IDENTITY"
+          echo "SIGN_IDENTITY=$IDENTITY" >> "$GITHUB_ENV"
+
+      - name: Sign bundle
+        if: github.event_name == 'push'
+        working-directory: packages/mac
+        env:
+          BUNDLE: Auris.app
+        run: |
+          # Sign Sparkle's nested helpers in innermost-out order.
+          # --deep is unreliable for frameworks containing XPC
+          # services + embedded .app bundles; Sparkle's official
+          # docs require explicit per-binary signing.
+          # --preserve-metadata=entitlements is only used on the XPC
+          # services, which carry Sparkle-specific entitlements
+          # baked into the framework. Other helpers get a plain
+          # hardened-runtime signature.
+          SPARKLE="$BUNDLE/Contents/lib/Sparkle.framework"
+          codesign --force --sign "$SIGN_IDENTITY" --options runtime --timestamp \
+            "$SPARKLE/Versions/B/Updater.app/Contents/MacOS/Updater"
+          codesign --force --sign "$SIGN_IDENTITY" --options runtime --timestamp \
+            "$SPARKLE/Versions/B/Updater.app"
+          codesign --force --sign "$SIGN_IDENTITY" --options runtime --timestamp \
+            --preserve-metadata=entitlements \
+            "$SPARKLE/Versions/B/XPCServices/Downloader.xpc"
+          codesign --force --sign "$SIGN_IDENTITY" --options runtime --timestamp \
+            --preserve-metadata=entitlements \
+            "$SPARKLE/Versions/B/XPCServices/Installer.xpc"
+          codesign --force --sign "$SIGN_IDENTITY" --options runtime --timestamp \
+            "$SPARKLE/Versions/B/Autoupdate"
+          codesign --force --sign "$SIGN_IDENTITY" --options runtime --timestamp \
+            "$SPARKLE"
+          # Main bundle with our entitlements. Outer signature seals
+          # the just-completed framework signature into CodeResources.
+          codesign --force --sign "$SIGN_IDENTITY" --options runtime --timestamp \
+            --entitlements Auris.entitlements \
+            "$BUNDLE"
+          codesign --verify --deep --strict --verbose=2 "$BUNDLE"
+
+      - name: Notarize and staple
+        if: github.event_name == 'push'
+        working-directory: packages/mac
+        env:
+          BUNDLE: Auris.app
+          VERSION: ${{ steps.version.outputs.version }}
+          API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
+          API_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_API_ISSUER_ID }}
+          API_KEY: ${{ secrets.APP_STORE_CONNECT_API_KEY }}
+        run: |
+          if [[ -z "${API_KEY:-}" || -z "${API_KEY_ID:-}" || -z "${API_ISSUER_ID:-}" ]]; then
+            echo "::error::APP_STORE_CONNECT_API_KEY{,_ID,_ISSUER_ID} secrets are required for tagged release builds."
+            exit 1
+          fi
+          # Write the .p8 to a temp file. notarytool needs a path,
+          # not stdin. The runner is single-use; still clean up at
+          # end as defense-in-depth.
+          KEY_FILE="$RUNNER_TEMP/notary_api_key.p8"
+          printf '%s' "$API_KEY" > "$KEY_FILE"
+          # Pre-zip for notarytool. notarytool accepts .app directly
+          # but uploads faster from a zip; ditto preserves the
+          # bundle structure inside the zip.
+          NOTARY_ZIP="$RUNNER_TEMP/Auris-notary.zip"
+          ditto -c -k --keepParent "$BUNDLE" "$NOTARY_ZIP"
+          xcrun notarytool submit "$NOTARY_ZIP" \
+            --key "$KEY_FILE" \
+            --key-id "$API_KEY_ID" \
+            --issuer "$API_ISSUER_ID" \
+            --wait
+          rm -f "$KEY_FILE" "$NOTARY_ZIP"
+          xcrun stapler staple "$BUNDLE"
+          xcrun stapler validate "$BUNDLE"
+
+      - name: Package final zip
+        if: github.event_name != 'pull_request'
+        working-directory: packages/mac
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          # `ditto -c -k --keepParent` preserves the bundle's directory
+          # structure inside the zip (matching what users get from
+          # GitHub Release downloads). Run AFTER stapling on tagged
+          # builds so the ticket ships inside the zip - otherwise
+          # Gatekeeper has to fetch it online on first launch.
+          ditto -c -k --keepParent "Auris.app" "Auris-${VERSION}.zip"
+          ls -la "Auris-${VERSION}.zip"
+
+      - name: Upload bundle artifact
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: Auris-${{ steps.version.outputs.version }}
+          path: packages/mac/Auris-${{ steps.version.outputs.version }}.zip
+          if-no-files-found: error
+
+      # ──────────  Sparkle: sign + generate appcast (tag pushes only)  ──────────
+      # Tag pushes are the only events that publish a new version
+      # users will auto-update to; main pushes produce sha-tagged
+      # bundles for testing but don't update the appcast feed.
+
+      - name: Set up Sparkle tools
+        if: github.event_name == 'push' && github.ref_type == 'tag'
+        env:
+          SPARKLE_VERSION: "2.6.4"
+        run: |
+          curl -fSL -o /tmp/sparkle.tar.xz \
+            "https://github.com/sparkle-project/Sparkle/releases/download/${SPARKLE_VERSION}/Sparkle-${SPARKLE_VERSION}.tar.xz"
+          mkdir -p /tmp/sparkle
+          tar -xf /tmp/sparkle.tar.xz -C /tmp/sparkle
+          echo "/tmp/sparkle/bin" >> "$GITHUB_PATH"
+
+      - name: Sign update bundle with EdDSA
+        if: github.event_name == 'push' && github.ref_type == 'tag'
+        id: sign
+        working-directory: packages/mac
+        env:
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          if [[ -z "$SPARKLE_PRIVATE_KEY" ]]; then
+            echo "::error::SPARKLE_PRIVATE_KEY is not set. See .github/workflows/README.md."
+            exit 1
+          fi
+          # Write key to a temp file just long enough for sign_update
+          # to consume it. Avoid leaving any trace in the workspace.
+          KEY_FILE="$(mktemp)"
+          printf '%s' "$SPARKLE_PRIVATE_KEY" > "$KEY_FILE"
+          # `sign_update -f <keyfile>` returns a single line containing
+          # the `sparkle:edSignature` and `length` attributes ready to
+          # paste into the appcast's <enclosure>.
+          SIG_BLOB=$(sign_update -f "$KEY_FILE" "Auris-${VERSION}.zip")
+          rm -f "$KEY_FILE"
+          # Multi-line outputs need EOF-delimiter syntax to round-trip
+          # through GITHUB_OUTPUT cleanly.
+          {
+            echo "sig_blob<<EOF"
+            echo "$SIG_BLOB"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Generate appcast.xml
+        if: github.event_name == 'push' && github.ref_type == 'tag'
+        working-directory: packages/mac
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          BUILD: ${{ steps.version.outputs.build }}
+          SIG_BLOB: ${{ steps.sign.outputs.sig_blob }}
+          DOWNLOAD_URL: https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/Auris-${{ steps.version.outputs.version }}.zip
+        run: |
+          PUB_DATE=$(date -u +"%a, %d %b %Y %H:%M:%S GMT")
+          cat > appcast.xml <<EOF
+          <?xml version="1.0" encoding="utf-8"?>
+          <rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
+              <channel>
+                  <title>Auris</title>
+                  <link>https://github.com/${GITHUB_REPOSITORY}</link>
+                  <description>Auto-update feed for the Auris menu-bar app.</description>
+                  <language>en</language>
+                  <item>
+                      <title>Version ${VERSION}</title>
+                      <pubDate>${PUB_DATE}</pubDate>
+                      <sparkle:version>${BUILD}</sparkle:version>
+                      <sparkle:shortVersionString>${VERSION}</sparkle:shortVersionString>
+                      <sparkle:minimumSystemVersion>15.0</sparkle:minimumSystemVersion>
+                      <enclosure url="${DOWNLOAD_URL}" ${SIG_BLOB} type="application/octet-stream" />
+                  </item>
+              </channel>
+          </rss>
+          EOF
+          echo "::group::appcast.xml"
+          cat appcast.xml
+          echo "::endgroup::"
+
+      - name: Attach to release on tag
+        if: github.event_name == 'push' && github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            packages/mac/Auris-${{ steps.version.outputs.version }}.zip
+            packages/mac/appcast.xml
+          fail_on_unmatched_files: true
+
+      # ──────────  Rolling nightly (main pushes only)  ──────────
+      # Attaches the Mac .zip to the shared `nightly` release so the
+      # Releases sidebar always shows the latest bundle with a stable
+      # download URL. The PWA workflow attaches its .ehpk to the same
+      # release; both run race-safely (see `attach-nightly.sh` below).
+      # Sparkle stays driven by real `v*` tags — the Mac app's appcast
+      # feed never points at `nightly` and won't auto-install these.
+      - name: Publish to rolling nightly release
+        if: |
+          github.event_name == 'push'
+          && github.ref == 'refs/heads/main'
+        working-directory: packages/mac
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.version.outputs.version }}
+          COMMIT: ${{ github.sha }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          # Stable filename for a copy-pasteable download URL. The
+          # version-pinned copy is intentionally NOT uploaded — the
+          # `nightly` release is rolling-only so its asset list
+          # stays at fixed size. People who want a pinned build cut
+          # a real `v*` tag instead.
+          cp "Auris-${VERSION}.zip" "Auris-nightly.zip"
+
+          "${GITHUB_WORKSPACE}/.github/workflows/scripts/attach-nightly.sh" \
+            "Auris-nightly.zip"

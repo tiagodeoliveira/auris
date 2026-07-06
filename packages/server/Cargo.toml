@@ -1,0 +1,83 @@
+[package]
+name = "auris-server"
+# SemVer, kept in lockstep with the repo-wide git tag (latest
+# release: v0.17.0). The banner at startup pairs this with the git
+# short SHA (`AURIS_BUILD_SHA`, injected by CI) so the exact build
+# is identifiable even when the version string stays put between
+# tagged releases.
+version = "0.17.0"
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "auris-server"
+path = "src/main.rs"
+
+# Offline-only utility for backfilling meetings from JSONL transcripts.
+# See packages/server/src/bin/recover_meeting.rs for full docs.
+[[bin]]
+name = "recover-meeting"
+path = "src/bin/recover_meeting.rs"
+
+[dependencies]
+anyhow = "1"
+# Refresh-token hashing for the device-pairing flow. Argon2id is a
+# memory-hard KDF; defaults to the OWASP profile (19 MiB / 2 ops).
+argon2 = "0.5"
+axum = { version = "0.7", default-features = false, features = ["http1", "json", "query", "tokio", "tracing", "ws", "multipart"] }
+axum-otel-metrics = "0.10"
+base64 = "0.22"
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
+clap = { version = "4", features = ["derive", "env"] }
+dotenvy = "0.15"
+futures-util = "0.3"
+gethostname = "0.5"
+# URI validation for OTEL_EXPORTER_OTLP_ENDPOINT at boot.
+# opentelemetry-otlp 0.28 silently swallows endpoint parse errors
+# inside build() (falls back to http://localhost:4318), so we parse
+# the endpoint ourselves with the SAME http::Uri type the crate uses,
+# keeping accept/reject semantics aligned. http 1.x is already in the
+# tree via axum — this is a direct declaration, not a new crate.
+http = "1"
+jsonwebtoken = "9"
+opentelemetry = { version = "0.28", default-features = false, features = ["metrics"] }
+opentelemetry-otlp = { version = "0.28", default-features = false, features = ["metrics", "http-proto", "reqwest-client"] }
+opentelemetry_sdk = { version = "0.28", default-features = false, features = ["metrics", "rt-tokio", "experimental_metrics_periodicreader_with_async_runtime"] }
+# PDF generation for the meeting-export endpoint. printpdf's built-in
+# Type 1 fonts (Helvetica family) cover all the typography we need
+# for English transcripts, so no TTF bundling required.
+# `embedded_images` brings in printpdf's `image_crate` re-export
+# (pinned to image 0.24.3 internally), used to decode the JPEG
+# bytes of moment screenshots before embedding.
+printpdf = { version = "0.7", features = ["embedded_images"] }
+# Cryptographic RNG for pair-code + refresh-token generation.
+# Declared as a direct dep (was already transitively present via
+# argon2 / uuid) so the call sites can `use rand::Rng` cleanly.
+rand = "0.8"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+rig-bedrock = "0.4.6"
+rig-core = { version = "0.37", features = ["derive"] }
+schemars = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-rustls", "postgres", "macros", "chrono", "uuid", "migrate"] }
+thiserror = "2"
+tokio = { version = "1", features = ["full"] }
+tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
+tokio-util = { version = "0.7", features = ["rt"] }
+tower-http = { version = "0.5", features = ["catch-panic", "cors", "trace"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+
+[dev-dependencies]
+# `testing` unlocks InMemoryMetricExporter for the metrics unit tests
+# (observability/metrics.rs). Dev-profile only.
+opentelemetry_sdk = { version = "0.28", default-features = false, features = ["metrics", "rt-tokio", "experimental_metrics_periodicreader_with_async_runtime", "testing"] }
+tokio = { version = "1", features = ["full", "test-util"] }
+tokio-tungstenite = "0.24"
+tower = { version = "0.5", features = ["util"] }

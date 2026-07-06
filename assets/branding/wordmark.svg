@@ -1,0 +1,10 @@
+<svg viewBox="0 0 360 130" role="img" xmlns="http://www.w3.org/2000/svg">
+  <title>Auris wordmark</title>
+  <desc>Two nested concentric arcs opening to the left, with a coral accent dot at the focal point. Paired with the lowercase wordmark "auris".</desc>
+  <g transform="translate(20, 10)">
+    <path d="M 60 10 A 50 50 0 0 0 60 110" fill="none" stroke="#1e293b" stroke-width="9" stroke-linecap="round"/>
+    <path d="M 60 30 A 30 30 0 0 0 60 90" fill="none" stroke="#1e293b" stroke-width="9" stroke-linecap="round"/>
+    <circle cx="44" cy="60" r="7" fill="#d97757"/>
+    <text x="80" y="80" font-family="-apple-system, BlinkMacSystemFont, 'SF Pro Display', system-ui, sans-serif" font-size="72" font-weight="500" fill="#1e293b" letter-spacing="-2">auris</text>
+  </g>
+</svg>

@@ -1,0 +1,16 @@
+-- Per-meeting assist surface sensitivity. Drives the server-side
+-- confidence threshold in the `push_assist_suggestion` tool AND
+-- the nudge inserted into the agent's system prompt at bootstrap.
+--
+-- Values:
+--   'aggressive' — lower threshold + prompt asks the agent to
+--                  surface anything mildly useful. Fires a lot.
+--   'moderate'   — historical behavior. Coach ≥ 85, others ≥ 70.
+--   'minimal'    — high threshold + prompt asks the agent to only
+--                  fire on unmistakable signals. Few but important.
+--
+-- NULL is treated as 'moderate' by the loading code so existing
+-- rows don't need backfill and clients that omit the start_meeting
+-- field default to the same behavior they had before this column
+-- existed.
+ALTER TABLE meetings ADD COLUMN assist_sensitivity TEXT;

@@ -1,0 +1,21 @@
+-- Refresh-token rotation grace window.
+--
+-- Refresh tokens are single-use: every `/pair/refresh` rotates the
+-- token and overwrites `refresh_token_hash`. The PWA persists the new
+-- token over the EvenHub bridge KV (a BLE-backed channel that can drop
+-- a write), and the server commits the rotation BEFORE the client
+-- confirms persistence. If that persist fails, the client keeps the
+-- OLD token while the server expects the NEW one — the next refresh
+-- 401s and the user is forced to re-pair. Observed in practice as
+-- "asks me to pair again every day."
+--
+-- The fix keeps rotation (theft-detection intact) but tolerates a
+-- lagging client: the immediately-previous token hash is retained for
+-- a grace window. `rotate_refresh` accepts the current OR the previous
+-- hash (within grace), so a single failed persist self-heals on the
+-- next refresh instead of stranding the device.
+--
+-- Both columns are nullable with no backfill: existing devices simply
+-- have no previous hash until their next rotation populates one.
+ALTER TABLE paired_devices ADD COLUMN prev_refresh_token_hash TEXT;
+ALTER TABLE paired_devices ADD COLUMN prev_rotated_at TIMESTAMPTZ;

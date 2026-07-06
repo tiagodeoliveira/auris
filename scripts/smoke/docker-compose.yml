@@ -1,0 +1,63 @@
+# Smoke test stack: postgres + auris-server. Isolated from the dev
+# `docker-compose.yml` at the repo root via the `name:` field — the
+# compose project here is `auris-smoke`, the dev project is `auris`,
+# so the two stacks coexist without container-name collisions.
+#
+# Brought up by scripts/smoke/smoke.py — operators don't typically
+# `docker compose up` this directly.
+#
+# Container names are pinned (smoke-postgres, smoke-server) so the
+# Python harness can target them via `docker exec` / `docker logs`
+# without guessing the auto-generated names.
+
+name: auris-smoke
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: smoke-postgres
+    environment:
+      POSTGRES_USER: auris
+      POSTGRES_PASSWORD: dev
+      POSTGRES_DB: auris
+    # No ports: published — the server reaches postgres via the
+    # compose network. Host doesn't need direct postgres access; the
+    # Python harness uses `docker exec smoke-postgres psql ...` for
+    # the few queries it runs.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U auris -d auris"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+
+  server:
+    # Build from the root Dockerfile so the smoke uses the same image
+    # shape kleos ships. First build is slow (full Rust release
+    # compile); subsequent builds hit the BuildKit cache mounts in
+    # the Dockerfile and are fast.
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    container_name: smoke-server
+    depends_on:
+      postgres:
+        condition: service_healthy
+    # All AURIS_* / provider creds come from .env.test (gitignored).
+    # The DATABASE_URL there must use `postgres` as the host, not
+    # `localhost` — the server container reaches postgres via the
+    # compose network.
+    env_file:
+      - .env.test
+    # Expose the server on host port 47331 so the Python harness's WS
+    # connections can reach the server at ws://localhost:47331/ and
+    # /audio. Container-internal port stays 7331 (the binary's default,
+    # also what the Dockerfile HEALTHCHECK probes via `auris-server
+    # healthz`). A high host port keeps smoke from colliding with a
+    # locally-running production service on the default 7331.
+    # Bound to 127.0.0.1 explicitly so this stack never accidentally
+    # listens on the public interface.
+    ports:
+      - "127.0.0.1:47331:7331"
+    # The Dockerfile's HEALTHCHECK uses `auris-server healthz`, so
+    # compose's `condition: service_healthy` works for downstream
+    # gates (and `docker inspect smoke-server` reports Health.Status).

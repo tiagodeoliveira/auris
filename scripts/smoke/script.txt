@@ -1,0 +1,42 @@
+=== transcript ===
+
+OK team, let's run through where we are on the upcoming release. The
+engineering side is in decent shape — the new ingestion service
+landed in staging on Friday, and we're seeing about a thirty percent
+drop in tail latency compared to last month. That's a real win and
+more than the team expected for this quarter.
+
+On the product side, design has the mockups for the onboarding flow
+landing tomorrow. The product lead wants another round of user
+testing before we lock anything for the beta cohort, which makes
+sense given how much the flow has shifted since the last review.
+
+The big open question is whether the compliance review blocks our
+launch. Legal is still working through the data residency clause,
+and we won't have a clear answer until at least Wednesday. That's
+the thing I'm most worried about right now — if compliance pushes
+back hard, we're looking at a two or three week delay.
+
+Two action items coming out of this discussion. First, engineering
+will write up the migration plan for the new ingestion service and
+have it ready by end of day Tuesday. That gives operations enough
+time to review it before the change window opens on Thursday.
+Second, the product team will sync on the user testing scope
+tomorrow morning, then loop in design afterward.
+
+Quick note on infrastructure. Finance flagged a fifteen percent
+overrun on the cloud bill last month. Most of it traces back to the
+search indexing job, which has been running far longer than the
+original estimate. We need to dig into that before the next billing
+cycle closes.
+
+Anything else worth flagging before we close out? Alright, let's
+plan to sync again Thursday once we have the legal answer back on
+compliance. Thanks everyone.
+
+=== keywords ===
+migration plan
+Tuesday
+compliance
+user testing
+cloud bill
