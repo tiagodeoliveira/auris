@@ -1,0 +1,33 @@
+# Dependabot config. `open-pull-requests-limit: 0` disables version-update
+# PRs (no "bump everything" flood) while leaving SECURITY updates on — so
+# we still get PRs for actionable advisories. The `ignore` rules silence
+# only the deps whose fix we can't currently reach, so Dependabot stops
+# re-opening futile PRs; the underlying Security-tab alerts stay open as
+# reminders and will clear when the upstream blocker lifts.
+version: 2
+updates:
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 0
+    ignore:
+      # All transitive, capped by expo / react-native-markdown-display@7.0.2
+      # (built against the old majors). The real fix rides an expo SDK bump
+      # or replacing the markdown lib — verified on-device, not a blind
+      # sub-dep override.
+      - dependency-name: "fast-xml-parser" # via @expo/dom-webview (4.x)
+      - dependency-name: "uuid" # via expo internals
+      - dependency-name: "linkify-it" # via react-native-markdown-display
+      - dependency-name: "markdown-it" # via react-native-markdown-display
+
+  - package-ecosystem: "cargo"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 0
+    ignore:
+      # Pinned at 0.28 by axum-otel-metrics (caps at opentelemetry ^0.31);
+      # the baggage advisory is unreachable here (metrics-only, no
+      # BaggagePropagator). Un-ignore once axum-otel-metrics supports 0.32.
+      - dependency-name: "opentelemetry*"
