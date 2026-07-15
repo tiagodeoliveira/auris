@@ -1,13 +1,13 @@
 import { z } from "zod";
-import type { MeetingApi } from "./client.js";
-import { AuthError, HttpError, NotFoundError } from "./client.js";
+import type { MeetingApi } from "../core/client.js";
+import { AuthError, HttpError, NotFoundError } from "../core/client.js";
 import {
   matchesFilters,
   paginateTranscript,
   toBriefing,
   toSummary,
   type SearchFilters,
-} from "./shape.js";
+} from "../core/shape.js";
 
 export interface ToolResult {
   content: { type: "text"; text: string }[];

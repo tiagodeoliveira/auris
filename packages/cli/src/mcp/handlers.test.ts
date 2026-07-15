@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { MeetingApi, RawMeetingDetail, RawMeetingSummary } from "./client.js";
-import { AuthError, NotFoundError } from "./client.js";
+import type { MeetingApi, RawMeetingDetail, RawMeetingSummary } from "../core/client.js";
+import { AuthError, NotFoundError } from "../core/client.js";
 import { makeTools } from "./handlers.js";
 
 function fakeClient(over: Partial<MeetingApi> = {}): MeetingApi {

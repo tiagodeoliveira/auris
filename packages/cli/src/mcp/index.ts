@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { AurisClient } from "./client.js";
-import { loadConfig } from "./config.js";
+import { AurisClient } from "../core/client.js";
+import { loadConfig } from "../core/config.js";
 import { createServer } from "./server.js";
 
 async function main(): Promise<void> {

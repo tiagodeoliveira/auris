@@ -1,5 +1,5 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import type { MeetingApi } from "./client.js";
+import type { MeetingApi } from "../core/client.js";
 import { makeTools } from "./handlers.js";
 
 /** Build an McpServer with the four read-only meeting tools registered. */

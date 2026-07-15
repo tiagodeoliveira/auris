@@ -1,11 +1,11 @@
 {
-  "name": "@auris/mcp",
+  "name": "@auris/cli",
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Local stdio MCP server exposing read-only access to auris meetings.",
+  "description": "Auris CLI (auris) and MCP server (auris-mcp) for read-only access to your meetings.",
   "bin": {
-    "auris-mcp": "./dist/index.js"
+    "auris-mcp": "./dist/mcp/index.js"
   },
   "files": [
     "dist"
@@ -14,7 +14,7 @@
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "start": "node dist/index.js"
+    "start": "node dist/mcp/index.js"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
