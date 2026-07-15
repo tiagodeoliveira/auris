@@ -1,21 +1,39 @@
-export interface Config {
-  baseUrl: string;
-  token: string;
+import { DEFAULTS } from "./defaults.js";
+
+export interface Auth0Config {
+  domain: string;
+  audience: string;
+  clientId: string;
 }
 
-const DEFAULT_BASE_URL = "https://auris.tiago.tools";
+export interface ResolvedConfig {
+  baseUrl: string;
+  auth0: Auth0Config;
+  /** Static bearer override (AURIS_TOKEN, or legacy AURIS_MCP_TOKEN); null if unset. */
+  envToken: string | null;
+}
 
-/**
- * Read configuration from the environment. `AURIS_MCP_TOKEN` (the auris bearer
- * token) is required; `AURIS_BASE_URL` is optional and defaults to production.
- */
-export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
-  const token = env.AURIS_MCP_TOKEN?.trim();
-  if (!token) {
+function pick(envVal: string | undefined, fallback: string): string {
+  return envVal?.trim() || fallback;
+}
+
+export function resolveConfig(env: NodeJS.ProcessEnv = process.env): ResolvedConfig {
+  const baseUrl = pick(env.AURIS_BASE_URL, DEFAULTS.aurisBaseUrl).replace(/\/+$/, "");
+  const auth0: Auth0Config = {
+    domain: pick(env.AURIS_AUTH0_DOMAIN, DEFAULTS.auth0Domain),
+    audience: pick(env.AURIS_AUTH0_AUDIENCE, DEFAULTS.auth0Audience),
+    clientId: pick(env.AURIS_AUTH0_CLIENT_ID, DEFAULTS.auth0ClientId),
+  };
+  const envToken = env.AURIS_TOKEN?.trim() || env.AURIS_MCP_TOKEN?.trim() || null;
+  return { baseUrl, auth0, envToken };
+}
+
+/** Assert Auth0 is configured (release build or env). Throws otherwise. */
+export function requireAuth0(a: Auth0Config): Auth0Config {
+  if (!a.domain || !a.audience || !a.clientId) {
     throw new Error(
-      "AURIS_MCP_TOKEN is not set. Provide your auris bearer token via the AURIS_MCP_TOKEN environment variable.",
+      "Auth0 not configured — set AURIS_AUTH0_DOMAIN / AURIS_AUTH0_AUDIENCE / AURIS_AUTH0_CLIENT_ID (or use a released build).",
     );
   }
-  const baseUrl = (env.AURIS_BASE_URL?.trim() || DEFAULT_BASE_URL).replace(/\/+$/, "");
-  return { baseUrl, token };
+  return a;
 }

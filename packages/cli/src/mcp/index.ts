@@ -1,17 +1,16 @@
 #!/usr/bin/env node
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { AurisClient } from "../core/client.js";
-import { loadConfig } from "../core/config.js";
+import { resolveConfig } from "../core/config.js";
 import { createServer } from "./server.js";
 
 async function main(): Promise<void> {
-  const config = loadConfig();
-  const client = new AurisClient(config.baseUrl, async () => config.token);
+  const cfg = resolveConfig();
+  const client = new AurisClient(cfg.baseUrl, async () => cfg.envToken);
   const server = createServer(client);
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  // Log to stderr only — stdout is the MCP stdio channel.
-  console.error(`auris-mcp connected (base ${config.baseUrl})`);
+  console.error(`auris-mcp connected (base ${cfg.baseUrl})`);
 }
 
 main().catch((e) => {
