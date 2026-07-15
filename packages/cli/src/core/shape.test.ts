@@ -80,7 +80,11 @@ const detail: RawMeetingDetail = {
     summary: [{ id: "s1", text: "They discussed Axon strategy.", t: 0 }],
     highlights: [{ id: "h1", text: "$900M business", t: 0 }],
     actions: [],
-    chat: [{ id: "c1", text: "ignore me", t: 0 }],
+    chat: [
+      { id: "c1", text: "what's going on here?", t: 0, meta: { role: "user" } },
+      { id: "c2", text: "It's an interview.", t: 0, meta: { role: "assistant" } },
+      { id: "c3", text: "no role here", t: 0 },
+    ],
   },
 };
 
@@ -97,7 +101,16 @@ describe("toBriefing", () => {
       { kind: "screenshot", t: 500, note: "slide", summary: "roadmap slide" },
     ]);
     expect(b).not.toHaveProperty("transcript");
-    expect(JSON.stringify(b)).not.toContain("ignore me"); // chat mode excluded
+    expect(b.chat).toEqual([
+      { role: "user", text: "what's going on here?" },
+      { role: "assistant", text: "It's an interview." },
+      { role: "unknown", text: "no role here" },
+    ]);
+  });
+
+  it("returns an empty chat array when items_by_mode has no chat key", () => {
+    const noChat = toBriefing({ ...detail, items_by_mode: { summary: [] } });
+    expect(noChat.chat).toEqual([]);
   });
 });
 

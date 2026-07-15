@@ -29,6 +29,7 @@ export interface MeetingBriefingOut {
   actions: string[];
   open_questions: string[];
   moments: MomentOut[];
+  chat: { role: string; text: string }[];
 }
 
 export interface TranscriptPage {
@@ -62,6 +63,16 @@ export function speakerOf(item: RawItem): string | null {
     if (typeof s === "number") return `Speaker ${s}`;
   }
   return null;
+}
+
+/** Role label for a chat item from meta.role ("user"/"assistant"), else "unknown". */
+export function chatRole(item: RawItem): string {
+  const meta = item.meta;
+  if (meta && typeof meta === "object" && !Array.isArray(meta)) {
+    const r = (meta as Record<string, unknown>).role;
+    if (typeof r === "string" && r.trim() !== "") return r;
+  }
+  return "unknown";
 }
 
 function meetingTitle(raw: { metadata: unknown; description: string | null }): string {
@@ -124,6 +135,7 @@ export function toBriefing(d: RawMeetingDetail): MeetingBriefingOut {
       note: m.note,
       summary: m.summary,
     })),
+    chat: (d.items_by_mode["chat"] ?? []).map((i) => ({ role: chatRole(i), text: i.text })),
   };
 }
 
