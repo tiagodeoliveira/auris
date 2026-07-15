@@ -18,6 +18,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
   FlatList,
+  Image,
   KeyboardAvoidingView,
   Platform,
   Pressable,
@@ -53,7 +54,15 @@ import { AurisMark } from "@/src/ui/AurisMark";
 import { MetadataEditor } from "@/src/ui/MetadataEditor";
 import { MicActivityIcon } from "@/src/ui/MicActivityIcon";
 import { ArtifactPicker } from "@/src/ui/artifacts";
+import { PhotoAttachButton } from "@/src/ui/PhotoAttachButton";
+import {
+  addPhoto,
+  canAddPhoto,
+  removePhoto,
+  type StagedPhoto,
+} from "@/src/ui/meeting-detail/chat-photo-staging";
 import { ArtifactsApi } from "@/src/wire/artifacts-api";
+import { ChatAttachmentsApi } from "@/src/wire/chat-attachments-api";
 import type { Item, ModeOption } from "@/src/wire/contract";
 
 /// Same short-label map as packages/pwa/src/ui/mode-tabs.ts. Keep
@@ -293,8 +302,24 @@ export default function MeetingScreen() {
         <ChatPane
           items={items}
           quickAsks={itemsByMode.quick_asks ?? []}
-          onSend={(text) => {
+          onSend={async (text, photos) => {
             haptics.select();
+            if (photos.length > 0) {
+              const api = ChatAttachmentsApi.from(serverUrl, () => auth0.getAccessToken());
+              if (!api || !currentMeetingId) {
+                Alert.alert("Could not attach photo", "No active meeting to attach to.");
+                throw new Error("no upload target");
+              }
+              try {
+                for (const p of photos) {
+                  const blob = await fetch(p.uri).then((r) => r.blob());
+                  await api.upload(currentMeetingId, blob, p.mime);
+                }
+              } catch (e) {
+                Alert.alert("Photo upload failed", e instanceof Error ? e.message : String(e));
+                throw e;
+              }
+            }
             send({ type: "chat", text });
           }}
         />
@@ -617,10 +642,12 @@ function ChatPane({
 }: {
   items: Item[];
   quickAsks: Item[];
-  onSend: (text: string) => void;
+  onSend: (text: string, photos: StagedPhoto[]) => Promise<void>;
 }) {
   const t = useTheme();
   const [draft, setDraft] = useState("");
+  const [photos, setPhotos] = useState<StagedPhoto[]>([]);
+  const [sending, setSending] = useState(false);
   const listRef = useRef<FlatList<Item>>(null);
 
   useEffect(() => {
@@ -656,23 +683,32 @@ function ChatPane({
   }, [chatStreaming]);
   const inputLocked = chatStreaming && !forceClearStreaming;
 
-  const handleSend = () => {
-    if (inputLocked) return;
+  const handleSend = async () => {
+    if (inputLocked || sending) return;
     const text = draft.trim();
-    if (!text) return;
-    onSend(text);
-    setDraft("");
+    if (!text && photos.length === 0) return;
+    setSending(true);
+    try {
+      await onSend(text, photos);
+      setDraft("");
+      setPhotos([]);
+    } catch {
+      // Parent surfaced the error; keep the draft + staged photos so
+      // the user can retry without re-picking.
+    } finally {
+      setSending(false);
+    }
   };
 
   /// Tap on a saved quick-ask chip: send its full prompt verbatim
   /// as a chat message. The label is what we render; `detail` holds
   /// the actual prompt (server packs them that way).
   const handleChipPick = (ask: Item) => {
-    if (inputLocked) return;
+    if (inputLocked || sending) return;
     const prompt = (ask.detail ?? "").trim();
     if (!prompt) return;
     haptics.select();
-    onSend(prompt);
+    void onSend(prompt, []);
   };
 
   return (
@@ -735,6 +771,53 @@ function ChatPane({
           ))}
         </ScrollView>
       )}
+      {photos.length > 0 && (
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          style={{ flexGrow: 0 }}
+          contentContainerStyle={{
+            paddingHorizontal: t.spacing.md,
+            paddingTop: t.spacing.xs,
+            gap: t.spacing.sm,
+            alignItems: "center",
+          }}
+        >
+          {photos.map((p) => (
+            <Pressable
+              key={p.id}
+              onPress={() => setPhotos((cur) => removePhoto(cur, p.id))}
+              accessibilityLabel="Remove photo"
+            >
+              <Image
+                source={{ uri: p.uri }}
+                style={{
+                  width: 56,
+                  height: 56,
+                  borderRadius: t.radius.md,
+                  borderWidth: 1,
+                  borderColor: t.color.border.soft,
+                }}
+              />
+              <View
+                style={{
+                  position: "absolute",
+                  top: -6,
+                  right: -6,
+                  width: 20,
+                  height: 20,
+                  borderRadius: 10,
+                  backgroundColor: t.color.bg.canvas,
+                  alignItems: "center",
+                  justifyContent: "center",
+                }}
+              >
+                <Text style={{ fontSize: 12, color: t.color.text.primary }}>✕</Text>
+              </View>
+            </Pressable>
+          ))}
+        </ScrollView>
+      )}
       <View
         style={{
           flexDirection: "row",
@@ -746,6 +829,10 @@ function ChatPane({
           backgroundColor: t.color.bg.canvas,
         }}
       >
+        <PhotoAttachButton
+          disabled={inputLocked || sending || !canAddPhoto(photos)}
+          onPicked={(photo) => setPhotos((cur) => addPhoto(cur, photo))}
+        />
         <TextInput
           style={{
             flex: 1,
@@ -764,7 +851,7 @@ function ChatPane({
           placeholder="Ask the agent…"
           placeholderTextColor={t.color.text.placeholder}
           returnKeyType="send"
-          onSubmitEditing={handleSend}
+          onSubmitEditing={() => void handleSend()}
           editable={!inputLocked}
         />
         <Pressable
@@ -773,10 +860,10 @@ function ChatPane({
             justifyContent: "center",
             backgroundColor: t.color.brand.coral,
             borderRadius: t.radius.md + 2,
-            opacity: inputLocked || !draft.trim() ? 0.5 : pressed ? 0.85 : 1,
+            opacity: inputLocked || sending || (!draft.trim() && photos.length === 0) ? 0.5 : pressed ? 0.85 : 1,
           })}
-          disabled={inputLocked || !draft.trim()}
-          onPress={handleSend}
+          disabled={inputLocked || sending || (!draft.trim() && photos.length === 0)}
+          onPress={() => void handleSend()}
         >
           <Text
             style={{
