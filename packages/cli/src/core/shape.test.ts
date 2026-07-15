@@ -158,5 +158,6 @@ describe("speakerOf", () => {
     expect(speakerOf({ id: "i", text: "x", t: 0 })).toBeNull();
     expect(speakerOf({ id: "i", text: "x", t: 0, meta: "nope" })).toBeNull();
     expect(speakerOf({ id: "i", text: "x", t: 0, meta: { other: "1" } })).toBeNull();
+    expect(speakerOf({ id: "i", text: "x", t: 0, meta: { speaker: "" } })).toBeNull();
   });
 });

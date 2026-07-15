@@ -95,6 +95,13 @@ describe("AurisClient.getMomentScreenshot", () => {
       "Bearer tok",
     );
   });
+  it("strips parameters from a parametrized content-type", async () => {
+    const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47]);
+    vi.stubGlobal("fetch", bytesResponse(200, png, "image/png; charset=binary"));
+    const out = await new AurisClient(BASE, provider).getMomentScreenshot("m1", "mo1");
+    expect(out.mimeType).toBe("image/png");
+  });
+
   it("maps 404 to NotFoundError", async () => {
     vi.stubGlobal("fetch", bytesResponse(404, new Uint8Array()));
     await expect(

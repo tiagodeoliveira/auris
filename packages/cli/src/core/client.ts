@@ -114,15 +114,16 @@ export class AurisClient implements MeetingApi {
     return (await res.json()) as T;
   }
 
-  getMomentScreenshot(
+  async getMomentScreenshot(
     meetingId: string,
     momentId: string,
   ): Promise<{ bytes: Uint8Array; mimeType: string }> {
     const path = `/meetings/${encodeURIComponent(meetingId)}/moments/${encodeURIComponent(momentId)}/screenshot`;
-    return this.fetchAuthed(path, "image/png").then(async (res) => {
-      const buf = await res.arrayBuffer();
-      const mimeType = res.headers.get("content-type") ?? "image/png";
-      return { bytes: new Uint8Array(buf), mimeType };
-    });
+    const res = await this.fetchAuthed(path, "image/png");
+    const buf = await res.arrayBuffer();
+    // Strip any parameters (e.g. "image/png; charset=binary") — MCP image
+    // blocks expect a bare media type and some clients validate it strictly.
+    const mimeType = (res.headers.get("content-type") ?? "image/png").split(";")[0].trim();
+    return { bytes: new Uint8Array(buf), mimeType };
   }
 }
