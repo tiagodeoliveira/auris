@@ -128,7 +128,7 @@ describe("makeTools", () => {
       }),
     ).handler({});
     expect(res.isError).toBe(true);
-    expect(res.content[0].text).toMatch(/AURIS_MCP_TOKEN/);
+    expect(res.content[0].text).toMatch(/not logged in/);
   });
 
   it("renders NotFoundError as an isError tool result", async () => {

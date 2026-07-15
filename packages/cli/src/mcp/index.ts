@@ -6,7 +6,7 @@ import { createServer } from "./server.js";
 
 async function main(): Promise<void> {
   const config = loadConfig();
-  const client = new AurisClient(config);
+  const client = new AurisClient(config.baseUrl, async () => config.token);
   const server = createServer(client);
   const transport = new StdioServerTransport();
   await server.connect(transport);

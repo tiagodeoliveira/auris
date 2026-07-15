@@ -1,5 +1,3 @@
-import type { Config } from "./config.js";
-
 /** Meeting list row — mirrors auris `MeetingSummary` JSON. */
 export interface RawMeetingSummary {
   id: string;
@@ -44,7 +42,7 @@ export interface RawMeetingDetail {
 
 export class AuthError extends Error {
   constructor() {
-    super("auris token expired or invalid — refresh AURIS_MCP_TOKEN.");
+    super("not logged in — run `auris login` (or set AURIS_TOKEN).");
     this.name = "AuthError";
   }
 }
@@ -71,8 +69,13 @@ export interface MeetingApi {
   getMeeting(id: string): Promise<RawMeetingDetail>;
 }
 
+export type TokenProvider = () => Promise<string | null>;
+
 export class AurisClient implements MeetingApi {
-  constructor(private readonly config: Config) {}
+  constructor(
+    private readonly baseUrl: string,
+    private readonly tokenProvider: TokenProvider,
+  ) {}
 
   listMeetings(): Promise<RawMeetingSummary[]> {
     return this.request<RawMeetingSummary[]>("/meetings");
@@ -83,13 +86,12 @@ export class AurisClient implements MeetingApi {
   }
 
   private async request<T>(path: string): Promise<T> {
+    const token = await this.tokenProvider();
+    if (!token) throw new AuthError();
     let res: Response;
     try {
-      res = await fetch(`${this.config.baseUrl}${path}`, {
-        headers: {
-          Authorization: `Bearer ${this.config.token}`,
-          Accept: "application/json",
-        },
+      res = await fetch(`${this.baseUrl}${path}`, {
+        headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
       });
     } catch (e) {
       throw new HttpError(0, `network error contacting auris: ${(e as Error).message}`);
