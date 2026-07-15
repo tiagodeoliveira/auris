@@ -9,7 +9,7 @@
 //!   POST   /meetings/:id/retry-wrap-up                     → re-run wrap-up extraction (failed meetings)
 //!   GET    /meetings/:id/moments/:moment_id/screenshot     → PNG bytes
 //!   POST   /meetings/:id/moments/:moment_id/screenshot     → upload PNG (raw image/png)
-//!   POST   /meetings/:id/chat_attachments                  → upload PNG to stage for next chat
+//!   POST   /meetings/:id/chat_attachments                  → upload PNG/JPEG to stage for next chat
 //!   DELETE /moments/:moment_id                             → drop one moment
 //!
 //!   GET    /artifacts                                      → user's library (newest first)

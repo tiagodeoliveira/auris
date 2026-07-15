@@ -12,10 +12,22 @@ pub(crate) struct UploadChatAttachmentResponse {
     id: String,
 }
 
-/// `POST /meetings/:id/chat_attachments` — raw PNG upload that stages
-/// an image for inclusion in the next `Intent::Chat`. Body is raw
-/// `image/png`; the response carries the assigned attachment id.
-/// Bytes land at `<data_dir>/blobs/meetings/<id>/chat/<aid>.png`,
+/// Maps an accepted image content-type (already stripped of params)
+/// to its (canonical mime, file extension). `None` = unsupported.
+/// v1 accepts PNG (Mac screenshots) and JPEG (mobile camera photos).
+fn accepted_image(mime_main: &str) -> Option<(&'static str, &'static str)> {
+    if mime_main.eq_ignore_ascii_case("image/png") {
+        Some(("image/png", "png"))
+    } else if mime_main.eq_ignore_ascii_case("image/jpeg") {
+        Some(("image/jpeg", "jpg"))
+    } else {
+        None
+    }
+}
+
+/// `POST /meetings/:id/chat_attachments` — raw image upload that stages
+/// an image for inclusion in the next `Intent::Chat`. Body is raw image/png (Mac) or image/jpeg (mobile); the response carries the assigned attachment id.
+/// Bytes land at `<data_dir>/blobs/meetings/<id>/chat/<aid>.{png,jpg}`,
 /// parallel to moments' `screenshots/` subdir.
 pub(crate) async fn upload_chat_attachment(
     State(state): State<ApiState>,
@@ -25,17 +37,17 @@ pub(crate) async fn upload_chat_attachment(
 ) -> Result<(StatusCode, Json<UploadChatAttachmentResponse>), ApiError> {
     let user_id = require_user(&headers, &state).await?;
 
-    // Mime: image/png only in v1 (case-insensitive).
+    // Mime: image/png (Mac) or image/jpeg (mobile) in v1, case-insensitive.
     let mime = headers
         .get(header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
     let mime_main = mime.split(';').next().unwrap_or("").trim();
-    if !mime_main.eq_ignore_ascii_case("image/png") {
-        return Err(ApiError::BadRequest(format!(
-            "only image/png is supported in v1 (got {mime_main:?})"
-        )));
-    }
+    let (canonical_mime, ext) = accepted_image(mime_main).ok_or_else(|| {
+        ApiError::BadRequest(format!(
+            "only image/png and image/jpeg are supported in v1 (got {mime_main:?})"
+        ))
+    })?;
 
     if bytes.is_empty() {
         return Err(ApiError::BadRequest("empty attachment body".into()));
@@ -56,7 +68,7 @@ pub(crate) async fn upload_chat_attachment(
     }
 
     let attachment_id = uuid::Uuid::new_v4().to_string();
-    let rel = format!("blobs/meetings/{meeting_id}/chat/{attachment_id}.png");
+    let rel = format!("blobs/meetings/{meeting_id}/chat/{attachment_id}.{ext}");
     let dir = crate::storage::data_dir().map_err(|e| ApiError::Internal(e.to_string()))?;
     let abs = dir.join(&rel);
     if let Some(parent) = abs.parent() {
@@ -73,7 +85,7 @@ pub(crate) async fn upload_chat_attachment(
         &attachment_id,
         &meeting_id,
         &user_id,
-        "image/png",
+        canonical_mime,
         &rel,
         bytes.len() as i64,
     )
@@ -84,4 +96,27 @@ pub(crate) async fn upload_chat_attachment(
         StatusCode::CREATED,
         Json(UploadChatAttachmentResponse { id: attachment_id }),
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::accepted_image;
+
+    #[test]
+    fn accepts_png_and_jpeg() {
+        assert_eq!(accepted_image("image/png"), Some(("image/png", "png")));
+        assert_eq!(accepted_image("image/jpeg"), Some(("image/jpeg", "jpg")));
+    }
+
+    #[test]
+    fn accepts_case_insensitively() {
+        assert_eq!(accepted_image("IMAGE/JPEG"), Some(("image/jpeg", "jpg")));
+    }
+
+    #[test]
+    fn rejects_unsupported_types() {
+        assert_eq!(accepted_image("image/gif"), None);
+        assert_eq!(accepted_image("application/pdf"), None);
+        assert_eq!(accepted_image(""), None);
+    }
 }
