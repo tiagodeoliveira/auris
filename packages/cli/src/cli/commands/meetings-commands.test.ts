@@ -1,6 +1,9 @@
+import { promises as fs } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { MeetingApi, RawMeetingDetail, RawMeetingSummary } from "../../core/client.js";
-import { getCmd, listCmd, searchCmd, transcriptCmd } from "./meetings.js";
+import { getCmd, listCmd, momentScreenshotCmd, searchCmd, transcriptCmd } from "./meetings.js";
 
 const summaries: RawMeetingSummary[] = [
   {
@@ -67,5 +70,39 @@ describe("meetings commands", () => {
       offset: 0,
       items: [{ id: "i1", t: 0, speaker: null, text: "[Speaker 1] hi" }],
     });
+  });
+
+  it("momentScreenshotCmd writes the PNG bytes to --out and reports size", async () => {
+    const png = new Uint8Array([1, 2, 3, 4, 5]);
+    const out = join(tmpdir(), `auris-shot-${Math.random().toString(36).slice(2)}.png`);
+    const line = await momentScreenshotCmd(
+      { ...api, getMomentScreenshot: async () => ({ bytes: png, mimeType: "image/png" }) },
+      "m1",
+      "mo1",
+      { out },
+    );
+    expect(line).toContain(out);
+    expect(line).toContain("5 bytes");
+    expect(Array.from(await fs.readFile(out))).toEqual([1, 2, 3, 4, 5]);
+    await fs.rm(out, { force: true });
+  });
+
+  it("momentScreenshotCmd errors (no fetch) when --out is missing", async () => {
+    let called = false;
+    await expect(
+      momentScreenshotCmd(
+        {
+          ...api,
+          getMomentScreenshot: async () => {
+            called = true;
+            return { bytes: new Uint8Array(), mimeType: "image/png" };
+          },
+        },
+        "m1",
+        "mo1",
+        {},
+      ),
+    ).rejects.toThrow(/--out/);
+    expect(called).toBe(false);
   });
 });

@@ -1,3 +1,4 @@
+import { promises as fs } from "node:fs";
 import { AurisClient, type MeetingApi } from "../../core/client.js";
 import { getAccessToken } from "../../core/auth.js";
 import { resolveConfig } from "../../core/config.js";
@@ -71,4 +72,16 @@ export async function transcriptCmd(
   return o.json
     ? JSON.stringify(page, null, 2)
     : page.items.map((i) => (i.speaker ? `[${i.speaker}] ${i.text}` : i.text)).join("\n");
+}
+
+export async function momentScreenshotCmd(
+  api: MeetingApi,
+  meetingId: string,
+  momentId: string,
+  o: { out?: string },
+): Promise<string> {
+  if (!o.out) throw new Error("specify --out <file> to save the PNG.");
+  const { bytes } = await api.getMomentScreenshot(meetingId, momentId);
+  await fs.writeFile(o.out, bytes);
+  return `wrote ${o.out} (${bytes.length} bytes)`;
 }

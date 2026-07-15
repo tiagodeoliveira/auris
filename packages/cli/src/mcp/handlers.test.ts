@@ -42,12 +42,13 @@ function parse(res: { content: { text: string }[] }) {
 }
 
 describe("makeTools", () => {
-  it("exposes exactly the four tools in order", () => {
+  it("exposes exactly the five tools in order", () => {
     expect(makeTools(fakeClient()).map((t) => t.name)).toEqual([
       "list_meetings",
       "search_meetings",
       "get_meeting",
       "get_meeting_transcript",
+      "get_moment_screenshot",
     ]);
   });
 
@@ -147,5 +148,33 @@ describe("makeTools", () => {
     ).handler({ id: "x" });
     expect(res.isError).toBe(true);
     expect(res.content[0].text).toMatch(/not found/);
+  });
+
+  it("exposes get_moment_screenshot as the 5th tool returning an image block", async () => {
+    const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47]);
+    const t = tool(
+      "get_moment_screenshot",
+      fakeClient({ getMomentScreenshot: async () => ({ bytes: png, mimeType: "image/png" }) }),
+    );
+    const res = await t.handler({ meeting_id: "m1", moment_id: "mo1" });
+    expect(res.isError).toBeFalsy();
+    expect(res.content[0]).toEqual({
+      type: "image",
+      data: Buffer.from(png).toString("base64"),
+      mimeType: "image/png",
+    });
+  });
+
+  it("renders NotFoundError from get_moment_screenshot as an isError result", async () => {
+    const t = tool(
+      "get_moment_screenshot",
+      fakeClient({
+        getMomentScreenshot: async () => {
+          throw new NotFoundError();
+        },
+      }),
+    );
+    const res = await t.handler({ meeting_id: "m1", moment_id: "x" });
+    expect(res.isError).toBe(true);
   });
 });

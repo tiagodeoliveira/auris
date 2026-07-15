@@ -10,7 +10,7 @@ import {
 } from "../core/shape.js";
 
 export interface ToolResult {
-  content: { type: "text"; text: string }[];
+  content: ({ type: "text"; text: string } | { type: "image"; data: string; mimeType: string })[];
   isError?: boolean;
 }
 
@@ -27,6 +27,10 @@ function ok(data: unknown): ToolResult {
 
 function fail(message: string): ToolResult {
   return { content: [{ type: "text", text: message }], isError: true };
+}
+
+function okImage(bytes: Uint8Array, mimeType: string): ToolResult {
+  return { content: [{ type: "image", data: Buffer.from(bytes).toString("base64"), mimeType }] };
 }
 
 /** Run a handler body, mapping known auris errors to isError tool results. */
@@ -114,6 +118,20 @@ export function makeTools(client: MeetingApi): ToolDef[] {
           const limit = (args.limit as number | undefined) ?? 200;
           const detail = await client.getMeeting(args.id as string);
           return ok(paginateTranscript(detail, offset, limit));
+        }),
+    },
+    {
+      name: "get_moment_screenshot",
+      description:
+        "Fetch the screenshot image for a specific meeting moment (get its id + has_screenshot from get_meeting). Returns a PNG image.",
+      schema: { meeting_id: z.string().min(1), moment_id: z.string().min(1) },
+      handler: (args) =>
+        guarded(async () => {
+          const { bytes, mimeType } = await client.getMomentScreenshot(
+            args.meeting_id as string,
+            args.moment_id as string,
+          );
+          return okImage(bytes, mimeType);
         }),
     },
   ];

@@ -13,7 +13,7 @@ const noopClient: MeetingApi = {
 };
 
 describe("createServer", () => {
-  it("registers the four meeting tools over MCP", async () => {
+  it("registers the five meeting tools over MCP", async () => {
     const server = createServer(noopClient);
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     await server.connect(serverTransport);
@@ -23,7 +23,13 @@ describe("createServer", () => {
 
     const { tools } = await client.listTools();
     expect(tools.map((t) => t.name).sort()).toEqual(
-      ["get_meeting", "get_meeting_transcript", "list_meetings", "search_meetings"].sort(),
+      [
+        "get_meeting",
+        "get_meeting_transcript",
+        "get_moment_screenshot",
+        "list_meetings",
+        "search_meetings",
+      ].sort(),
     );
 
     await client.close();

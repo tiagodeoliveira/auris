@@ -1,7 +1,14 @@
 #!/usr/bin/env node
 import { Command } from "commander";
 import { loginCommand, logoutCommand, whoamiCommand } from "./commands/auth.js";
-import { getCmd, listCmd, makeClient, searchCmd, transcriptCmd } from "./commands/meetings.js";
+import {
+  getCmd,
+  listCmd,
+  makeClient,
+  momentScreenshotCmd,
+  searchCmd,
+  transcriptCmd,
+} from "./commands/meetings.js";
 
 const program = new Command();
 program.name("auris").description("Auris CLI — your meetings from the terminal");
@@ -50,6 +57,12 @@ meetings
   .option("--limit <n>", "max items", (v) => parseInt(v, 10))
   .option("--json", "raw JSON")
   .action(async (id, o) => console.log(await transcriptCmd(makeClient(), id, o)));
+meetings
+  .command("moment-screenshot <meetingId> <momentId>")
+  .requiredOption("--out <file>", "path to write the PNG")
+  .action(async (meetingId, momentId, o) =>
+    console.log(await momentScreenshotCmd(makeClient(), meetingId, momentId, o)),
+  );
 
 program.parseAsync().catch((e) => {
   console.error((e as Error).message);
