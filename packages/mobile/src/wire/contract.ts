@@ -76,7 +76,7 @@ export type Intent =
   | { type: "register_device"; hostname: string; capabilities: Capability[] }
   | { type: "mark_moment"; t: number; note?: string }
   | { type: "expand_item"; item_id: string }
-  | { type: "chat"; text: string }
+  | { type: "chat"; text: string; attachment_ids?: string[] }
   | { type: "mint_pair_code"; device_label?: string };
 
 export type Event =

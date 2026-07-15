@@ -304,6 +304,12 @@ export default function MeetingScreen() {
           quickAsks={itemsByMode.quick_asks ?? []}
           onSend={async (text, photos) => {
             haptics.select();
+            // Upload each staged photo first, then reference the
+            // server-assigned ids on the chat intent — the server
+            // resolves images from `attachment_ids`, it does NOT
+            // auto-correlate staged uploads (same contract the Mac
+            // client uses).
+            const attachmentIds: string[] = [];
             if (photos.length > 0) {
               const api = ChatAttachmentsApi.from(serverUrl, () => auth0.getAccessToken());
               if (!api || !currentMeetingId) {
@@ -313,14 +319,14 @@ export default function MeetingScreen() {
               try {
                 for (const p of photos) {
                   const blob = await fetch(p.uri).then((r) => r.blob());
-                  await api.upload(currentMeetingId, blob, p.mime);
+                  attachmentIds.push(await api.upload(currentMeetingId, blob, p.mime));
                 }
               } catch (e) {
                 Alert.alert("Photo upload failed", e instanceof Error ? e.message : String(e));
                 throw e;
               }
             }
-            send({ type: "chat", text });
+            send({ type: "chat", text, attachment_ids: attachmentIds });
           }}
         />
       ) : (
