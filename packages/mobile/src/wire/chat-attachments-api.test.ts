@@ -16,7 +16,8 @@ describe("ChatAttachmentsApi", () => {
 
   it("POSTs raw bytes to the chat_attachments endpoint with auth + mime", async () => {
     const fetchMock = vi.fn(
-      async () => new Response(JSON.stringify({ id: "att-1" }), { status: 201 }),
+      async (_url: string, _init: RequestInit) =>
+        new Response(JSON.stringify({ id: "att-1" }), { status: 201 }),
     );
     vi.stubGlobal("fetch", fetchMock);
 
@@ -26,7 +27,7 @@ describe("ChatAttachmentsApi", () => {
 
     expect(id).toBe("att-1");
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const [url, init] = fetchMock.mock.calls[0];
     expect(url).toBe("https://host.example:8443/meetings/m-9/chat_attachments");
     expect(init.method).toBe("POST");
     const headers = init.headers as Record<string, string>;
