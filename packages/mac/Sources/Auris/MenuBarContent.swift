@@ -12,7 +12,6 @@ struct MenuBarContent: View {
     @Bindable var model: AppModel
     @ObservedObject var updater: UpdaterController
     @Environment(\.openWindow) private var openWindow
-    @Environment(\.dismissWindow) private var dismissWindow
 
     var body: some View {
         statusHeader
@@ -48,7 +47,11 @@ struct MenuBarContent: View {
         } else {
             Button {
                 if model.isOverlayVisible {
-                    dismissWindow(id: "meeting-overlay")
+                    // AppKit close, not `dismissWindow(id:)` — the
+                    // latter silently no-ops in our `.accessory`
+                    // MenuBarExtra app (same finding as
+                    // `AppModel.closeOverlayWindow`).
+                    model.closeOverlayWindow()
                 } else {
                     openWindow(id: "meeting-overlay")
                     NSApp.activate(ignoringOtherApps: true)

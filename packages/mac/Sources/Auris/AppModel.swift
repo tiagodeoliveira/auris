@@ -631,11 +631,14 @@ final class AppModel {
 
     /// Close the floating meeting-overlay window via AppKit. Looks
     /// up the window by its SwiftUI scene title ("Meeting"). Used
-    /// when the server signals meeting end so the overlay doesn't
-    /// linger in its live state — SwiftUI's `dismissWindow(id:)`
-    /// has been observed to silently no-op for our menu-bar
-    /// accessory app, so we go through AppKit directly.
-    private func closeOverlayWindow() {
+    /// when the server signals meeting end (so the overlay doesn't
+    /// linger in its live state) and by the menu-bar "Hide overlay"
+    /// action — SwiftUI's `dismissWindow(id:)` has been observed to
+    /// silently no-op for our menu-bar accessory app, so we go
+    /// through AppKit directly. `.close()` keeps the window handle in
+    /// `NSApp.windows`, so `showOverlayWindow()` re-shows it with
+    /// state intact.
+    func closeOverlayWindow() {
         for win in NSApp.windows where win.title == "Meeting" {
             win.close()
         }
