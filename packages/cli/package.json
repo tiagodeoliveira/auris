@@ -1,6 +1,6 @@
 {
   "name": "@auris/cli",
-  "version": "0.20.0",
+  "version": "0.21.0",
   "private": true,
   "type": "module",
   "description": "Auris CLI (auris) and MCP server (auris-mcp) for read-only access to your meetings.",
