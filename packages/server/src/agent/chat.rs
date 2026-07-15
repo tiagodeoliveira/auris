@@ -403,10 +403,16 @@ fn build_user_message(text: String, attachments: Vec<AttachmentPayload>) -> RigM
         parts.push(rig_core::message::UserContent::Text(text.into()));
     }
     for a in attachments {
+        let media_type = match a.mime.as_str() {
+            "image/jpeg" => ImageMediaType::JPEG,
+            // PNG for the Mac screenshot path and any other stored type;
+            // the upload endpoint only admits png/jpeg in v1.
+            _ => ImageMediaType::PNG,
+        };
         let b64 = base64::engine::general_purpose::STANDARD.encode(&a.bytes);
         parts.push(rig_core::message::UserContent::Image(RigImage {
             data: DocumentSourceKind::Base64(b64),
-            media_type: Some(ImageMediaType::PNG),
+            media_type: Some(media_type),
             detail: None,
             additional_params: None,
         }));
@@ -1711,6 +1717,27 @@ mod build_user_message_tests {
                     UserContent::Image(img) => {
                         assert_eq!(img.media_type, Some(ImageMediaType::PNG));
                         assert!(matches!(img.data, DocumentSourceKind::Base64(_)));
+                    }
+                    _ => panic!("expected Image part"),
+                }
+            }
+            _ => panic!("expected Message::User"),
+        }
+    }
+
+    #[test]
+    fn image_jpeg_uses_jpeg_media_type() {
+        let attachments = vec![AttachmentPayload {
+            mime: "image/jpeg".into(),
+            bytes: vec![0xFF, 0xD8, 0xFF],
+        }];
+        let msg = build_user_message("".to_string(), attachments);
+        match msg {
+            Message::User { content } => {
+                let parts: Vec<UserContent> = content.into_iter().collect();
+                match &parts[0] {
+                    UserContent::Image(img) => {
+                        assert_eq!(img.media_type, Some(ImageMediaType::JPEG));
                     }
                     _ => panic!("expected Image part"),
                 }
