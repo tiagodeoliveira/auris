@@ -9,6 +9,7 @@ function fakeClient(over: Partial<MeetingApi> = {}): MeetingApi {
     getMeeting: async () => {
       throw new Error("not stubbed");
     },
+    getMomentScreenshot: async () => ({ bytes: new Uint8Array(), mimeType: "image/png" }),
     ...over,
   };
 }

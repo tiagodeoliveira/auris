@@ -71,9 +71,18 @@ const detail: RawMeetingDetail = {
       kind: "screenshot",
       t: 500,
       note: "slide",
-      summary: "roadmap slide",
+      summary: "roadmap",
       summary_status: "success",
       screenshot_url: "/x.png",
+    },
+    {
+      id: "mo2",
+      kind: "note",
+      t: 900,
+      note: null,
+      summary: null,
+      summary_status: "none",
+      screenshot_url: null,
     },
   ],
   items_by_mode: {
@@ -98,7 +107,15 @@ describe("toBriefing", () => {
     expect(b.actions).toEqual([]);
     expect(b.open_questions).toEqual([]);
     expect(b.moments).toEqual([
-      { kind: "screenshot", t: 500, note: "slide", summary: "roadmap slide" },
+      {
+        id: "mo1",
+        kind: "screenshot",
+        t: 500,
+        note: "slide",
+        summary: "roadmap",
+        has_screenshot: true,
+      },
+      { id: "mo2", kind: "note", t: 900, note: null, summary: null, has_screenshot: false },
     ]);
     expect(b).not.toHaveProperty("transcript");
     expect(b.chat).toEqual([

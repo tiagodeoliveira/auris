@@ -10,10 +10,12 @@ export interface MeetingSummaryOut {
 }
 
 export interface MomentOut {
+  id: string;
   kind: string;
   t: number;
   note: string | null;
   summary: string | null;
+  has_screenshot: boolean;
 }
 
 export interface MeetingBriefingOut {
@@ -130,10 +132,12 @@ export function toBriefing(d: RawMeetingDetail): MeetingBriefingOut {
     actions: modeTexts(d, "actions"),
     open_questions: modeTexts(d, "open_questions"),
     moments: d.moments.map((m) => ({
+      id: m.id,
       kind: m.kind,
       t: m.t,
       note: m.note,
       summary: m.summary,
+      has_screenshot: m.screenshot_url != null,
     })),
     chat: (d.items_by_mode["chat"] ?? []).map((i) => ({ role: chatRole(i), text: i.text })),
   };

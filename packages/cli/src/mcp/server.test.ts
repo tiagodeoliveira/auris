@@ -9,6 +9,7 @@ const noopClient: MeetingApi = {
   getMeeting: async () => {
     throw new Error("unused");
   },
+  getMomentScreenshot: async () => ({ bytes: new Uint8Array(), mimeType: "image/png" }),
 };
 
 describe("createServer", () => {

@@ -67,6 +67,10 @@ export class HttpError extends Error {
 export interface MeetingApi {
   listMeetings(): Promise<RawMeetingSummary[]>;
   getMeeting(id: string): Promise<RawMeetingDetail>;
+  getMomentScreenshot(
+    meetingId: string,
+    momentId: string,
+  ): Promise<{ bytes: Uint8Array; mimeType: string }>;
 }
 
 export type TokenProvider = () => Promise<string | null>;
@@ -85,13 +89,13 @@ export class AurisClient implements MeetingApi {
     return this.request<RawMeetingDetail>(`/meetings/${encodeURIComponent(id)}`);
   }
 
-  private async request<T>(path: string): Promise<T> {
+  private async fetchAuthed(path: string, accept: string): Promise<Response> {
     const token = await this.tokenProvider();
     if (!token) throw new AuthError();
     let res: Response;
     try {
       res = await fetch(`${this.baseUrl}${path}`, {
-        headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
+        headers: { Authorization: `Bearer ${token}`, Accept: accept },
       });
     } catch (e) {
       throw new HttpError(0, `network error contacting auris: ${(e as Error).message}`);
@@ -102,6 +106,23 @@ export class AurisClient implements MeetingApi {
       const body = await res.text().catch(() => "");
       throw new HttpError(res.status, body.slice(0, 200));
     }
+    return res;
+  }
+
+  private async request<T>(path: string): Promise<T> {
+    const res = await this.fetchAuthed(path, "application/json");
     return (await res.json()) as T;
+  }
+
+  getMomentScreenshot(
+    meetingId: string,
+    momentId: string,
+  ): Promise<{ bytes: Uint8Array; mimeType: string }> {
+    const path = `/meetings/${encodeURIComponent(meetingId)}/moments/${encodeURIComponent(momentId)}/screenshot`;
+    return this.fetchAuthed(path, "image/png").then(async (res) => {
+      const buf = await res.arrayBuffer();
+      const mimeType = res.headers.get("content-type") ?? "image/png";
+      return { bytes: new Uint8Array(buf), mimeType };
+    });
   }
 }

@@ -29,7 +29,11 @@ const detail: RawMeetingDetail = {
   moments: [],
   items_by_mode: { summary: [{ id: "s1", text: "a summary", t: 0 }] },
 };
-const api: MeetingApi = { listMeetings: async () => summaries, getMeeting: async () => detail };
+const api: MeetingApi = {
+  listMeetings: async () => summaries,
+  getMeeting: async () => detail,
+  getMomentScreenshot: async () => ({ bytes: new Uint8Array(), mimeType: "image/png" }),
+};
 
 describe("meetings commands", () => {
   it("list --json emits mapped summaries", async () => {
