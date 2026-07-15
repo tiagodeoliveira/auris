@@ -35,7 +35,8 @@
         "RECORD_AUDIO",
         "FOREGROUND_SERVICE",
         "FOREGROUND_SERVICE_MICROPHONE",
-        "POST_NOTIFICATIONS"
+        "POST_NOTIFICATIONS",
+        "CAMERA"
       ]
     },
     "web": {
@@ -53,6 +54,13 @@
         {
           "microphonePermission": "Auris needs microphone access to capture meeting audio.",
           "enableBackgroundRecording": true
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Auris needs photo library access to attach photos to a chat message.",
+          "cameraPermission": "Auris needs camera access to attach photos to a chat message."
         }
       ],
       "./plugins/withSwiftVersionPin"
