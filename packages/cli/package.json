@@ -5,6 +5,7 @@
   "type": "module",
   "description": "Auris CLI (auris) and MCP server (auris-mcp) for read-only access to your meetings.",
   "bin": {
+    "auris": "./dist/cli/index.js",
     "auris-mcp": "./dist/mcp/index.js"
   },
   "files": [
@@ -18,6 +19,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
+    "commander": "^15.0.0",
     "zod": "^4.4.3"
   },
   "devDependencies": {
