@@ -115,7 +115,11 @@ describe("makeTools", () => {
       fakeClient({ getMeeting: async () => detail }),
     ).handler({ id: "m1", offset: 1, limit: 5 });
     const out = parse(res);
-    expect(out).toEqual({ total: 2, offset: 1, items: [{ id: "i2", t: 1, text: "b" }] });
+    expect(out).toEqual({
+      total: 2,
+      offset: 1,
+      items: [{ id: "i2", t: 1, speaker: null, text: "b" }],
+    });
   });
 
   it("renders AuthError as an isError tool result", async () => {

@@ -68,5 +68,7 @@ export async function transcriptCmd(
   o: { offset?: number; limit?: number; json?: boolean },
 ): Promise<string> {
   const page = paginateTranscript(await api.getMeeting(id), o.offset ?? 0, o.limit ?? 200);
-  return o.json ? JSON.stringify(page, null, 2) : page.items.map((i) => i.text).join("\n");
+  return o.json
+    ? JSON.stringify(page, null, 2)
+    : page.items.map((i) => (i.speaker ? `[${i.speaker}] ${i.text}` : i.text)).join("\n");
 }

@@ -34,7 +34,7 @@ export interface MeetingBriefingOut {
 export interface TranscriptPage {
   total: number;
   offset: number;
-  items: { id: string; t: number; text: string }[];
+  items: { id: string; t: number; speaker: string | null; text: string }[];
 }
 
 export interface SearchFilters {
@@ -49,6 +49,17 @@ function metaField(metadata: unknown, key: string): string | null {
   if (metadata && typeof metadata === "object" && !Array.isArray(metadata)) {
     const v = (metadata as Record<string, unknown>)[key];
     if (typeof v === "string") return v;
+  }
+  return null;
+}
+
+/** Extract a "Speaker N" label from a transcript item's meta.speaker, else null. */
+export function speakerOf(item: RawItem): string | null {
+  const meta = item.meta;
+  if (meta && typeof meta === "object" && !Array.isArray(meta)) {
+    const s = (meta as Record<string, unknown>).speaker;
+    if (typeof s === "string" && s.trim() !== "") return `Speaker ${s}`;
+    if (typeof s === "number") return `Speaker ${s}`;
   }
   return null;
 }
@@ -123,6 +134,6 @@ export function paginateTranscript(
 ): TranscriptPage {
   const items = d.transcript
     .slice(offset, offset + limit)
-    .map((i) => ({ id: i.id, t: i.t, text: i.text }));
+    .map((i) => ({ id: i.id, t: i.t, speaker: speakerOf(i), text: i.text }));
   return { total: d.transcript.length, offset, items };
 }

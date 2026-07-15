@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { RawMeetingDetail, RawMeetingSummary } from "./client.js";
-import { matchesFilters, paginateTranscript, toBriefing, toSummary } from "./shape.js";
+import { matchesFilters, paginateTranscript, speakerOf, toBriefing, toSummary } from "./shape.js";
 
 const raw: RawMeetingSummary = {
   id: "m1",
@@ -61,9 +61,9 @@ const detail: RawMeetingDetail = {
   ended_at: "2026-07-14T21:00:00Z",
   wrap_up_status: "success",
   transcript: [
-    { id: "i1", text: "[Speaker 1] hello", t: 0 },
+    { id: "i1", text: "[Speaker 1] hello", t: 0, meta: { speaker: "1" } },
     { id: "i2", text: "[Speaker 2] hi", t: 1200 },
-    { id: "i3", text: "[Speaker 1] bye", t: 2400 },
+    { id: "i3", text: "[Speaker 1] bye", t: 2400, meta: { speaker: "1" } },
   ],
   moments: [
     {
@@ -102,19 +102,31 @@ describe("toBriefing", () => {
 });
 
 describe("paginateTranscript", () => {
-  it("slices to {id,t,text} and reports the true total", () => {
+  it("slices to {id,t,speaker,text} and reports the true total", () => {
     const page = paginateTranscript(detail, 1, 2);
     expect(page).toEqual({
       total: 3,
       offset: 1,
       items: [
-        { id: "i2", t: 1200, text: "[Speaker 2] hi" },
-        { id: "i3", t: 2400, text: "[Speaker 1] bye" },
+        { id: "i2", t: 1200, speaker: null, text: "[Speaker 2] hi" },
+        { id: "i3", t: 2400, speaker: "Speaker 1", text: "[Speaker 1] bye" },
       ],
     });
   });
 
   it("clamps an out-of-range offset to an empty page", () => {
     expect(paginateTranscript(detail, 99, 10)).toEqual({ total: 3, offset: 99, items: [] });
+  });
+});
+
+describe("speakerOf", () => {
+  it("returns 'Speaker N' from meta.speaker (string or number)", () => {
+    expect(speakerOf({ id: "i", text: "x", t: 0, meta: { speaker: "1" } })).toBe("Speaker 1");
+    expect(speakerOf({ id: "i", text: "x", t: 0, meta: { speaker: 2 } })).toBe("Speaker 2");
+  });
+  it("returns null when meta is missing, not an object, or has no speaker", () => {
+    expect(speakerOf({ id: "i", text: "x", t: 0 })).toBeNull();
+    expect(speakerOf({ id: "i", text: "x", t: 0, meta: "nope" })).toBeNull();
+    expect(speakerOf({ id: "i", text: "x", t: 0, meta: { other: "1" } })).toBeNull();
   });
 });

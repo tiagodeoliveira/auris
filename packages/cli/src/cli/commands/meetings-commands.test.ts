@@ -61,7 +61,7 @@ describe("meetings commands", () => {
     expect(out).toEqual({
       total: 1,
       offset: 0,
-      items: [{ id: "i1", t: 0, text: "[Speaker 1] hi" }],
+      items: [{ id: "i1", t: 0, speaker: null, text: "[Speaker 1] hi" }],
     });
   });
 });

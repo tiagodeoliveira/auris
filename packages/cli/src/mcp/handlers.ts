@@ -102,7 +102,7 @@ export function makeTools(client: MeetingApi): ToolDef[] {
     {
       name: "get_meeting_transcript",
       description:
-        "Fetch a page of one meeting's verbatim transcript items. Speaker labels are embedded in each item's text as a '[Speaker N]' prefix. Use offset/limit to page through long meetings.",
+        'Fetch a page of one meeting\'s verbatim transcript items. Each item has a `speaker` field (e.g. "Speaker 1", or null when unknown). Use offset/limit to page through long meetings.',
       schema: {
         id: z.string().min(1),
         offset: z.number().int().min(0).optional(),
