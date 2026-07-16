@@ -35,8 +35,19 @@ const DEFAULT_WINDOW_MS: i64 = 15_000;
 /// "Mark moment". Without this delay, the worker reads a JSONL
 /// that's missing the most relevant utterance and the LLM is
 /// forced to say "no transcript".
-/// Override with `AURIS_MOMENT_GRACE_MS`.
+/// Override with `AURIS_MOMENT_GRACE_MS`. Applies only to the default
+/// (Mac auto-screenshot) path — see `SELF_CAPTURE_GRACE_MS`.
 const DEFAULT_GRACE_MS: u64 = 12_000;
+
+/// Grace period used instead of `DEFAULT_GRACE_MS` when the moment is
+/// `self_capture` (the marking client — mobile — is taking its own
+/// photo rather than the Mac auto-screenshotting). A human deciding
+/// whether to snap a photo, then framing and taking it, routinely
+/// takes longer than the Mac's ~1s auto-upload; the 12s default grace
+/// would frequently race the upload and the moment would land with no
+/// screenshot at all. Not affected by `AURIS_MOMENT_GRACE_MS` — that
+/// override only tunes the default (Mac) path.
+const SELF_CAPTURE_GRACE_MS: u64 = 45_000;
 
 const SYSTEM_PROMPT: &str = "You summarize a single moment a user explicitly bookmarked \
 during a live meeting. The user marks moments because something noteworthy was happening: \
@@ -133,10 +144,16 @@ async fn process_one(
     // Wait for in-flight STT chunks to finalize. Soniox commits a
     // chunk only on punctuation or silence; a moment marked mid-
     // utterance otherwise reads an empty (or stale) transcript window.
-    let grace_ms = std::env::var("AURIS_MOMENT_GRACE_MS")
-        .ok()
-        .and_then(|s| s.parse::<u64>().ok())
-        .unwrap_or(DEFAULT_GRACE_MS);
+    // `self_capture` moments additionally (really, primarily) wait on
+    // the mobile client's own photo upload — see SELF_CAPTURE_GRACE_MS.
+    let grace_ms = if req.self_capture {
+        SELF_CAPTURE_GRACE_MS
+    } else {
+        std::env::var("AURIS_MOMENT_GRACE_MS")
+            .ok()
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(DEFAULT_GRACE_MS)
+    };
     if grace_ms > 0 {
         tokio::time::sleep(Duration::from_millis(grace_ms)).await;
     }
@@ -177,16 +194,19 @@ async fn process_one(
     // moments with no screenshot are a documented degraded path
     // (e.g., PWA-only meetings without a screen-capture device).
     let image = match asset_path.as_deref() {
-        Some(rel) if !rel.is_empty() => read_screenshot_bytes(rel).await,
+        Some(rel) if !rel.is_empty() => read_screenshot_bytes(rel)
+            .await
+            .map(|bytes| (bytes, crate::storage::image::image_kind_for_path(rel).media_type)),
         _ => None,
     };
 
     let extraction: MomentSummaryExtraction = match image {
-        Some(bytes) => {
+        Some((bytes, media_type)) => {
             info!(
                 meeting_id = %req.meeting_id,
                 moment_id = %req.moment_id,
                 bytes = bytes.len(),
+                ?media_type,
                 "moment summary: vision call (screenshot attached)"
             );
             llm.extract_with_prompt_and_image::<MomentSummaryExtraction>(
@@ -194,7 +214,7 @@ async fn process_one(
                 SYSTEM_PROMPT,
                 &prompt,
                 bytes,
-                rig_core::completion::message::ImageMediaType::PNG,
+                media_type,
             )
             .await
             .map_err(|e| anyhow::anyhow!("LLM extract (vision) failed: {e}"))?

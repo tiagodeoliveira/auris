@@ -7,8 +7,8 @@
 //!   GET    /meetings/:id                                   → meeting + transcript + moments
 //!   DELETE /meetings/:id                                   → cascade-delete + blob cleanup
 //!   POST   /meetings/:id/retry-wrap-up                     → re-run wrap-up extraction (failed meetings)
-//!   GET    /meetings/:id/moments/:moment_id/screenshot     → PNG bytes
-//!   POST   /meetings/:id/moments/:moment_id/screenshot     → upload PNG (raw image/png)
+//!   GET    /meetings/:id/moments/:moment_id/screenshot     → stored image bytes (PNG or JPEG)
+//!   POST   /meetings/:id/moments/:moment_id/screenshot     → upload raw image/png or image/jpeg
 //!   POST   /meetings/:id/chat_attachments                  → upload PNG/JPEG to stage for next chat
 //!   DELETE /moments/:moment_id                             → drop one moment
 //!
@@ -59,6 +59,13 @@ pub struct MomentCreated {
     /// Owning user — needed by the summary worker so the LLM-usage
     /// counter increments under the right per-meeting key.
     pub user_id: String,
+    /// The marking client is uploading its own image (mobile camera
+    /// prompt) rather than the Mac auto-screenshotting. The summary
+    /// worker uses this to pick a longer finalization grace — a human
+    /// taking a photo takes longer than the Mac's ~1s auto-upload.
+    /// Defaults to `false` for any construction path that predates
+    /// this field.
+    pub self_capture: bool,
 }
 
 /// Internal signal published by `POST /meetings/:id/retry-wrap-up`

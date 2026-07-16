@@ -221,8 +221,17 @@ pub enum Intent {
         t: u64,
         #[serde(skip_serializing_if = "Option::is_none", default)]
         note: Option<String>,
+        /// Client-generated moment id (mobile: minted before sending
+        /// so the client can immediately upload its own photo against
+        /// it). Only a well-formed UUID is trusted; anything else is
+        /// replaced server-side. Absent => the server mints one.
         #[serde(skip_serializing_if = "Option::is_none", default)]
         id: Option<String>,
+        /// The marking client will upload its own screenshot (mobile
+        /// camera capture) rather than the Mac auto-screenshotting.
+        /// When `true`, the server skips delegating
+        /// `Event::CaptureMomentScreenshot` to the audio-source
+        /// device. Absent/`false` => today's Mac-driven behavior.
         #[serde(skip_serializing_if = "Option::is_none", default)]
         self_capture: Option<bool>,
     },

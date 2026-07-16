@@ -17,6 +17,7 @@
 
 pub mod artifacts;
 pub mod chat_attachments;
+pub mod image;
 pub mod items;
 pub mod meetings;
 pub mod moments;

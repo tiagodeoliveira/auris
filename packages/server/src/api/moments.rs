@@ -21,13 +21,11 @@ fn accepted_image(mime_main: &str) -> Option<(&'static str, &'static str)> {
 }
 
 /// Content-Type to serve for a stored asset, derived from its
-/// extension. Legacy rows (and anything unrecognized) fall back to PNG,
-/// which is what every pre-JPEG upload actually was.
+/// extension. Thin wrapper over the shared extension→image-kind
+/// mapping in `crate::storage::image` (also used by the moment-
+/// summary worker for its vision LLM call).
 fn content_type_for(asset_path: &str) -> &'static str {
-    match asset_path.rsplit('.').next() {
-        Some(e) if e.eq_ignore_ascii_case("jpg") || e.eq_ignore_ascii_case("jpeg") => "image/jpeg",
-        _ => "image/png",
-    }
+    crate::storage::image::image_kind_for_path(asset_path).mime
 }
 
 /// `DELETE /moments/:moment_id` — drop a single moment row. Best-
@@ -62,8 +60,11 @@ pub(crate) async fn delete_moment(
 }
 
 /// `GET /meetings/:id/moments/:moment_id/screenshot` — serves the
-/// PNG bytes from disk. 404 when the row has no `asset_path` or
-/// the file is missing (would happen if `<DATA_DIR>` was wiped).
+/// stored image bytes from disk (PNG for a Mac auto-screenshot, JPEG
+/// for a mobile camera capture; `Content-Type` is derived from the
+/// stored extension, see `content_type_for`). 404 when the row has no
+/// `asset_path` or the file is missing (would happen if `<DATA_DIR>`
+/// was wiped).
 pub(crate) async fn get_moment_screenshot(
     State(state): State<ApiState>,
     Path((meeting_id, moment_id)): Path<(String, String)>,
@@ -107,11 +108,15 @@ pub(crate) async fn get_moment_screenshot(
 
 /// `POST /meetings/:id/moments/:moment_id/screenshot` — late-binding
 /// screenshot upload for moments created via the WS `mark_moment`
-/// intent. The Mac with `screen_capture` capability that's bound as
-/// the audio source receives `Event::CaptureMomentScreenshot` and
-/// posts the resulting PNG here. Body is raw `image/png` (the same
-/// shape as a multipart `screenshot` field, but without the multipart
-/// envelope — keeps the upload small and the client-side encode trivial).
+/// intent. Two producers: the Mac with `screen_capture` capability
+/// that's bound as the audio source receives
+/// `Event::CaptureMomentScreenshot` and posts a PNG; a mobile client
+/// that marked the moment with `self_capture: true` posts a JPEG it
+/// just took instead (the server skips the Mac delegation in that
+/// case). Body is the raw image bytes (the same shape as a multipart
+/// `screenshot` field, but without the multipart envelope — keeps the
+/// upload small and the client-side encode trivial); `Content-Type`
+/// selects which of `image/png` / `image/jpeg` is accepted and stored.
 pub(crate) async fn upload_moment_screenshot(
     State(state): State<ApiState>,
     Path((meeting_id, moment_id)): Path<(String, String)>,

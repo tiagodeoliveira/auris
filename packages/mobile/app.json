@@ -60,7 +60,7 @@
         "expo-image-picker",
         {
           "photosPermission": "Auris needs photo library access to attach photos to a chat message.",
-          "cameraPermission": "Auris needs camera access to attach photos to a chat message."
+          "cameraPermission": "Auris needs camera access to attach photos to a chat message or a marked moment."
         }
       ],
       "./plugins/withSwiftVersionPin"

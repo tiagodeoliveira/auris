@@ -963,18 +963,8 @@ async fn dispatch_intent(
     if let Some(req) = outcome.mark_moment {
         // Prefer the client-supplied id: a client that will upload its
         // own image (mobile camera) needs to know the id up front, and
-        // a repeat of the same id is a natural idempotency key. Only a
-        // well-formed UUID is trusted into the PK; anything else is a
-        // buggy/hostile client, so we log and mint our own rather than
-        // letting it choose the key shape.
-        let moment_id = match req.id.as_deref() {
-            Some(id) if uuid::Uuid::parse_str(id).is_ok() => id.to_string(),
-            Some(bad) => {
-                tracing::warn!(client_id = %bad, "mark_moment: client id not a UUID; generating");
-                uuid::Uuid::new_v4().to_string()
-            }
-            None => uuid::Uuid::new_v4().to_string(),
-        };
+        // a repeat of the same id is a natural idempotency key.
+        let moment_id = resolve_moment_id(req.id.as_deref());
         let kind = "manual";
         match crate::storage::moments::insert_moment(
             &handle.db,
@@ -1001,6 +991,7 @@ async fn dispatch_intent(
                     kind: kind.to_string(),
                     t_ms: req.t as i64,
                     user_id: user_id.to_string(),
+                    self_capture: req.self_capture,
                 });
                 // Tell the agent immediately. The summary worker
                 // takes 15-22 s end-to-end (grace + LLM + DB write),
@@ -1087,6 +1078,28 @@ async fn dispatch_intent(
         }
     }
     Ok(())
+}
+
+/// Resolve the id to use for a freshly-marked moment. This is
+/// security-load-bearing on two fronts: it's the value inserted as
+/// the `moments` primary key (`insert_moment` is a plain INSERT, not
+/// an upsert — a duplicate id is rejected rather than silently
+/// overwriting another row), and it's later interpolated straight
+/// into a filesystem path by `api::moments` (`GET`/`POST
+/// .../moments/:moment_id/screenshot`). Only a well-formed UUID from
+/// the client is trusted verbatim; anything else — including a
+/// path-traversal payload like `"../../etc/passwd"` — is logged and
+/// replaced with a freshly minted UUID rather than let the client
+/// choose the key/path shape.
+fn resolve_moment_id(client_id: Option<&str>) -> String {
+    match client_id {
+        Some(id) if uuid::Uuid::parse_str(id).is_ok() => id.to_string(),
+        Some(bad) => {
+            tracing::warn!(client_id = %bad, "mark_moment: client id not a UUID; generating");
+            uuid::Uuid::new_v4().to_string()
+        }
+        None => uuid::Uuid::new_v4().to_string(),
+    }
 }
 
 async fn send_protocol_error(
@@ -1623,6 +1636,38 @@ mod tests {
                 "KNOWN_INTENTS entry {s:?} has no matching Intent variant"
             );
         }
+    }
+
+    /// `resolve_moment_id` is the sole guard on both the moments
+    /// primary key and (via `api::moments`) filesystem path
+    /// interpolation — a valid client-supplied UUID must pass through
+    /// verbatim so idempotent retries work, but anything else must be
+    /// replaced wholesale rather than sanitized/truncated.
+    #[test]
+    fn resolve_moment_id_returns_valid_uuid_verbatim() {
+        let id = "5b1b4b1a-6b1a-4b1a-8b1a-1234567890ab";
+        assert_eq!(resolve_moment_id(Some(id)), id);
+    }
+
+    #[test]
+    fn resolve_moment_id_replaces_non_uuid_client_ids() {
+        for bad in ["qa-123", "../../etc/passwd", "", "not-a-uuid-at-all"] {
+            let resolved = resolve_moment_id(Some(bad));
+            assert_ne!(
+                resolved, bad,
+                "non-UUID client id {bad:?} must never be returned verbatim"
+            );
+            assert!(
+                uuid::Uuid::parse_str(&resolved).is_ok(),
+                "resolved id {resolved:?} for bad input {bad:?} must be a valid UUID"
+            );
+        }
+    }
+
+    #[test]
+    fn resolve_moment_id_generates_fresh_uuid_when_absent() {
+        let resolved = resolve_moment_id(None);
+        assert!(uuid::Uuid::parse_str(&resolved).is_ok());
     }
 
     /// Process-wide env-mutation lock. `liveness_sweep_interval_reads_
