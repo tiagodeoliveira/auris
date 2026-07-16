@@ -221,6 +221,10 @@ pub enum Intent {
         t: u64,
         #[serde(skip_serializing_if = "Option::is_none", default)]
         note: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        id: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none", default)]
+        self_capture: Option<bool>,
     },
     ExpandItem {
         item_id: String,
@@ -634,6 +638,8 @@ mod tests {
         let i = Intent::MarkMoment {
             t: 1234,
             note: Some("nice".into()),
+            id: None,
+            self_capture: None,
         };
         assert_eq!(round_trip(&i), i);
     }

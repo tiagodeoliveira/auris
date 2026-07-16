@@ -795,6 +795,8 @@ mod tests {
         let out = s.apply_intent(Intent::MarkMoment {
             t: 1234,
             note: None,
+            id: None,
+            self_capture: None,
         });
         match &out.events[..] {
             [Event::Status { status }] => {
@@ -807,7 +809,12 @@ mod tests {
     #[test]
     fn mark_moment_idle_is_noop() {
         let mut s = UserSession::new();
-        let out = s.apply_intent(Intent::MarkMoment { t: 0, note: None });
+        let out = s.apply_intent(Intent::MarkMoment {
+            t: 0,
+            note: None,
+            id: None,
+            self_capture: None,
+        });
         assert!(out.events.is_empty());
     }
 
@@ -827,7 +834,12 @@ mod tests {
         // Rewind the meeting clock 10s so a server-computed offset is
         // clearly distinguishable from a passed-through 0.
         s.meeting.as_mut().unwrap().started_at_instant = Instant::now() - Duration::from_secs(10);
-        let out = s.apply_intent(Intent::MarkMoment { t: 0, note: None });
+        let out = s.apply_intent(Intent::MarkMoment {
+            t: 0,
+            note: None,
+            id: None,
+            self_capture: None,
+        });
         let req = out.mark_moment.expect("mark_moment outcome set");
         assert!(
             req.t >= 10_000,
@@ -852,9 +864,54 @@ mod tests {
         let out = s.apply_intent(Intent::MarkMoment {
             t: 4242,
             note: None,
+            id: None,
+            self_capture: None,
         });
         let req = out.mark_moment.expect("mark_moment outcome set");
         assert_eq!(req.t, 4242);
+    }
+
+    #[test]
+    fn mark_moment_passes_client_id_and_self_capture() {
+        let mut s = UserSession::new();
+        s.apply_intent(Intent::StartMeeting {
+            description: None,
+            metadata: None,
+            audio_source_device_id: None,
+            assist_sensitivity: None,
+        });
+        let out = s.apply_intent(Intent::MarkMoment {
+            t: 4242,
+            note: None,
+            id: Some("11111111-2222-3333-4444-555555555555".into()),
+            self_capture: Some(true),
+        });
+        let req = out.mark_moment.expect("mark_moment outcome set");
+        assert_eq!(
+            req.id.as_deref(),
+            Some("11111111-2222-3333-4444-555555555555")
+        );
+        assert!(req.self_capture);
+    }
+
+    #[test]
+    fn mark_moment_defaults_id_none_and_self_capture_false() {
+        let mut s = UserSession::new();
+        s.apply_intent(Intent::StartMeeting {
+            description: None,
+            metadata: None,
+            audio_source_device_id: None,
+            assist_sensitivity: None,
+        });
+        let out = s.apply_intent(Intent::MarkMoment {
+            t: 4242,
+            note: None,
+            id: None,
+            self_capture: None,
+        });
+        let req = out.mark_moment.expect("mark_moment outcome set");
+        assert!(req.id.is_none());
+        assert!(!req.self_capture);
     }
 
     #[test]

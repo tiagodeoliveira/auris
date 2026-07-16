@@ -64,7 +64,12 @@ impl UserSession {
             Intent::SetMetadata { key, value } => {
                 self.handle_set_metadata(key, value, &mut outcome)
             }
-            Intent::MarkMoment { t, note } => self.handle_mark_moment(t, note, &mut outcome),
+            Intent::MarkMoment {
+                t,
+                note,
+                id,
+                self_capture,
+            } => self.handle_mark_moment(t, note, id, self_capture, &mut outcome),
             Intent::RegisterDevice { .. } => {
                 // Handled in ws.rs because it needs the per-connection
                 // identity (only ws.rs has it). This arm exists so the
@@ -367,7 +372,14 @@ impl UserSession {
         });
     }
 
-    fn handle_mark_moment(&mut self, t: u64, note: Option<String>, outcome: &mut IntentOutcome) {
+    fn handle_mark_moment(
+        &mut self,
+        t: u64,
+        note: Option<String>,
+        id: Option<String>,
+        self_capture: Option<bool>,
+        outcome: &mut IntentOutcome,
+    ) {
         if !matches!(self.meeting_state, MeetingState::Active) {
             tracing::warn!(state = ?self.meeting_state, "mark_moment in invalid state");
             return;
@@ -406,6 +418,8 @@ impl UserSession {
             meeting_id,
             t,
             note,
+            id,
+            self_capture: self_capture.unwrap_or(false),
         });
     }
 }

@@ -1535,7 +1535,12 @@ mod tests {
                 capabilities: vec![],
                 device_id: None,
             },
-            Intent::MarkMoment { t: 0, note: None },
+            Intent::MarkMoment {
+                t: 0,
+                note: None,
+                id: None,
+                self_capture: None,
+            },
             Intent::ExpandItem {
                 item_id: "id".into(),
             },

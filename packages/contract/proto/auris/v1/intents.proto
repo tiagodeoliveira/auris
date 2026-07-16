@@ -65,6 +65,13 @@ message RegisterDevice {
 message MarkMoment {
   uint64 t = 1;
   optional string note = 2;
+  // Client-generated moment id. Lets a client that will attach its own
+  // image (mobile camera) know the id without a round-trip. Absent =>
+  // the server generates one (Mac/PWA path).
+  optional string id = 3;
+  // The marking client supplies its own image, so the server must NOT
+  // ask the screen_capture device to screenshot this moment.
+  optional bool self_capture = 4;
 }
 
 // Asks the agent to fill the item's `detail` field. Agent emits

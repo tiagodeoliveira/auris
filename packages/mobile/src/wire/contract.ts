@@ -74,7 +74,7 @@ export type Intent =
     }
   | { type: "delete_quick_ask"; id: string }
   | { type: "register_device"; hostname: string; capabilities: Capability[] }
-  | { type: "mark_moment"; t: number; note?: string }
+  | { type: "mark_moment"; t: number; note?: string; id?: string; self_capture?: boolean }
   | { type: "expand_item"; item_id: string }
   | { type: "chat"; text: string; attachment_ids?: string[] }
   | { type: "mint_pair_code"; device_label?: string };

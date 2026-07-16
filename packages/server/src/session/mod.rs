@@ -199,6 +199,12 @@ pub struct MomentRequest {
     pub meeting_id: String,
     pub t: u64,
     pub note: Option<String>,
+    /// Client-supplied moment id (validated by the caller). `None` =>
+    /// the server generates one.
+    pub id: Option<String>,
+    /// Marking client will upload its own image; skip the screen_capture
+    /// delegation.
+    pub self_capture: bool,
 }
 
 /// In-memory representation of an unfinished meeting recovered from
