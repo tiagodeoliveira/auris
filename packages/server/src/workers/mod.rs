@@ -5,6 +5,7 @@
 
 pub mod artifact;
 pub mod backfill;
+pub mod chat_context;
 pub mod finalize;
 pub mod metadata;
 pub mod moment;

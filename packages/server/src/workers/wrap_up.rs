@@ -107,6 +107,7 @@ pub async fn extract(
     user_id: &str,
     meeting_id: &str,
     transcript_text: &str,
+    chat_text: &str,
     llm: &LlmClient,
     db: &sqlx::PgPool,
 ) {
@@ -126,8 +127,10 @@ pub async fn extract(
         warn!(meeting_id, error = ?e, "wrap_up: failed to mark running");
     }
 
+    let system = crate::workers::chat_context::extractor_system_prompt(WRAP_UP_PROMPT, chat_text);
+    let input = crate::workers::chat_context::compose_extractor_input(transcript_text, chat_text);
     let extracted: WrapUpExtraction = match llm
-        .extract_with_prompt::<WrapUpExtraction>(user_id, WRAP_UP_PROMPT, transcript_text)
+        .extract_with_prompt::<WrapUpExtraction>(user_id, &system, &input)
         .await
     {
         Ok(e) => e,
@@ -390,10 +393,32 @@ async fn process_retry(db: &sqlx::PgPool, llm: &Arc<LlmClient>, req: &WrapUpRetr
     // `backfill::run` is included for the same reason: finalize runs it
     // too, and it only fills genuinely-empty title/description fields —
     // a no-op for meetings that already have them.
+    let chat_text = crate::workers::chat_context::load_chat_context(db, &req.meeting_id).await;
     tokio::join!(
-        crate::workers::summarize::run(&req.user_id, &req.meeting_id, &transcript_text, llm, db),
-        extract(&req.user_id, &req.meeting_id, &transcript_text, llm, db),
-        crate::workers::backfill::run(&req.user_id, &req.meeting_id, &transcript_text, llm, db),
+        crate::workers::summarize::run(
+            &req.user_id,
+            &req.meeting_id,
+            &transcript_text,
+            &chat_text,
+            llm,
+            db
+        ),
+        extract(
+            &req.user_id,
+            &req.meeting_id,
+            &transcript_text,
+            &chat_text,
+            llm,
+            db
+        ),
+        crate::workers::backfill::run(
+            &req.user_id,
+            &req.meeting_id,
+            &transcript_text,
+            &chat_text,
+            llm,
+            db
+        ),
     );
 }
 

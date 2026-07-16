@@ -193,16 +193,32 @@ pub async fn run(
     // title/description — all in parallel. Independent, all on the
     // background pool, all write straight to the DB.
     if !complete.trim().is_empty() {
+        let chat_text = crate::workers::chat_context::load_chat_context(&db, &meeting_id).await;
         tokio::join!(
-            crate::workers::summarize::run(&user_id, &meeting_id, &complete, &background_llm, &db),
+            crate::workers::summarize::run(
+                &user_id,
+                &meeting_id,
+                &complete,
+                &chat_text,
+                &background_llm,
+                &db
+            ),
             crate::workers::wrap_up::extract(
                 &user_id,
                 &meeting_id,
                 &complete,
+                &chat_text,
                 &background_llm,
                 &db
             ),
-            crate::workers::backfill::run(&user_id, &meeting_id, &complete, &background_llm, &db),
+            crate::workers::backfill::run(
+                &user_id,
+                &meeting_id,
+                &complete,
+                &chat_text,
+                &background_llm,
+                &db
+            ),
         );
     } else if let Err(e) =
         crate::storage::meetings::set_wrap_up_status(&db, &meeting_id, "success").await
