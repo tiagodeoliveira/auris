@@ -159,6 +159,68 @@ pub async fn list_items_for_meeting_grouped(
     Ok(grouped)
 }
 
+/// Who produced a chat message. `Wearer` (not `User`) matches the
+/// vocabulary the extractor prompts use throughout `agent/active.rs`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChatRole {
+    Wearer,
+    Assistant,
+}
+
+/// One chat message, flattened for prompt rendering.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChatMessage {
+    pub role: ChatRole,
+    pub text: String,
+}
+
+/// Read a meeting's chat in wire order.
+///
+/// Ordered by `created_at`, NOT `t_ms`: chat rows are written with
+/// `t_ms = 0` and carry no usable timestamp. Backed by the existing
+/// `idx_items_meeting_mode_created` index.
+///
+/// Rows whose `meta.role` is missing or unrecognized are skipped — a
+/// message we can't attribute is worse than no message, since the
+/// prompt grants the wearer's voice authority over the transcript.
+pub async fn list_chat_messages_for_meeting(
+    pool: &PgPool,
+    meeting_id: &str,
+) -> Result<Vec<ChatMessage>> {
+    let rows: Vec<(String, Option<serde_json::Value>)> = sqlx::query_as(
+        r#"SELECT text, meta
+                 FROM items
+                WHERE meeting_id = $1 AND mode = 'chat'
+             ORDER BY created_at"#,
+    )
+    .bind(meeting_id)
+    .fetch_all(pool)
+    .await
+    .with_context(|| format!("list_chat_messages_for_meeting({meeting_id})"))?;
+
+    let mut msgs = Vec::with_capacity(rows.len());
+    for (text, meta) in rows {
+        let role = meta
+            .as_ref()
+            .and_then(|m| m.get("role"))
+            .and_then(|r| r.as_str());
+        let role = match role {
+            Some("user") => ChatRole::Wearer,
+            Some("assistant") => ChatRole::Assistant,
+            other => {
+                tracing::debug!(
+                    meeting_id,
+                    role = ?other,
+                    "chat message with unusable role; skipping",
+                );
+                continue;
+            }
+        };
+        msgs.push(ChatMessage { role, text });
+    }
+    Ok(msgs)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -238,5 +300,151 @@ mod tests {
         let grouped = list_items_for_meeting_grouped(&pool, &mid).await.unwrap();
         let hi = grouped.get("highlights").expect("highlights present");
         assert_eq!(hi.len(), 2);
+    }
+
+    #[sqlx::test]
+    async fn list_chat_messages_returns_roles_in_created_order(pool: PgPool) {
+        let uid = test_user(&pool).await;
+        let mid = uuid::Uuid::new_v4().to_string();
+        insert_meeting(&pool, &mid, &uid, chrono::Utc::now(), None, "{}", None)
+            .await
+            .unwrap();
+
+        for (text, role) in [
+            ("his name is Ngoc Tran", "user"),
+            ("Got it, using Ngoc Tran.", "assistant"),
+            ("also the budget is 40k", "user"),
+        ] {
+            let item = crate::protocol::Item {
+                id: uuid::Uuid::new_v4().to_string(),
+                text: text.into(),
+                detail: None,
+                t: 0,
+                meta: Some(serde_json::json!({ "role": role })),
+            };
+            insert_item_row(&pool, &mid, "chat", &item).await.unwrap();
+        }
+
+        let msgs = list_chat_messages_for_meeting(&pool, &mid).await.unwrap();
+
+        assert_eq!(msgs.len(), 3);
+        assert_eq!(msgs[0].role, ChatRole::Wearer);
+        assert_eq!(msgs[0].text, "his name is Ngoc Tran");
+        assert_eq!(msgs[1].role, ChatRole::Assistant);
+        assert_eq!(msgs[1].text, "Got it, using Ngoc Tran.");
+        assert_eq!(msgs[2].role, ChatRole::Wearer);
+        assert_eq!(msgs[2].text, "also the budget is 40k");
+    }
+
+    #[sqlx::test]
+    async fn list_chat_messages_skips_unusable_roles(pool: PgPool) {
+        let uid = test_user(&pool).await;
+        let mid = uuid::Uuid::new_v4().to_string();
+        insert_meeting(&pool, &mid, &uid, chrono::Utc::now(), None, "{}", None)
+            .await
+            .unwrap();
+
+        // Unknown role, and no meta at all: both are unusable and skipped.
+        let bad_role = crate::protocol::Item {
+            id: uuid::Uuid::new_v4().to_string(),
+            text: "from nowhere".into(),
+            detail: None,
+            t: 0,
+            meta: Some(serde_json::json!({ "role": "system" })),
+        };
+        insert_item_row(&pool, &mid, "chat", &bad_role)
+            .await
+            .unwrap();
+
+        let no_meta = crate::protocol::Item {
+            id: uuid::Uuid::new_v4().to_string(),
+            text: "orphan".into(),
+            detail: None,
+            t: 0,
+            meta: None,
+        };
+        insert_item_row(&pool, &mid, "chat", &no_meta)
+            .await
+            .unwrap();
+
+        let keeper = crate::protocol::Item {
+            id: uuid::Uuid::new_v4().to_string(),
+            text: "real message".into(),
+            detail: None,
+            t: 0,
+            meta: Some(serde_json::json!({ "role": "user" })),
+        };
+        insert_item_row(&pool, &mid, "chat", &keeper).await.unwrap();
+
+        let msgs = list_chat_messages_for_meeting(&pool, &mid).await.unwrap();
+
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0].text, "real message");
+    }
+
+    #[sqlx::test]
+    async fn list_chat_messages_ignores_other_modes_and_meetings(pool: PgPool) {
+        let uid = test_user(&pool).await;
+        let mine = uuid::Uuid::new_v4().to_string();
+        let other = uuid::Uuid::new_v4().to_string();
+        insert_meeting(&pool, &mine, &uid, chrono::Utc::now(), None, "{}", None)
+            .await
+            .unwrap();
+        insert_meeting(&pool, &other, &uid, chrono::Utc::now(), None, "{}", None)
+            .await
+            .unwrap();
+
+        let chat_item = crate::protocol::Item {
+            id: uuid::Uuid::new_v4().to_string(),
+            text: "mine".into(),
+            detail: None,
+            t: 0,
+            meta: Some(serde_json::json!({ "role": "user" })),
+        };
+        insert_item_row(&pool, &mine, "chat", &chat_item)
+            .await
+            .unwrap();
+
+        // A non-chat mode on the same meeting must not leak in.
+        let summary_item = crate::protocol::Item {
+            id: uuid::Uuid::new_v4().to_string(),
+            text: "a summary".into(),
+            detail: None,
+            t: 0,
+            meta: Some(serde_json::json!({ "role": "user" })),
+        };
+        insert_item_row(&pool, &mine, "summary", &summary_item)
+            .await
+            .unwrap();
+
+        // Chat on a different meeting must not leak in.
+        let other_chat = crate::protocol::Item {
+            id: uuid::Uuid::new_v4().to_string(),
+            text: "theirs".into(),
+            detail: None,
+            t: 0,
+            meta: Some(serde_json::json!({ "role": "user" })),
+        };
+        insert_item_row(&pool, &other, "chat", &other_chat)
+            .await
+            .unwrap();
+
+        let msgs = list_chat_messages_for_meeting(&pool, &mine).await.unwrap();
+
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0].text, "mine");
+    }
+
+    #[sqlx::test]
+    async fn list_chat_messages_empty_for_meeting_without_chat(pool: PgPool) {
+        let uid = test_user(&pool).await;
+        let mid = uuid::Uuid::new_v4().to_string();
+        insert_meeting(&pool, &mid, &uid, chrono::Utc::now(), None, "{}", None)
+            .await
+            .unwrap();
+
+        let msgs = list_chat_messages_for_meeting(&pool, &mid).await.unwrap();
+
+        assert!(msgs.is_empty());
     }
 }
