@@ -961,7 +961,20 @@ async fn dispatch_intent(
         }
     }
     if let Some(req) = outcome.mark_moment {
-        let moment_id = uuid::Uuid::new_v4().to_string();
+        // Prefer the client-supplied id: a client that will upload its
+        // own image (mobile camera) needs to know the id up front, and
+        // a repeat of the same id is a natural idempotency key. Only a
+        // well-formed UUID is trusted into the PK; anything else is a
+        // buggy/hostile client, so we log and mint our own rather than
+        // letting it choose the key shape.
+        let moment_id = match req.id.as_deref() {
+            Some(id) if uuid::Uuid::parse_str(id).is_ok() => id.to_string(),
+            Some(bad) => {
+                tracing::warn!(client_id = %bad, "mark_moment: client id not a UUID; generating");
+                uuid::Uuid::new_v4().to_string()
+            }
+            None => uuid::Uuid::new_v4().to_string(),
+        };
         let kind = "manual";
         match crate::storage::moments::insert_moment(
             &handle.db,
@@ -1012,52 +1025,65 @@ async fn dispatch_intent(
                 // Look up the connection_id of the target device so we
                 // can deliver point-to-point via direct_tx instead of
                 // broadcasting and asking every client to filter.
-                let target_connection: Option<String> = {
-                    let s = handle.sessions.lock().await;
-                    s.user(user_id)
-                        .and_then(|u| {
-                            u.meeting
-                                .as_ref()
-                                .and_then(|m| m.audio_source_device_id.clone())
-                        })
-                        .and_then(|device_id| {
-                            s.user(user_id).and_then(|u| {
-                                u.devices_by_connection
-                                    .iter()
-                                    .find(|(_, d)| {
-                                        d.id == device_id
-                                            && d.online
-                                            && d.capabilities.contains(
-                                                &crate::protocol::Capability::ScreenCapture,
-                                            )
-                                    })
-                                    .map(|(conn, _)| conn.clone())
-                            })
-                        })
-                };
-                if let Some(conn_id) = target_connection {
-                    let event = Event::CaptureMomentScreenshot {
-                        meeting_id: req.meeting_id.clone(),
-                        moment_id: moment_id.clone(),
-                        t_ms: req.t as i64,
-                    };
-                    let mailbox = handle.direct_tx.lock().unwrap().get(&conn_id).cloned();
-                    if let Some(tx) = mailbox {
-                        if let Err(e) = tx.try_send(event) {
-                            tracing::warn!(
-                                error = ?e, conn_id = %conn_id,
-                                "capture_moment_screenshot mailbox full or closed"
-                            );
-                        }
-                    }
+                // The marking client is supplying its own image (mobile
+                // camera prompt), so don't also ask the Mac to
+                // screenshot this moment — one moment, one image.
+                if req.self_capture {
+                    tracing::info!(moment_id = %moment_id, "self_capture: skipping screen_capture delegation");
                 } else {
-                    tracing::debug!(
-                        moment_id = %moment_id,
-                        "no screen_capture-capable audio source online; moment without screenshot"
-                    );
+                    let target_connection: Option<String> = {
+                        let s = handle.sessions.lock().await;
+                        s.user(user_id)
+                            .and_then(|u| {
+                                u.meeting
+                                    .as_ref()
+                                    .and_then(|m| m.audio_source_device_id.clone())
+                            })
+                            .and_then(|device_id| {
+                                s.user(user_id).and_then(|u| {
+                                    u.devices_by_connection
+                                        .iter()
+                                        .find(|(_, d)| {
+                                            d.id == device_id
+                                                && d.online
+                                                && d.capabilities.contains(
+                                                    &crate::protocol::Capability::ScreenCapture,
+                                                )
+                                        })
+                                        .map(|(conn, _)| conn.clone())
+                                })
+                            })
+                    };
+                    if let Some(conn_id) = target_connection {
+                        let event = Event::CaptureMomentScreenshot {
+                            meeting_id: req.meeting_id.clone(),
+                            moment_id: moment_id.clone(),
+                            t_ms: req.t as i64,
+                        };
+                        let mailbox = handle.direct_tx.lock().unwrap().get(&conn_id).cloned();
+                        if let Some(tx) = mailbox {
+                            if let Err(e) = tx.try_send(event) {
+                                tracing::warn!(
+                                    error = ?e, conn_id = %conn_id,
+                                    "capture_moment_screenshot mailbox full or closed"
+                                );
+                            }
+                        }
+                    } else {
+                        tracing::debug!(
+                            moment_id = %moment_id,
+                            "no screen_capture-capable audio source online; moment without screenshot"
+                        );
+                    }
                 }
             }
-            Err(e) => tracing::warn!(error = ?e, "insert_moment failed"),
+            Err(e) => {
+                // A duplicate id violates moments_pkey — the moment
+                // already exists (client retry). Never upsert: dropping
+                // is the idempotent outcome.
+                tracing::warn!(error = ?e, moment_id = %moment_id, meeting_id = %req.meeting_id,
+                    "insert_moment failed; dropping mark");
+            }
         }
     }
     Ok(())
