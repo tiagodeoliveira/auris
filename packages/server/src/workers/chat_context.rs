@@ -15,6 +15,7 @@
 
 use crate::agent::blocks::{escape_block_markers, prompt_block};
 use crate::storage::items::{ChatMessage, ChatRole};
+use tracing::{info, warn};
 
 /// Rules appended to an extractor's system prompt when the meeting has
 /// chat. Defined once and shared by all three extractors so their
@@ -78,10 +79,53 @@ pub fn with_chat_authority(base: &str, chat: &str) -> String {
     }
 }
 
+/// Read + render a meeting's chat in one call.
+///
+/// Never fails: a read error is logged and degrades to "" (extract
+/// without chat) rather than aborting the caller. This is the single
+/// entry point for BOTH post-meeting call sites — `workers::finalize`
+/// and `workers::wrap_up::process_retry`. Those two paths have drifted
+/// apart before; sharing this function is what keeps them honest.
+pub async fn load_chat_context(db: &sqlx::PgPool, meeting_id: &str) -> String {
+    match crate::storage::items::list_chat_messages_for_meeting(db, meeting_id).await {
+        Ok(msgs) => {
+            let text = render_chat_context(&msgs);
+            info!(
+                meeting_id,
+                chat_msgs = msgs.len(),
+                chat_chars = text.len(),
+                "chat context loaded",
+            );
+            text
+        }
+        Err(e) => {
+            warn!(
+                meeting_id,
+                error = ?e,
+                "chat read failed; extracting without chat",
+            );
+            String::new()
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::items::{ChatMessage, ChatRole};
+    use crate::storage::items::{insert_item_row, ChatMessage, ChatRole};
+    use crate::storage::meetings::insert_meeting;
+    use crate::storage::users::upsert_user_by_auth0_sub;
+    use sqlx::PgPool;
+
+    /// Mirrors `storage::items::tests::test_user`, which lives in a
+    /// private `mod tests` and so can't be imported across modules.
+    async fn test_user(pool: &PgPool) -> String {
+        let sub = format!("test|{}", uuid::Uuid::new_v4());
+        upsert_user_by_auth0_sub(pool, &sub, None, None)
+            .await
+            .unwrap()
+            .id
+    }
 
     fn wearer(text: &str) -> ChatMessage {
         ChatMessage {
@@ -185,5 +229,40 @@ mod tests {
         let applied = with_chat_authority(base, "The wearer said: \"hi\"");
         assert!(applied.starts_with(base));
         assert!(applied.contains(CHAT_AUTHORITY_PROMPT));
+    }
+
+    #[sqlx::test]
+    async fn load_renders_chat_for_a_meeting(pool: PgPool) {
+        let uid = test_user(&pool).await;
+        let mid = uuid::Uuid::new_v4().to_string();
+        insert_meeting(&pool, &mid, &uid, chrono::Utc::now(), None, "{}", None)
+            .await
+            .unwrap();
+
+        let item = crate::protocol::Item {
+            id: uuid::Uuid::new_v4().to_string(),
+            text: "his name is Ngoc Tran".into(),
+            detail: None,
+            t: 0,
+            meta: Some(serde_json::json!({ "role": "user" })),
+        };
+        insert_item_row(&pool, &mid, "chat", &item).await.unwrap();
+
+        let out = load_chat_context(&pool, &mid).await;
+
+        assert_eq!(out, "The wearer said: \"his name is Ngoc Tran\"");
+    }
+
+    #[sqlx::test]
+    async fn load_returns_empty_for_meeting_without_chat(pool: PgPool) {
+        let uid = test_user(&pool).await;
+        let mid = uuid::Uuid::new_v4().to_string();
+        insert_meeting(&pool, &mid, &uid, chrono::Utc::now(), None, "{}", None)
+            .await
+            .unwrap();
+
+        let out = load_chat_context(&pool, &mid).await;
+
+        assert_eq!(out, "");
     }
 }
