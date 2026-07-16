@@ -16,6 +16,7 @@
 import { router } from "expo-router";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
+  ActionSheetIOS,
   Alert,
   FlatList,
   Image,
@@ -40,6 +41,7 @@ import Animated, {
   withTiming,
 } from "react-native-reanimated";
 import Markdown from "react-native-markdown-display";
+import * as Crypto from "expo-crypto";
 
 import { requestMicPermission, useAudioCapture } from "@/src/audio/audio-capture";
 import { LOCAL_MIC_ID } from "@/src/ui/AudioSourcePicker";
@@ -55,6 +57,7 @@ import { MetadataEditor } from "@/src/ui/MetadataEditor";
 import { MicActivityIcon } from "@/src/ui/MicActivityIcon";
 import { ArtifactPicker } from "@/src/ui/artifacts";
 import { PhotoAttachButton } from "@/src/ui/PhotoAttachButton";
+import { capturePhoto } from "@/src/ui/capture-photo";
 import {
   addPhoto,
   canAddPhoto,
@@ -63,6 +66,7 @@ import {
 } from "@/src/ui/meeting-detail/chat-photo-staging";
 import { ArtifactsApi } from "@/src/wire/artifacts-api";
 import { ChatAttachmentsApi } from "@/src/wire/chat-attachments-api";
+import { MomentScreenshotApi } from "@/src/wire/moment-screenshot-api";
 import type { Item, ModeOption } from "@/src/wire/contract";
 
 /// Same short-label map as packages/pwa/src/ui/mode-tabs.ts. Keep
@@ -213,6 +217,39 @@ export default function MeetingScreen() {
         }),
       ),
     ]);
+  }
+
+  async function attachMomentPhoto(momentId: string) {
+    const photo = await capturePhoto("camera");
+    if (!photo) return; // cancelled / permission denied — moment stays image-less
+    const api = MomentScreenshotApi.from(serverUrl, () => auth0.getAccessToken());
+    if (!api || !currentMeetingId) {
+      Alert.alert("Could not attach photo", "No active meeting to attach to.");
+      return;
+    }
+    try {
+      const blob = await fetch(photo.uri).then((r) => r.blob());
+      await api.upload(currentMeetingId, momentId, blob, photo.mime);
+    } catch (e) {
+      Alert.alert("Photo upload failed", e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  function promptMomentPhoto(momentId: string) {
+    const run = () => void attachMomentPhoto(momentId);
+    if (Platform.OS === "ios") {
+      ActionSheetIOS.showActionSheetWithOptions(
+        { options: ["Camera", "Skip"], cancelButtonIndex: 1, title: "Add a photo to this moment?" },
+        (i) => {
+          if (i === 0) run();
+        },
+      );
+    } else {
+      Alert.alert("Add a photo to this moment?", undefined, [
+        { text: "Camera", onPress: run },
+        { text: "Skip", style: "cancel" },
+      ]);
+    }
   }
 
   // ─── AurisMark animate mode ────────────────────────────────────
@@ -369,24 +406,35 @@ export default function MeetingScreen() {
         // distinction reads in the hand as well as the eye.
         //
         // iOS-only note: the Mac client captures a screenshot when a
-        // moment is marked; mobile does NOT. iOS provides no public
-        // API to capture screen content from inside the app
-        // (ReplayKit is broadcast-only and excludes voice-comm audio).
-        // The moment is captured at the audio level only — the
-        // server records the timestamp and the user's intent.
+        // moment is marked. iOS provides no public API to capture
+        // screen content from inside the app (ReplayKit is
+        // broadcast-only and excludes voice-comm audio), so mobile
+        // instead prompts Camera/Skip and, on Camera, attaches a
+        // photo the user takes — see onMarkMoment below.
         onStop={() => {
           haptics.warning();
           send({ type: "stop_meeting" });
         }}
         onMarkMoment={() => {
           haptics.light();
-          // t = ms offset from meeting start. A null startedAt (e.g.
-          // this client joined via snapshot) sends the t==0 sentinel
-          // and the server computes the offset from its meeting clock.
+          // Client-generated id: we need it up front so the photo can be
+          // uploaded without waiting on a server round-trip. self_capture
+          // tells the server not to also ask the Mac to screenshot this
+          // moment — one moment, one image.
+          const momentId = Crypto.randomUUID();
+          // Send FIRST so the moment lands at the true mark time and the
+          // agent/summary pipeline starts immediately; the photo is an
+          // optional late enhancement. t = ms offset from meeting start.
+          // A null startedAt (e.g. this client joined via snapshot) sends
+          // the t==0 sentinel and the server computes the offset from its
+          // meeting clock.
           send({
             type: "mark_moment",
             t: meetingStartedAt ? Math.max(0, Date.now() - meetingStartedAt) : 0,
+            id: momentId,
+            self_capture: true,
           });
+          promptMomentPhoto(momentId);
         }}
       />
 

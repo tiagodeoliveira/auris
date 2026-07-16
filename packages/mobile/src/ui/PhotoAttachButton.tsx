@@ -7,10 +7,9 @@
 
 import { useState } from "react";
 import { ActionSheetIOS, Alert, Platform, Pressable, Text } from "react-native";
-import * as ImagePicker from "expo-image-picker";
-import * as ImageManipulator from "expo-image-manipulator";
 
 import { useTheme } from "@/src/theme/useTheme";
+import { capturePhoto } from "@/src/ui/capture-photo";
 import type { StagedPhoto } from "@/src/ui/meeting-detail/chat-photo-staging";
 
 interface Props {
@@ -27,38 +26,9 @@ export function PhotoAttachButton({ disabled, onPicked }: Props) {
   async function runPicker(source: "camera" | "library") {
     setBusy(true);
     try {
-      const perm =
-        source === "camera"
-          ? await ImagePicker.requestCameraPermissionsAsync()
-          : await ImagePicker.requestMediaLibraryPermissionsAsync();
-      if (!perm.granted) {
-        Alert.alert(
-          "Permission needed",
-          source === "camera"
-            ? "Camera access is required to take a photo."
-            : "Photo library access is required to choose a photo.",
-        );
-        return;
-      }
-      const result =
-        source === "camera"
-          ? await ImagePicker.launchCameraAsync({ quality: 1 })
-          : await ImagePicker.launchImageLibraryAsync({
-              mediaTypes: ["images"],
-              quality: 1,
-            });
-      if (result.canceled) return;
-      const asset = result.assets[0];
-      if (!asset) return;
-
-      // Downscale + JPEG-compress before upload: a raw 12MP photo is
-      // far too large for the upload + vision prompt.
-      const out = await ImageManipulator.manipulateAsync(
-        asset.uri,
-        [{ resize: { width: 1280 } }],
-        { compress: 0.7, format: ImageManipulator.SaveFormat.JPEG },
-      );
-      onPicked({ id: `p${seq++}`, uri: out.uri, mime: "image/jpeg" });
+      const photo = await capturePhoto(source);
+      if (!photo) return;
+      onPicked({ id: `p${seq++}`, uri: photo.uri, mime: photo.mime });
     } catch (e) {
       Alert.alert("Could not add photo", e instanceof Error ? e.message : String(e));
     } finally {
