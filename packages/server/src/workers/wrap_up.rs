@@ -390,8 +390,16 @@ async fn process_retry(db: &sqlx::PgPool, llm: &Arc<LlmClient>, req: &WrapUpRetr
     // `backfill::run` is included for the same reason: finalize runs it
     // too, and it only fills genuinely-empty title/description fields —
     // a no-op for meetings that already have them.
+    let chat_text = crate::workers::chat_context::load_chat_context(db, &req.meeting_id).await;
     tokio::join!(
-        crate::workers::summarize::run(&req.user_id, &req.meeting_id, &transcript_text, llm, db),
+        crate::workers::summarize::run(
+            &req.user_id,
+            &req.meeting_id,
+            &transcript_text,
+            &chat_text,
+            llm,
+            db
+        ),
         extract(&req.user_id, &req.meeting_id, &transcript_text, llm, db),
         crate::workers::backfill::run(&req.user_id, &req.meeting_id, &transcript_text, llm, db),
     );
