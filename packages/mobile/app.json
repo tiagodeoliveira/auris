@@ -2,7 +2,7 @@
   "expo": {
     "name": "Auris",
     "slug": "aurismobile",
-    "version": "0.22.0",
+    "version": "0.23.0",
     "orientation": "portrait",
     "scheme": "auris",
     "userInterfaceStyle": "automatic",
