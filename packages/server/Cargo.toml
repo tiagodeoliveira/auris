@@ -1,11 +1,11 @@
 [package]
 name = "auris-server"
 # SemVer, kept in lockstep with the repo-wide git tag (latest
-# release: v0.21.0). The banner at startup pairs this with the git
+# release: v0.22.0). The banner at startup pairs this with the git
 # short SHA (`AURIS_BUILD_SHA`, injected by CI) so the exact build
 # is identifiable even when the version string stays put between
 # tagged releases.
-version = "0.21.0"
+version = "0.22.0"
 edition.workspace = true
 license.workspace = true
 publish = false

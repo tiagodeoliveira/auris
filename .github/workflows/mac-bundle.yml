@@ -81,7 +81,7 @@ jobs:
             # Marketing version on non-tag pushes is a semver-ish
             # ${baseline}-${sha7}. Bump the baseline when shipping a
             # tagged release.
-            VERSION="0.21.0-${GITHUB_SHA::7}"
+            VERSION="0.22.0-${GITHUB_SHA::7}"
           fi
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "build=${{ github.run_number }}" >> "$GITHUB_OUTPUT"
