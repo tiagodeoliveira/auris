@@ -7,6 +7,29 @@ use axum::{
 
 use super::{require_user, ApiError, ApiState};
 
+/// Map a request's main mime type to its (canonical mime, file
+/// extension). `None` = unsupported. v1 accepts PNG (Mac screenshots)
+/// and JPEG (mobile camera photos) — same set as chat attachments.
+fn accepted_image(mime_main: &str) -> Option<(&'static str, &'static str)> {
+    if mime_main.eq_ignore_ascii_case("image/png") {
+        Some(("image/png", "png"))
+    } else if mime_main.eq_ignore_ascii_case("image/jpeg") {
+        Some(("image/jpeg", "jpg"))
+    } else {
+        None
+    }
+}
+
+/// Content-Type to serve for a stored asset, derived from its
+/// extension. Legacy rows (and anything unrecognized) fall back to PNG,
+/// which is what every pre-JPEG upload actually was.
+fn content_type_for(asset_path: &str) -> &'static str {
+    match asset_path.rsplit('.').next() {
+        Some(e) if e.eq_ignore_ascii_case("jpg") || e.eq_ignore_ascii_case("jpeg") => "image/jpeg",
+        _ => "image/png",
+    }
+}
+
 /// `DELETE /moments/:moment_id` — drop a single moment row. Best-
 /// effort screenshot cleanup runs after the DB delete; if it fails
 /// we still return 204 (the row is gone, the file is an orphan).
@@ -76,7 +99,7 @@ pub(crate) async fn get_moment_screenshot(
     };
     Ok(Response::builder()
         .status(StatusCode::OK)
-        .header(header::CONTENT_TYPE, "image/png")
+        .header(header::CONTENT_TYPE, content_type_for(&asset))
         .header(header::CACHE_CONTROL, "private, max-age=86400")
         .body(Body::from(bytes))
         .unwrap())
@@ -96,6 +119,18 @@ pub(crate) async fn upload_moment_screenshot(
     bytes: axum::body::Bytes,
 ) -> Result<StatusCode, ApiError> {
     let user_id = require_user(&headers, &state).await?;
+    // Mime: image/png (Mac screenshot) or image/jpeg (mobile camera) in
+    // v1, case-insensitive.
+    let mime = headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    let mime_main = mime.split(';').next().unwrap_or("").trim();
+    let (_canonical_mime, ext) = accepted_image(mime_main).ok_or_else(|| {
+        ApiError::BadRequest(format!(
+            "only image/png and image/jpeg are supported in v1 (got {mime_main:?})"
+        ))
+    })?;
     if bytes.is_empty() {
         return Err(ApiError::BadRequest("empty screenshot body".into()));
     }
@@ -119,7 +154,7 @@ pub(crate) async fn upload_moment_screenshot(
         return Err(ApiError::NotFound);
     }
 
-    let rel = format!("blobs/meetings/{meeting_id}/screenshots/{moment_id}.png");
+    let rel = format!("blobs/meetings/{meeting_id}/screenshots/{moment_id}.{ext}");
     let dir = crate::storage::data_dir().map_err(|e| ApiError::Internal(e.to_string()))?;
     let abs = dir.join(&rel);
     if let Some(parent) = abs.parent() {
@@ -136,4 +171,36 @@ pub(crate) async fn upload_moment_screenshot(
         .map_err(|e| ApiError::Db(super::downcast_db(e)))?;
 
     Ok(StatusCode::NO_CONTENT)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{accepted_image, content_type_for};
+
+    #[test]
+    fn accepts_png_and_jpeg() {
+        assert_eq!(accepted_image("image/png"), Some(("image/png", "png")));
+        assert_eq!(accepted_image("image/jpeg"), Some(("image/jpeg", "jpg")));
+    }
+
+    #[test]
+    fn accepts_case_insensitively() {
+        assert_eq!(accepted_image("IMAGE/JPEG"), Some(("image/jpeg", "jpg")));
+    }
+
+    #[test]
+    fn rejects_unsupported_types() {
+        assert_eq!(accepted_image("image/gif"), None);
+        assert_eq!(accepted_image("application/pdf"), None);
+        assert_eq!(accepted_image(""), None);
+    }
+
+    #[test]
+    fn content_type_follows_the_stored_extension() {
+        assert_eq!(content_type_for("blobs/m/screenshots/a.png"), "image/png");
+        assert_eq!(content_type_for("blobs/m/screenshots/a.jpg"), "image/jpeg");
+        assert_eq!(content_type_for("blobs/m/screenshots/a.jpeg"), "image/jpeg");
+        // Unknown/absent extension falls back to PNG (legacy rows).
+        assert_eq!(content_type_for("blobs/m/screenshots/a"), "image/png");
+    }
 }
