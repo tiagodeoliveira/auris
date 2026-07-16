@@ -241,6 +241,20 @@ async fn persist_items_update(
                 .await?;
         }
         UpdateStrategy::Append => {
+            // Each `insert_item_row` call below is its own implicit
+            // transaction — do NOT wrap this loop in one shared
+            // transaction as a perf optimization. Chat pairs arrive as
+            // a batch (`vec![user_item, assistant_item]` in one
+            // `ItemsUpdate`, see `agent::chat`), and chat rows carry
+            // `t_ms = 0` (no other ordering signal), so
+            // `storage::items::list_chat_messages_for_meeting` orders
+            // them by `created_at`. Postgres `now()` is transaction-
+            // start time; one shared transaction would give every row
+            // in a batch an IDENTICAL `created_at` and make
+            // wearer/assistant order nondeterministic. (A secondary
+            // `, id` tie-breaker would not fix this — uuid ids don't
+            // encode intent order, it would just make the wrong order
+            // stable.)
             for item in items {
                 // Skip transient optimistic placeholders — chat-mode
                 // emits a `meta.role == "assistant-pending"` row to
