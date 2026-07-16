@@ -207,6 +207,7 @@ pub async fn run(
                 &user_id,
                 &meeting_id,
                 &complete,
+                &chat_text,
                 &background_llm,
                 &db
             ),
