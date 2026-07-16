@@ -49,6 +49,7 @@ pub async fn run(
     user_id: &str,
     meeting_id: &str,
     transcript_text: &str,
+    chat_text: &str,
     llm: &LlmClient,
     db: &sqlx::PgPool,
 ) {
@@ -83,8 +84,10 @@ pub async fn run(
         "backfill generating missing meeting meta",
     );
 
+    let system = crate::workers::chat_context::with_chat_authority(BACKFILL_PROMPT, chat_text);
+    let input = crate::workers::chat_context::compose_extractor_input(transcript_text, chat_text);
     let generated: GeneratedMeta = match llm
-        .extract_with_prompt::<GeneratedMeta>(user_id, BACKFILL_PROMPT, transcript_text)
+        .extract_with_prompt::<GeneratedMeta>(user_id, &system, &input)
         .await
     {
         Ok(g) => g,

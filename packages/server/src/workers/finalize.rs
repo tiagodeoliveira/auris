@@ -211,7 +211,14 @@ pub async fn run(
                 &background_llm,
                 &db
             ),
-            crate::workers::backfill::run(&user_id, &meeting_id, &complete, &background_llm, &db),
+            crate::workers::backfill::run(
+                &user_id,
+                &meeting_id,
+                &complete,
+                &chat_text,
+                &background_llm,
+                &db
+            ),
         );
     } else if let Err(e) =
         crate::storage::meetings::set_wrap_up_status(&db, &meeting_id, "success").await

@@ -411,7 +411,14 @@ async fn process_retry(db: &sqlx::PgPool, llm: &Arc<LlmClient>, req: &WrapUpRetr
             llm,
             db
         ),
-        crate::workers::backfill::run(&req.user_id, &req.meeting_id, &transcript_text, llm, db),
+        crate::workers::backfill::run(
+            &req.user_id,
+            &req.meeting_id,
+            &transcript_text,
+            &chat_text,
+            llm,
+            db
+        ),
     );
 }
 
