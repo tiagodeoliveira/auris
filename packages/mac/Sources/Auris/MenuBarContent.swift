@@ -38,7 +38,7 @@ struct MenuBarContent: View {
         // useful affordances, not a disabled Start button.
         if !model.hasActiveMeeting {
             Button {
-                openWindow(id: "meeting-overlay")
+                openWindow(id: "start-meeting")
                 NSApp.activate(ignoringOtherApps: true)
             } label: {
                 Label("Start meeting…", systemImage: "record.circle")
