@@ -1158,7 +1158,7 @@ private enum OverlayMode: Equatable {
 /// overlay sets `.preferredColorScheme(...)` from `AppSettings.overlayTheme`,
 /// which in turn drives NSColor's dynamicProvider to pick the right
 /// variant on first paint and on every theme switch thereafter.
-private enum AurisTheme {
+enum AurisTheme {
     static let panel = Color(light: 0xF7FAFE, dark: 0x1B2230)
     static let panelElevated = Color(light: 0xFFFFFF, dark: 0x232B3A)
     static let input = Color(light: 0xEEF4FA, dark: 0x1F2735)
@@ -1229,7 +1229,7 @@ extension EnvironmentValues {
     }
 }
 
-private struct PrimaryPillButtonStyle: ButtonStyle {
+struct PrimaryPillButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(.system(size: 14, weight: .semibold))
@@ -1576,7 +1576,7 @@ private struct TypingDots: View {
     }
 }
 
-private struct MetadataChipEditor: View {
+struct MetadataChipEditor: View {
     let metadata: [String: String]
     @Binding var addingMetadata: Bool
     let setMetadata: (String, String?) -> Void
@@ -1854,7 +1854,7 @@ private struct MicYoke: Shape {
 /// Lets us reach the underlying `NSWindow` so we can configure
 /// behaviors SwiftUI doesn't expose on `Window` scenes (window
 /// level, space behavior). The accessor itself is invisible.
-private struct WindowAccessor: NSViewRepresentable {
+struct WindowAccessor: NSViewRepresentable {
     let configure: (NSWindow) -> Void
 
     func makeNSView(context: Context) -> NSView {
@@ -1882,7 +1882,7 @@ private struct WindowAccessor: NSViewRepresentable {
 /// trailing "+ Artifact" button. Lives between the metadata chip
 /// editor and the compose-panel buttons so attachments read as a
 /// peer concept to project / title metadata.
-private struct ArtifactChipStrip: View {
+struct ArtifactChipStrip: View {
     let attached: [Artifact]
     let onPick: () -> Void
     let onRemove: (String) -> Void
@@ -2043,7 +2043,7 @@ private struct ChatAttachmentChip: View {
 /// checkbox column. Only `done` artifacts are selectable; pending
 /// rows show a spinner and are unselectable; failed rows show in
 /// red. Confirming returns the picked set to the caller.
-private struct ArtifactPickerSheet: View {
+struct ArtifactPickerSheet: View {
     @Bindable var model: AppModel
     let alreadySelectedIds: Set<String>
     let onConfirm: ([Artifact]) -> Void
@@ -2212,7 +2212,7 @@ private struct ArtifactPickerRow: View {
 /// Attach meeting" button. Sibling of `ArtifactChipStrip` — same
 /// visual treatment, distinct concept (carry-over context vs.
 /// attached artifacts).
-private struct MeetingChipStrip: View {
+struct MeetingChipStrip: View {
     let attached: [MeetingSummary]
     let onPick: () -> Void
     let onRemove: (String) -> Void
@@ -2294,7 +2294,7 @@ private struct MeetingChip: View {
 /// column. Mirrors `ArtifactPickerSheet`. The picker filters out
 /// the active meeting (a meeting can't attach to itself — server
 /// enforces with a CHECK constraint).
-private struct MeetingPickerSheet: View {
+struct MeetingPickerSheet: View {
     @Bindable var model: AppModel
     let alreadySelectedIds: Set<String>
     /// When non-nil, the active meeting is hidden from the list.
