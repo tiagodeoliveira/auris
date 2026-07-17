@@ -58,6 +58,13 @@ struct StartMeetingView: View {
                 // A meeting started (here or remotely) — compose is done.
                 if active { closeSelf() }
             }
+            .onDisappear {
+                // The compose window can be dismissed by Start, Cancel, or
+                // the red button. Stop any live dictation so the mic + its
+                // WS don't stay hot after the window is gone (resetComposeState
+                // otherwise only tears it down on the NEXT open).
+                if dictation?.isLocked == true { dictation?.toggle() }
+            }
     }
 
     private var composeForm: some View {
@@ -249,11 +256,14 @@ struct StartMeetingView: View {
         closeSelf()
         Task {
             await model.startMeeting(description: payload)
-            if !model.hasActiveMeeting {
-                // Start didn't take AND no meeting is running anywhere
-                // (hasActiveMeeting, not isMeetingActive: a meeting that
-                // just started on another client owns the overlay — don't
-                // close its live HUD). Dismiss our orphaned starting
+            if !model.isMeetingActive && !model.hasActiveMeeting {
+                // Start genuinely failed: local capture never came up
+                // (isMeetingActive is set synchronously by startAudioStream
+                // on success, so it's the reliable local-success signal —
+                // hasActiveMeeting only flips later, on the async server
+                // echo) AND no meeting is running anywhere (hasActiveMeeting
+                // also covers a meeting that just started on another client —
+                // don't close its live HUD). Dismiss our orphaned starting
                 // spinner and bring compose back with the user's input
                 // intact (preserveComposeOnAppear stops onAppear wiping it).
                 model.closeOverlayWindow()

@@ -160,8 +160,12 @@ struct MeetingOverlayView: View {
             guard !model.hasActiveMeeting else { return }  // .live wins
             if starting {
                 mode = .starting
-            } else {
-                // Start attempt ended without going active — nothing to show.
+            } else if !model.isMeetingActive {
+                // Start attempt truly ended — no local capture, and (per the
+                // guard above) no meeting anywhere. Dismiss. If local audio
+                // IS still up (a slow server echo let the 3s safety-clear of
+                // isLocallyStartingMeeting fire mid-start), keep the spinner;
+                // the active echo flips us to .live in place.
                 closeOverlay()
             }
         }
