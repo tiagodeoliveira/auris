@@ -1,7 +1,7 @@
 {
   "name": "@auris/mobile",
   "private": true,
-  "version": "0.23.0",
+  "version": "0.24.0",
   "main": "expo-router/entry",
   "scripts": {
     "start": "expo start",
