@@ -31,9 +31,13 @@ struct StartMeetingView: View {
             .padding(16)
             .frame(minWidth: 520, idealWidth: 620, maxWidth: .infinity,
                    minHeight: 260, maxHeight: .infinity)
-            .background(AurisTheme.panel.opacity(model.settings.overlayOpacity))
+            // Follow the system appearance like a normal window (Settings
+            // does the same) — the compose popup is NOT the floating overlay,
+            // so it must not inherit the overlay's theme override or its
+            // translucent panel. AurisTheme.* tokens are appearance-adaptive,
+            // so the form's text and inputs resolve light or dark to match.
+            .background(Color(nsColor: .windowBackgroundColor))
             .foregroundStyle(AurisTheme.text)
-            .preferredColorScheme(model.settings.overlayTheme == .dark ? .dark : .light)
             .background(WindowAccessor { window in
                 // Only the screen-share exclusion; everything else stays
                 // standard-window default (titled, resizable, traffic
