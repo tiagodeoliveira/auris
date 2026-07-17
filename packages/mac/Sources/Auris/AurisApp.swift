@@ -83,7 +83,7 @@ struct AurisApp: App {
         // contentMinSize lets the user grow the window past the
         // content's intrinsic size on both axes; contentSize would
         // pin it. The overlay's view defines minWidth/minHeight per
-        // overlay mode (compose / starting / live) — those still
+        // overlay mode (starting / live) — those still
         // apply as the floor.
         .windowResizability(.contentMinSize)
         .windowStyle(.hiddenTitleBar)

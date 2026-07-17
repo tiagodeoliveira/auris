@@ -21,6 +21,11 @@ struct StartMeetingView: View {
     @State private var selectedMeetings: [MeetingSummary] = []
     @State private var showMeetingPicker = false
 
+    /// Set by the failed-start recovery path before it reopens this
+    /// window, so the reopen's onAppear preserves the user's input
+    /// instead of wiping it. Consumed (cleared) on that appear.
+    @State private var preserveComposeOnAppear = false
+
     var body: some View {
         composeForm
             .padding(16)
@@ -39,8 +44,14 @@ struct StartMeetingView: View {
             .onAppear {
                 // Singleton Window: SwiftUI never tears this view down, so
                 // @State would carry the previous compose into the next
-                // open. Reset on (re)appear for a clean form each time.
-                resetComposeState()
+                // open. Reset on (re)appear for a clean form each time —
+                // EXCEPT when the failed-start recovery path reopened us to
+                // hand the user's input back (preserveComposeOnAppear).
+                if preserveComposeOnAppear {
+                    preserveComposeOnAppear = false
+                } else {
+                    resetComposeState()
+                }
                 descriptionFocused = true
             }
             .onChange(of: model.hasActiveMeeting) { _, active in
@@ -238,12 +249,15 @@ struct StartMeetingView: View {
         closeSelf()
         Task {
             await model.startMeeting(description: payload)
-            if !model.isMeetingActive {
-                // Start didn't take. Dismiss the overlay's starting spinner
-                // (belt-and-suspenders: also covers the canStartMeeting
-                // early-return where isLocallyStartingMeeting never toggles)
-                // and bring compose back with the user's input intact.
+            if !model.hasActiveMeeting {
+                // Start didn't take AND no meeting is running anywhere
+                // (hasActiveMeeting, not isMeetingActive: a meeting that
+                // just started on another client owns the overlay — don't
+                // close its live HUD). Dismiss our orphaned starting
+                // spinner and bring compose back with the user's input
+                // intact (preserveComposeOnAppear stops onAppear wiping it).
                 model.closeOverlayWindow()
+                preserveComposeOnAppear = true
                 openWindow(id: "start-meeting")
                 NSApp.activate(ignoringOtherApps: true)
             }
