@@ -2,25 +2,16 @@
 // Floating always-on-top meeting overlay.
 // Shared visual direction with the PWA: light glass panel, blue primary
 // action, amber moment action, red destructive action, and high-contrast
-// transcript text. The window keeps a stable wide footprint across compose,
-// starting, and live states so the meeting UI doesn't jump when capture starts.
+// transcript text. The window keeps a stable wide footprint across starting
+// and live states so the meeting UI doesn't jump when capture starts.
 
 import AppKit
 import SwiftUI
 
 struct MeetingOverlayView: View {
     @Bindable var model: AppModel
-    @Environment(\.dismissWindow) private var dismissWindow
 
     @State private var mode: OverlayMode
-    @State private var description: String = ""
-    @State private var addingMetadata = false
-    @FocusState private var descriptionFocused: Bool
-
-    /// Owns the compose-panel mic button's lifecycle. Created lazily
-    /// on first use so we don't spin up a mic / WS for users who
-    /// never click it.
-    @State private var dictation: DictationController? = nil
 
     /// IDs of items the user has expanded to reveal `detail`.
     /// Persists across tab switches so re-selecting a tab restores
@@ -34,24 +25,9 @@ struct MeetingOverlayView: View {
     /// the PWA's expand) without overriding a local user collapse.
     @State private var manuallyCollapsedIds: Set<String> = []
 
-    /// Library artifacts selected for attach during this compose
-    /// session. Flushed into `AppModel.pendingArtifactAttachments`
-    /// on Start; the WS event handler picks them up when the
-    /// meeting transitions to active.
-    @State private var selectedArtifacts: [Artifact] = []
-    @State private var showArtifactPicker = false
-
-    /// Separate sheet for the live-meeting attach flow (overlay
-    /// `…` menu). Keeps onConfirm semantics distinct from the
-    /// compose-time picker which stages into selectedArtifacts.
+    /// Live-meeting attach flow (overlay `…` menu). Distinct from the
+    /// compose-time picker, which now lives in StartMeetingView.
     @State private var showLiveArtifactPicker = false
-
-    /// Past meetings selected for attach during compose — mirrors
-    /// `selectedArtifacts`. Drained into
-    /// `AppModel.pendingAttachedMeetings` on Start; the WS event
-    /// handler attaches each once the meeting transitions to active.
-    @State private var selectedMeetings: [MeetingSummary] = []
-    @State private var showMeetingPicker = false
 
     /// Mid-meeting attach flow (overlay live cluster). Distinct from
     /// the compose-time picker.
@@ -76,7 +52,7 @@ struct MeetingOverlayView: View {
         // meeting is happening for this user — even if it was started
         // on the phone or PWA. The Mac is a control surface, not just
         // a capture device.
-        _mode = State(initialValue: model.hasActiveMeeting ? .live : .compose)
+        _mode = State(initialValue: model.hasActiveMeeting ? .live : .starting)
     }
 
     /// Close / hide the overlay window. SwiftUI's `dismissWindow(id:)`
@@ -95,8 +71,6 @@ struct MeetingOverlayView: View {
     var body: some View {
         Group {
             switch mode {
-            case .compose:
-                composePanel
             case .starting:
                 startingPanel
             case .live:
@@ -162,8 +136,8 @@ struct MeetingOverlayView: View {
         // Watch the broad `hasActiveMeeting` signal (= currentMeetingId-
         // derived) so the overlay reacts to meetings started on any
         // surface — phone, PWA, this Mac. Drives both directions:
-        //   - active becomes true  → switch to .live (or .starting)
-        //   - active becomes false → dismiss if we were showing live
+        //   - active becomes true  → switch to .live
+        //   - active becomes false → dismiss if we were showing live/starting
         //
         // `currentMeetingId` flips the instant we receive
         // `meeting_state_changed → idle` from the server, well before
@@ -175,206 +149,32 @@ struct MeetingOverlayView: View {
         .onChange(of: model.hasActiveMeeting) { _, active in
             if active {
                 mode = .live
-            } else if mode == .live || mode == .starting {
-                addingMetadata = false
-                // Meeting just ended — wipe every compose-scoped draft so
-                // the NEXT meeting starts clean. The overlay is a single
-                // reused `Window`, so SwiftUI never tears the view down
-                // and its `@State` would otherwise carry the previous
-                // meeting's description / attachments / chat draft into
-                // the next compose. (AppModel-level meeting state is reset
-                // separately in `localMeetingTeardown` / `clearTranscript`.)
-                resetComposeState()
-                dismissWindow(id: "meeting-overlay")
+            } else {
+                // Meeting ended (or a local start failed). Clear live-scoped
+                // drafts so the next meeting's HUD starts clean, then dismiss.
+                resetLiveState()
+                closeOverlay()
+            }
+        }
+        .onChange(of: model.isLocallyStartingMeeting) { _, starting in
+            guard !model.hasActiveMeeting else { return }  // .live wins
+            if starting {
+                mode = .starting
+            } else if !model.isMeetingActive {
+                // Start attempt truly ended — no local capture, and (per the
+                // guard above) no meeting anywhere. Dismiss. If local audio
+                // IS still up (a slow server echo let the 3s safety-clear of
+                // isLocallyStartingMeeting fire mid-start), keep the spinner;
+                // the active echo flips us to .live in place.
+                closeOverlay()
             }
         }
         .onAppear {
-            mode = model.hasActiveMeeting ? .live : .compose
-            addingMetadata = false
-            descriptionFocused = mode == .compose
+            mode = model.hasActiveMeeting ? .live : .starting
             model.isOverlayVisible = true
         }
         .onDisappear {
             model.isOverlayVisible = false
-        }
-    }
-
-    private var composePanel: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 10) {
-                Image(systemName: "record.circle")
-                    .font(.system(size: 15))
-                    .foregroundStyle(AurisTheme.danger)
-
-                Text("Start meeting")
-                    .font(.system(size: 17, weight: .semibold))
-
-                Spacer()
-
-                Button {
-                    closeOverlay()
-                } label: {
-                    Image(systemName: "xmark.circle.fill")
-                        .font(.system(size: 16))
-                        .foregroundStyle(AurisTheme.muted)
-                }
-                .buttonStyle(.plain)
-                .help("Cancel")
-            }
-
-            ZStack(alignment: .topLeading) {
-                if description.isEmpty {
-                    Text("What's this meeting about? (optional)")
-                        .foregroundStyle(AurisTheme.subtle)
-                        .padding(.top, 10)
-                        .padding(.leading, 10)
-                        .allowsHitTesting(false)
-                }
-
-                TextEditor(text: $description)
-                    .font(.system(size: 15))
-                    .foregroundStyle(AurisTheme.text)
-                    .scrollContentBackground(.hidden)
-                    .focused($descriptionFocused)
-                    .frame(minHeight: 64)
-                    // While dictation is active the controller owns
-                    // the field — disable native editing so the user
-                    // doesn't race with incoming server frames.
-                    .disabled(dictation?.isLocked == true)
-
-                // Mic button — bottom-right corner of the input,
-                // small enough to not crowd the placeholder text.
-                VStack {
-                    Spacer()
-                    HStack {
-                        Spacer()
-                        Button {
-                            ensureDictation().toggle()
-                        } label: {
-                            Image(systemName: micIcon)
-                                .font(.system(size: 14, weight: .semibold))
-                                .foregroundStyle(micTint)
-                                .frame(width: 26, height: 26)
-                                .background(
-                                    Circle().fill(AurisTheme.panel.opacity(model.settings.overlayOpacity))
-                                )
-                                .overlay(
-                                    Circle().strokeBorder(
-                                        dictation?.isLocked == true
-                                            ? AurisTheme.danger : AurisTheme.border)
-                                )
-                        }
-                        .buttonStyle(.plain)
-                        .help(dictation?.isLocked == true
-                            ? "Stop dictation" : "Dictate description")
-                    }
-                }
-                .padding(6)
-            }
-            .padding(6)
-            .background(AurisTheme.input.opacity(model.settings.overlayOpacity))
-            .clipShape(RoundedRectangle(cornerRadius: 10))
-            .overlay(
-                RoundedRectangle(cornerRadius: 10)
-                    .strokeBorder(AurisTheme.border)
-            )
-            // Keep the description field in sync with the controller
-            // while dictating — the controller writes to its own
-            // `text` property; this mirrors back to the @State the
-            // TextEditor binds to.
-            .onChange(of: dictation?.text ?? "") { _, newValue in
-                if dictation?.isLocked == true {
-                    description = newValue
-                }
-            }
-
-            MetadataChipEditor(
-                metadata: model.metadata,
-                addingMetadata: $addingMetadata,
-                setMetadata: { key, value in
-                    Task { await model.setMetadata(key: key, value: value) }
-                }
-            )
-
-            ArtifactChipStrip(
-                attached: selectedArtifacts,
-                onPick: { showArtifactPicker = true },
-                onRemove: { id in
-                    selectedArtifacts.removeAll { $0.id == id }
-                }
-            )
-
-            MeetingChipStrip(
-                attached: selectedMeetings,
-                onPick: { showMeetingPicker = true },
-                onRemove: { id in
-                    selectedMeetings.removeAll { $0.id == id }
-                }
-            )
-
-            // Assist sensitivity row — three-segment picker. The
-            // value is staged into AppModel locally and rides on the
-            // next `start_meeting` intent. Tightly-styled to match
-            // the metadata chip strip above; appears in every
-            // compose surface (no `if` gate — sensitivity is always
-            // a meaningful starting choice).
-            HStack(spacing: 8) {
-                Text("Assist")
-                    .font(.caption)
-                    .foregroundStyle(AurisTheme.muted)
-                Picker("", selection: Binding(
-                    get: { model.assistSensitivity },
-                    set: { value in
-                        Task { await model.setAssistSensitivity(value) }
-                    }
-                )) {
-                    ForEach(AssistSensitivity.allCases, id: \.self) { v in
-                        Text(v.displayName).tag(v)
-                    }
-                }
-                .labelsHidden()
-                .pickerStyle(.segmented)
-            }
-
-            HStack(spacing: 10) {
-                Spacer()
-
-                if !model.canStartMeeting {
-                    Text(notReadyHint)
-                        .font(.caption)
-                        .foregroundStyle(AurisTheme.muted)
-                }
-
-                Button("Start") {
-                    submitDescription()
-                }
-                .keyboardShortcut(.defaultAction)
-                .disabled(!model.canStartMeeting)
-                .buttonStyle(PrimaryPillButtonStyle())
-            }
-        }
-        .sheet(isPresented: $showArtifactPicker) {
-            ArtifactPickerSheet(
-                model: model,
-                alreadySelectedIds: Set(selectedArtifacts.map { $0.id }),
-                onConfirm: { picked in
-                    // Replace, not append: the picker shows current
-                    // selection state (checked rows for already-
-                    // attached items), so the result is the new
-                    // canonical set.
-                    selectedArtifacts = picked
-                }
-            )
-        }
-        .sheet(isPresented: $showMeetingPicker) {
-            MeetingPickerSheet(
-                model: model,
-                alreadySelectedIds: Set(selectedMeetings.map { $0.id }),
-                excludeMeetingId: model.currentMeetingId,
-                onConfirm: { picked in
-                    selectedMeetings = picked
-                }
-            )
         }
     }
 
@@ -1026,131 +826,25 @@ struct MeetingOverlayView: View {
         max(model.audioCapture.currentSysPeak, model.audioCapture.currentMicPeak)
     }
 
-    /// Clear every compose-scoped piece of view `@State` so no draft
-    /// bleeds from one meeting into the next. Called at the meeting-end
-    /// boundary; the persistent overlay window means SwiftUI won't do
-    /// this for us. Also stops any in-flight dictation — a half-finished
-    /// dictated description must not survive the meeting either.
-    private func resetComposeState() {
-        description = ""
+    /// Clear live-scoped view @State at the meeting-end boundary so no
+    /// draft bleeds into the next meeting's HUD. (Compose-scoped state
+    /// now lives in StartMeetingView, which resets itself on appear.)
+    private func resetLiveState() {
         chatDraft = ""
-        selectedArtifacts = []
-        selectedMeetings = []
-        addingMetadata = false
+        chatBusy = false
         expandedItemIds = []
         manuallyCollapsedIds = []
-        if dictation?.isLocked == true {
-            dictation?.toggle()
-        }
-    }
-
-    private func submitDescription() {
-        let trimmed = description.trimmingCharacters(in: .whitespacesAndNewlines)
-        let payload: String? = trimmed.isEmpty ? nil : trimmed
-        // Hand the picked artifact ids to AppModel; the WS event
-        // handler will fire `attach` for each once the server
-        // transitions the meeting to active. Stage *before* sending
-        // start_meeting so the active event handler always sees them.
-        model.setPendingArtifactAttachments(selectedArtifacts.map { $0.id })
-        model.setPendingAttachedMeetings(selectedMeetings.map { $0.id })
-        mode = .starting
-        descriptionFocused = false
-        Task {
-            await model.startMeeting(description: payload)
-            if model.isMeetingActive {
-                mode = .live
-                // The description has been consumed into the meeting —
-                // drop it now so it can't reappear if this view is
-                // reused for the next compose. Attachments likewise.
-                description = ""
-                selectedArtifacts = []
-                selectedMeetings = []
-            } else {
-                mode = .compose
-                descriptionFocused = true
-            }
-        }
-    }
-
-    /// One-line nudge when Start is disabled.
-    private var notReadyHint: String {
-        if model.webSocket.state != .connected { return "Not connected" }
-        if !model.permissionMonitor.allGranted { return "Permissions not granted" }
-        if model.audioCapture.state != .stopped { return "Audio capture busy" }
-        if model.currentMeetingId != nil { return "Meeting already running elsewhere" }
-        return ""
-    }
-
-    /// Lazily build the controller on first mic-button click. Keeps
-    /// the WS / mic capture out of the picture for users who never
-    /// dictate, and lets us capture the AppModel reference here
-    /// without needing it at view-init time.
-    private func ensureDictation() -> DictationController {
-        if let d = dictation { return d }
-        let d = DictationController(
-            serverURL: model.settings.serverURL,
-            tokenProvider: { [model] in try await model.auth0.getAccessToken() }
-        )
-        // Adopt whatever's currently in the description field as the
-        // dictation prefix so we append rather than wipe.
-        d.text = description
-        dictation = d
-        return d
-    }
-
-    private var micIcon: String {
-        switch dictation?.state {
-        case .listening, .starting: "mic.fill"
-        default: "mic"
-        }
-    }
-
-    private var micTint: Color {
-        switch dictation?.state {
-        case .listening: AurisTheme.danger
-        case .starting, .stopping: AurisTheme.amber
-        case .error: AurisTheme.danger
-        default: AurisTheme.muted
-        }
     }
 }
 
 private enum OverlayMode: Equatable {
-    case compose
     case starting
     case live
 
-    var minWidth: CGFloat {
-        switch self {
-        case .compose: 900
-        case .starting: 520
-        case .live: 900
-        }
-    }
-
-    var idealWidth: CGFloat {
-        switch self {
-        case .compose: 1120
-        case .starting: 620
-        case .live: 1180
-        }
-    }
-
-    var minHeight: CGFloat {
-        switch self {
-        case .compose: 245
-        case .starting: 96
-        case .live: 152
-        }
-    }
-
-    var idealHeight: CGFloat {
-        switch self {
-        case .compose: 275
-        case .starting: 112
-        case .live: 174
-        }
-    }
+    var minWidth: CGFloat { switch self { case .starting: 520; case .live: 900 } }
+    var idealWidth: CGFloat { switch self { case .starting: 620; case .live: 1180 } }
+    var minHeight: CGFloat { switch self { case .starting: 96; case .live: 152 } }
+    var idealHeight: CGFloat { switch self { case .starting: 112; case .live: 174 } }
 }
 
 /// Color tokens for the meeting overlay. Each token resolves to a
@@ -1158,7 +852,7 @@ private enum OverlayMode: Equatable {
 /// overlay sets `.preferredColorScheme(...)` from `AppSettings.overlayTheme`,
 /// which in turn drives NSColor's dynamicProvider to pick the right
 /// variant on first paint and on every theme switch thereafter.
-private enum AurisTheme {
+enum AurisTheme {
     static let panel = Color(light: 0xF7FAFE, dark: 0x1B2230)
     static let panelElevated = Color(light: 0xFFFFFF, dark: 0x232B3A)
     static let input = Color(light: 0xEEF4FA, dark: 0x1F2735)
@@ -1229,7 +923,7 @@ extension EnvironmentValues {
     }
 }
 
-private struct PrimaryPillButtonStyle: ButtonStyle {
+struct PrimaryPillButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(.system(size: 14, weight: .semibold))
@@ -1576,7 +1270,7 @@ private struct TypingDots: View {
     }
 }
 
-private struct MetadataChipEditor: View {
+struct MetadataChipEditor: View {
     let metadata: [String: String]
     @Binding var addingMetadata: Bool
     let setMetadata: (String, String?) -> Void
@@ -1854,7 +1548,7 @@ private struct MicYoke: Shape {
 /// Lets us reach the underlying `NSWindow` so we can configure
 /// behaviors SwiftUI doesn't expose on `Window` scenes (window
 /// level, space behavior). The accessor itself is invisible.
-private struct WindowAccessor: NSViewRepresentable {
+struct WindowAccessor: NSViewRepresentable {
     let configure: (NSWindow) -> Void
 
     func makeNSView(context: Context) -> NSView {
@@ -1882,7 +1576,7 @@ private struct WindowAccessor: NSViewRepresentable {
 /// trailing "+ Artifact" button. Lives between the metadata chip
 /// editor and the compose-panel buttons so attachments read as a
 /// peer concept to project / title metadata.
-private struct ArtifactChipStrip: View {
+struct ArtifactChipStrip: View {
     let attached: [Artifact]
     let onPick: () -> Void
     let onRemove: (String) -> Void
@@ -2043,7 +1737,7 @@ private struct ChatAttachmentChip: View {
 /// checkbox column. Only `done` artifacts are selectable; pending
 /// rows show a spinner and are unselectable; failed rows show in
 /// red. Confirming returns the picked set to the caller.
-private struct ArtifactPickerSheet: View {
+struct ArtifactPickerSheet: View {
     @Bindable var model: AppModel
     let alreadySelectedIds: Set<String>
     let onConfirm: ([Artifact]) -> Void
@@ -2212,7 +1906,7 @@ private struct ArtifactPickerRow: View {
 /// Attach meeting" button. Sibling of `ArtifactChipStrip` — same
 /// visual treatment, distinct concept (carry-over context vs.
 /// attached artifacts).
-private struct MeetingChipStrip: View {
+struct MeetingChipStrip: View {
     let attached: [MeetingSummary]
     let onPick: () -> Void
     let onRemove: (String) -> Void
@@ -2294,7 +1988,7 @@ private struct MeetingChip: View {
 /// column. Mirrors `ArtifactPickerSheet`. The picker filters out
 /// the active meeting (a meeting can't attach to itself — server
 /// enforces with a CHECK constraint).
-private struct MeetingPickerSheet: View {
+struct MeetingPickerSheet: View {
     @Bindable var model: AppModel
     let alreadySelectedIds: Set<String>
     /// When non-nil, the active meeting is hidden from the list.

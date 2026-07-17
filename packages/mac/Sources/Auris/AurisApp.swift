@@ -65,16 +65,25 @@ struct AurisApp: App {
         }
         .windowResizability(.contentMinSize)
 
+        // Start-meeting popup — a normal titled window like Settings, but
+        // screen-share-excluded (see StartMeetingView). Opened from the menu
+        // via openWindow(id: "start-meeting"). Single instance.
+        Window("Start Meeting", id: "start-meeting") {
+            StartMeetingView(model: model)
+        }
+        .windowResizability(.contentMinSize)
+
         // Meeting overlay — the single floating meeting surface. It
-        // starts in compose mode when idle, transitions through
-        // starting, then becomes the live transcript HUD.
+        // opens in the starting state once a start is in flight, then
+        // becomes the live transcript HUD. Compose lives in the
+        // separate "start-meeting" window above.
         Window("Meeting", id: "meeting-overlay") {
             MeetingOverlayView(model: model)
         }
         // contentMinSize lets the user grow the window past the
         // content's intrinsic size on both axes; contentSize would
         // pin it. The overlay's view defines minWidth/minHeight per
-        // overlay mode (compose / starting / live) — those still
+        // overlay mode (starting / live) — those still
         // apply as the floor.
         .windowResizability(.contentMinSize)
         .windowStyle(.hiddenTitleBar)
