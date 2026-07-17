@@ -38,12 +38,15 @@ struct StartMeetingView: View {
             // so the form's text and inputs resolve light or dark to match.
             .background(Color(nsColor: .windowBackgroundColor))
             .foregroundStyle(AurisTheme.text)
+            // A plain standard window like Settings: titled, resizable, and
+            // SHAREABLE (default sharingType) so it shows in screen shares —
+            // only the floating live overlay stays screen-share-excluded.
             .background(WindowAccessor { window in
-                // Only the screen-share exclusion; everything else stays
-                // standard-window default (titled, resizable, traffic
-                // lights, normal level). Unlike the overlay we do NOT set
-                // .floating / canJoinAllSpaces / borderless.
-                window.sharingType = .none
+                // Not maximizeable: grey out the green button so the window
+                // can't be zoomed or taken full-screen; it stays resizable
+                // via its edges.
+                window.collectionBehavior.insert(.fullScreenNone)
+                window.standardWindowButton(.zoomButton)?.isEnabled = false
             })
             .onAppear {
                 // Singleton Window: SwiftUI never tears this view down, so
@@ -73,33 +76,22 @@ struct StartMeetingView: View {
 
     private var composeForm: some View {
         VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 10) {
-                Image(systemName: "record.circle")
-                    .font(.system(size: 15))
-                    .foregroundStyle(AurisTheme.danger)
-
-                Text("Start meeting")
-                    .font(.system(size: 17, weight: .semibold))
-
-                Spacer()
-
-                Button {
-                    closeSelf()
-                } label: {
-                    Image(systemName: "xmark.circle.fill")
-                        .font(.system(size: 16))
-                        .foregroundStyle(AurisTheme.muted)
-                }
-                .buttonStyle(.plain)
-                .help("Cancel")
-            }
-
+            // No in-content header: the native window title bar names the
+            // window ("Start Meeting") and its traffic-light button closes
+            // it, so a redundant title row + custom close button are gone.
             ZStack(alignment: .topLeading) {
                 if description.isEmpty {
                     Text("What's this meeting about? (optional)")
+                        // Match the TextEditor's font size and text origin so
+                        // the placeholder sits exactly where the caret and
+                        // typed text render. The mismatched (default ~13pt vs
+                        // 15pt) font was the main cause of the caret-vs-text
+                        // offset; macOS TextEditor insets text ~5pt from the
+                        // left (lineFragmentPadding) and a hair from the top.
+                        .font(.system(size: 15))
                         .foregroundStyle(AurisTheme.subtle)
-                        .padding(.top, 10)
-                        .padding(.leading, 10)
+                        .padding(.top, 1)
+                        .padding(.leading, 5)
                         .allowsHitTesting(false)
                 }
 

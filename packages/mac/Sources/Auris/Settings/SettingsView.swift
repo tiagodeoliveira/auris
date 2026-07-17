@@ -56,6 +56,12 @@ struct SettingsView: View {
         // card) reads correctly in both light and dark mode.
         .tint(SettingsTheme.blue)
         .background(SettingsTheme.background)
+        // Not maximizeable: grey out the green button so the window can't be
+        // zoomed or taken full-screen; it stays resizable via its edges.
+        .background(WindowAccessor { window in
+            window.collectionBehavior.insert(.fullScreenNone)
+            window.standardWindowButton(.zoomButton)?.isEnabled = false
+        })
     }
 }
 
