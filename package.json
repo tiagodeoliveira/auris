@@ -22,7 +22,7 @@
     "*.{ts,tsx,js,json,md,yml,yaml}": "prettier --write"
   },
   "pnpm": {
-    "//": "Security overrides for transitive deps flagged by Dependabot. Within-major bumps only (semver-compatible); per-major keys for ws/js-yaml so consumers of one major aren't forced onto another. The four mobile-runtime transitive majors (uuid, linkify-it, fast-xml-parser, markdown-it) are intentionally NOT forced here — they need a mobile-verified upgrade of react-native-markdown-display / expo, not a blind sub-dep override.",
+    "//": "Security overrides for transitive deps flagged by Dependabot. Within-major bumps only (semver-compatible); per-major keys for ws/js-yaml so consumers of one major aren't forced onto another. The four mobile-runtime transitive majors (uuid, linkify-it, fast-xml-parser, markdown-it) are intentionally NOT forced here \u2014 they need a mobile-verified upgrade of react-native-markdown-display / expo, not a blind sub-dep override.",
     "overrides": {
       "shell-quote": "^1.8.4",
       "protobufjs": "^7.6.3",
@@ -32,7 +32,14 @@
       "ws@7": "^7.5.11",
       "ws@8": "^8.21.0",
       "js-yaml@3": "^3.15.0",
-      "js-yaml@4": "^4.2.0"
+      "js-yaml@4": "^4.2.0",
+      "axios": "^1.18.0",
+      "brace-expansion@1": "^1.1.16",
+      "brace-expansion@5": "^5.0.8",
+      "postcss": "^8.5.18",
+      "fast-uri": "^3.1.4",
+      "dompurify": "^3.4.12",
+      "@hono/node-server": "^2.0.5"
     }
   }
 }
