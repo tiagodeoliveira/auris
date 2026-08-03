@@ -1,6 +1,6 @@
 {
   "name": "@auris/contract",
-  "version": "0.24.1",
+  "version": "0.24.2",
   "private": true,
   "description": "Wire protocol types for the Auris server + clients (ts-proto-generated).",
   "type": "module",
