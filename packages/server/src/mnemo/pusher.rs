@@ -43,6 +43,7 @@ use uuid::Uuid;
 use crate::protocol::{Event, Item, MeetingState};
 
 use super::client::MnemoClient;
+use super::payload;
 use super::payload::{build_meeting_ended_event, build_sentence_event};
 
 #[derive(Debug, Default)]
@@ -214,26 +215,6 @@ pub(crate) async fn handle_event(
     }
 }
 
-/// Format a transcript Item's content for mnemo, prefixing the
-/// speaker tag when Soniox identified one. mnemo only sees strings,
-/// so we inline the speaker as `"[Speaker N] <text>"` rather than
-/// pushing it as a separate attribute — that way recall composes
-/// memories back into the agent's context with the speaker
-/// attribution intact. Items without a `meta.speaker` field
-/// pass through unchanged.
-fn format_transcript_content(item: &Item) -> String {
-    let speaker = item
-        .meta
-        .as_ref()
-        .and_then(|m| m.get("speaker"))
-        .and_then(|v| v.as_str())
-        .filter(|s| !s.is_empty());
-    match speaker {
-        Some(s) => format!("[Speaker {s}] {}", item.text),
-        None => item.text.clone(),
-    }
-}
-
 fn push_new_transcript(
     client: &MnemoClient,
     user_id: &str,
@@ -258,13 +239,16 @@ fn push_new_transcript(
     let session_id = session_id.to_string();
     let meeting_id = state.meeting_id.clone();
     for item in items {
-        let content = format_transcript_content(item);
+        // Speaker identity rides in the turn's role ("Speaker N") —
+        // mnemo projects non-reserved roles as the speaker label in
+        // summaries — so content stays the bare sentence.
         let payload = build_sentence_event(
             &session_id,
             &workstation,
             &metadata,
             meeting_id.as_deref(),
-            &content,
+            payload::item_speaker(item),
+            &item.text,
         );
         let client = client.clone();
         let user_id = user_id.to_string();
@@ -288,39 +272,6 @@ mod tests {
             t: 0,
             meta: None,
         }
-    }
-
-    #[test]
-    fn format_transcript_keeps_text_when_no_speaker_meta() {
-        let it = item("i1", "We talked about the demo.");
-        assert_eq!(format_transcript_content(&it), "We talked about the demo.");
-    }
-
-    #[test]
-    fn format_transcript_prefixes_speaker_when_present() {
-        let mut it = item("i1", "We talked about the demo.");
-        it.meta = Some(serde_json::json!({"speaker": "2"}));
-        assert_eq!(
-            format_transcript_content(&it),
-            "[Speaker 2] We talked about the demo.",
-        );
-    }
-
-    #[test]
-    fn format_transcript_ignores_non_string_speaker() {
-        // Defensive: Soniox emits strings, but if upstream ever
-        // produces a number/bool/null, fall through to plain text
-        // instead of crashing or stringifying with quotes around.
-        let mut it = item("i1", "hello");
-        it.meta = Some(serde_json::json!({"speaker": 7}));
-        assert_eq!(format_transcript_content(&it), "hello");
-    }
-
-    #[test]
-    fn format_transcript_ignores_empty_speaker_string() {
-        let mut it = item("i1", "hello");
-        it.meta = Some(serde_json::json!({"speaker": ""}));
-        assert_eq!(format_transcript_content(&it), "hello");
     }
 
     fn meta(pairs: &[(&str, &str)]) -> HashMap<String, String> {

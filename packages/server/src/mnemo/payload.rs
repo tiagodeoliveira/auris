@@ -15,12 +15,42 @@ use serde::{Deserialize, Serialize};
 pub const SOURCE: &str = "auris";
 pub const WORKDIR: &str = "/auris";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TurnRole {
     User,
     Assistant,
     Tool,
+    /// Speaker-identity label (e.g. "Speaker 2", or a real name once
+    /// diarization → identity mapping exists). mnemo treats any role
+    /// outside its reserved set (user/assistant/system/tool/function)
+    /// as the speaker label and renders "<label>: <content>" in
+    /// meeting summaries, so the label must NOT be one of those
+    /// reserved words.
+    Speaker(String),
+}
+
+impl Serialize for TurnRole {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            TurnRole::User => "user",
+            TurnRole::Assistant => "assistant",
+            TurnRole::Tool => "tool",
+            TurnRole::Speaker(label) => label,
+        }
+        .serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for TurnRole {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(deserializer)?;
+        Ok(match s.as_str() {
+            "user" => TurnRole::User,
+            "assistant" => TurnRole::Assistant,
+            "tool" => TurnRole::Tool,
+            _ => TurnRole::Speaker(s),
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -93,14 +123,23 @@ fn build_event(
     }
 }
 
-/// One transcript sentence → one user-role turn.
+/// One transcript sentence → one turn. When Soniox identified a
+/// speaker, the identity rides in the turn's `role` as "Speaker N"
+/// (mnemo projects non-reserved roles as the speaker label in
+/// summaries); content stays the bare sentence. Without a speaker the
+/// turn is a plain user-role turn, emitted verbatim by mnemo.
 pub fn build_sentence_event(
     session_id: &str,
     workstation: &str,
     metadata: &HashMap<String, String>,
     meeting_id: Option<&str>,
+    speaker: Option<&str>,
     sentence: &str,
 ) -> IngestEvent {
+    let role = match speaker {
+        Some(s) => TurnRole::Speaker(format!("Speaker {s}")),
+        None => TurnRole::User,
+    };
     build_event(
         session_id,
         workstation,
@@ -109,10 +148,21 @@ pub fn build_sentence_event(
         Some("transcript"),
         None,
         vec![Turn {
-            role: TurnRole::User,
+            role,
             content: sentence.to_string(),
         }],
     )
+}
+
+/// Extract the Soniox speaker id from a transcript item's meta
+/// (`meta.speaker`, a non-empty string like "2"). Single source of
+/// truth for the live pusher and the offline recovery binary.
+pub fn item_speaker(item: &crate::protocol::Item) -> Option<&str> {
+    item.meta
+        .as_ref()
+        .and_then(|m| m.get("speaker"))
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
 }
 
 /// End-of-meeting signal event. Carries `meeting_ended` (RFC3339 timestamp)
@@ -158,6 +208,7 @@ mod tests {
             "host",
             &meta(&[("project", "helix")]),
             None,
+            None,
             "We talked about the demo.",
         );
         assert_eq!(ev.session_id, "sess-1");
@@ -168,9 +219,66 @@ mod tests {
         assert_eq!(ev.source, SOURCE);
     }
 
+    fn item(text: &str, meta: Option<serde_json::Value>) -> crate::protocol::Item {
+        crate::protocol::Item {
+            id: "i1".into(),
+            text: text.into(),
+            detail: None,
+            t: 0,
+            meta,
+        }
+    }
+
+    #[test]
+    fn item_speaker_extracts_non_empty_string() {
+        let it = item("hi", Some(serde_json::json!({"speaker": "2"})));
+        assert_eq!(item_speaker(&it), Some("2"));
+        assert_eq!(item_speaker(&item("hi", None)), None);
+        // Defensive: Soniox emits strings, but if upstream ever
+        // produces a number/bool/null or an empty string, fall
+        // through to no speaker instead of crashing.
+        let non_string = item("hi", Some(serde_json::json!({"speaker": 7})));
+        assert_eq!(item_speaker(&non_string), None);
+        let empty = item("hi", Some(serde_json::json!({"speaker": ""})));
+        assert_eq!(item_speaker(&empty), None);
+    }
+
+    #[test]
+    fn sentence_event_with_speaker_projects_role_and_keeps_content_bare() {
+        // mnemo renders non-reserved roles as "<label>: <content>" in
+        // summaries; the content must NOT also carry a "[Speaker N]"
+        // prefix or the line would attribute the speaker twice.
+        let ev = build_sentence_event("s", "h", &meta(&[]), Some("m-1"), Some("2"), "hello");
+        assert_eq!(
+            ev.turns[0].role,
+            TurnRole::Speaker("Speaker 2".to_string())
+        );
+        assert_eq!(ev.turns[0].content, "hello");
+        let json = serde_json::to_value(&ev).unwrap();
+        assert_eq!(json["turns"][0]["role"], "Speaker 2");
+        assert_eq!(json["turns"][0]["content"], "hello");
+    }
+
+    #[test]
+    fn turn_role_round_trips_through_serde() {
+        // The offline queue persists IngestEvents as JSON and replays
+        // them later — a speaker label must survive the round trip,
+        // and reserved roles must come back as their enum variants.
+        for role in [
+            TurnRole::User,
+            TurnRole::Assistant,
+            TurnRole::Tool,
+            TurnRole::Speaker("Speaker 2".to_string()),
+        ] {
+            let json = serde_json::to_string(&role).unwrap();
+            let back: TurnRole = serde_json::from_str(&json).unwrap();
+            assert_eq!(back, role);
+        }
+    }
+
     #[test]
     fn project_field_promotes_from_metadata() {
-        let no_project = build_sentence_event("s", "h", &meta(&[("title", "x")]), None, "hi");
+        let no_project = build_sentence_event("s", "h", &meta(&[("title", "x")]), None, None, "hi");
         assert!(no_project.project.is_none());
         // Other metadata still rides along in attributes.
         assert_eq!(no_project.attributes.get("title"), Some(&"x".to_string()));
@@ -183,7 +291,7 @@ mod tests {
             ("owner", "tiago"),
             ("title", "SMB demo"),
         ]);
-        let ev = build_sentence_event("s", "h", &m, None, "x");
+        let ev = build_sentence_event("s", "h", &m, None, None, "x");
         // 3 user-set attributes + 1 injected `mode = "transcript"`.
         assert_eq!(ev.attributes.len(), 4);
         assert_eq!(ev.attributes.get("owner"), Some(&"tiago".to_string()));
@@ -195,7 +303,7 @@ mod tests {
         // Mid-meeting events don't know the end time yet; meeting_ended
         // must NOT appear on those, otherwise mnemo's denormalisation
         // would mark the row as a finished-meeting summary.
-        let ev = build_sentence_event("s", "h", &meta(&[]), Some("m-1"), "hi");
+        let ev = build_sentence_event("s", "h", &meta(&[]), Some("m-1"), None, "hi");
         assert!(
             !ev.attributes.contains_key("meeting_ended"),
             "meeting_ended must not leak onto mid-meeting events"
@@ -239,6 +347,7 @@ mod tests {
             "host-x",
             &meta(&[("project", "helix"), ("owner", "tiago")]),
             Some("m-42"),
+            None,
             "hello world",
         );
         let json = serde_json::to_value(&ev).unwrap();

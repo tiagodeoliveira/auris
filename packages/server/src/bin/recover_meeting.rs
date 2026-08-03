@@ -376,13 +376,13 @@ async fn recover_one(
     let session_id = Uuid::new_v4().to_string();
     let workstation = mnemo_client.workstation().to_string();
     for item in &items {
-        let content = format_transcript_content(item);
         let event = mnemo::payload::build_sentence_event(
             &session_id,
             &workstation,
             &sidecar.metadata,
             Some(meeting.id.as_str()),
-            &content,
+            mnemo::payload::item_speaker(item),
+            &item.text,
         );
         mnemo_client
             .push_event(mnemo_user_key, &event)
@@ -391,21 +391,6 @@ async fn recover_one(
     }
 
     Ok(items.len())
-}
-
-/// Mirror `mnemo::pusher::format_transcript_content` so the recovery
-/// items shape identically to live-pushed items.
-fn format_transcript_content(item: &Item) -> String {
-    let speaker = item
-        .meta
-        .as_ref()
-        .and_then(|m| m.get("speaker"))
-        .and_then(|v| v.as_str())
-        .filter(|s| !s.is_empty());
-    match speaker {
-        Some(s) => format!("[Speaker {s}] {}", item.text),
-        None => item.text.clone(),
-    }
 }
 
 fn write_marker(path: &Path, items_pushed: usize) -> Result<()> {
