@@ -43,12 +43,21 @@ struct AurisApp: App {
             MenuBarContent(model: model, updater: updaterController)
         } label: {
             if case .connected = model.webSocket.state {
-                // Image(nsImage:) of a pre-rasterized template image —
-                // MenuBarExtra can't extract a usable alpha mask from
-                // a SwiftUI View directly, so we feed it an NSImage
-                // with isTemplate=true and let macOS handle tinting.
-                Image(nsImage: AurisMark.menuBarTemplateImage)
-                    .renderingMode(.template)
+                if model.hasActiveMeeting {
+                    // A meeting is running (on this Mac or another
+                    // client) — telegraph "recording" instead of the
+                    // brand mark. Connection-trouble icons below still
+                    // win over this: if the WS drops mid-meeting the
+                    // user should see the trouble state.
+                    Image(systemName: "record.circle.fill")
+                } else {
+                    // Image(nsImage:) of a pre-rasterized template image —
+                    // MenuBarExtra can't extract a usable alpha mask from
+                    // a SwiftUI View directly, so we feed it an NSImage
+                    // with isTemplate=true and let macOS handle tinting.
+                    Image(nsImage: AurisMark.menuBarTemplateImage)
+                        .renderingMode(.template)
+                }
             } else {
                 Image(systemName: model.statusSystemImageName)
             }
