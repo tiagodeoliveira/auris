@@ -35,6 +35,7 @@ import {
 import type { AppState, Item } from "../types";
 import { activeGlassesItems } from "../types";
 import { activityIndicator } from "./layout-active-list";
+import { meetingMenu } from "./meeting-menu";
 
 export const QUICK_ASKS_LIST_ID = 1;
 export const QUICK_ASKS_LIST_NAME = "quickList";
@@ -117,6 +118,7 @@ export function buildQuickAsksLayout(state: AppState): RebuildPageContainer {
   if (sub === "list") {
     return new RebuildPageContainer({
       containerTotalNum: 2,
+      menuObject: meetingMenu(state),
       listObject: [listContainer(activeGlassesItems(state))],
       textObject: [activityIndicator(state)],
     });
@@ -124,11 +126,13 @@ export function buildQuickAsksLayout(state: AppState): RebuildPageContainer {
   if (sub === "waiting") {
     return new RebuildPageContainer({
       containerTotalNum: 2,
+      menuObject: meetingMenu(state),
       textObject: [fullScreenText(waitingBody()), activityIndicator(state)],
     });
   }
   return new RebuildPageContainer({
     containerTotalNum: 2,
+    menuObject: meetingMenu(state),
     textObject: [
       fullScreenText(answerBody(state.quickAskAnswerText ?? "")),
       activityIndicator(state),

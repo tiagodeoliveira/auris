@@ -1,5 +1,5 @@
 import { OsEventTypeList } from "@evenrealities/even_hub_sdk";
-import { GLASSES_STOP_MODE } from "../glasses/layout-active-list";
+import { MENU_END_MEETING_ID } from "../glasses/meeting-menu";
 import { ACTIVE_LIST_VISIBLE_LINES, activeListMaxOffset } from "../glasses/format-active-list";
 import {
   ENTRY_ITEM_START,
@@ -28,17 +28,15 @@ import type { Intent } from "../types";
 import type { AppState } from "../types";
 import type { ModeOption } from "../contract";
 
-/// Cycle through real modes followed by the client-only stop
-/// sentinel. Returns the next mode id (always a string — caller
-/// decides whether it's a real mode → send `set_mode`, or
-/// `GLASSES_STOP_MODE` → set locally).
+/// Cycle through the real glasses modes. Ending the meeting is no
+/// longer part of the cycle; it lives in the native long-press menu.
 ///
 /// Chat is filtered out: there's no text-input path from glasses,
 /// so cycling onto chat would strand the user. If the server still
 /// pushes `mode_changed { mode: "chat" }` (e.g. the phone switched),
 /// the next double-tap escapes via the `-1 → modes[0]` fallthrough.
 function nextMode(state: AppState): string {
-  const modes = [...glassesModeIds(state), GLASSES_STOP_MODE];
+  const modes = glassesModeIds(state);
   const idx = modes.indexOf(state.glassesCurrentMode);
   return modes[(idx + 1) % modes.length] ?? modes[0];
 }
@@ -90,8 +88,7 @@ export function glassesModeIds(state: AppState): string[] {
   //      transcript).
   //   3. Fallback: if the user disabled every cycle-eligible mode,
   //      return the hardcoded-filtered set unchanged. Otherwise the
-  //      cycle would degenerate to just GLASSES_STOP_MODE and a
-  //      double-tap couldn't escape back to a real mode.
+  //      glasses would have no mode left to show.
   const hardcodedFiltered = state.availableModes
     .filter((m) => m.id !== "chat" && m.id !== "assist")
     .map((m) => m.id);
@@ -116,6 +113,7 @@ interface BridgeEvent {
     currentSelectItemIndex?: number;
   };
   sysEvent?: { eventType?: number; eventSource?: number };
+  menuItemClickEvent?: { itemID?: number };
 }
 
 type SendIntent = (intent: Intent) => void;
@@ -167,6 +165,12 @@ export function handleBridgeEvent(
   // List events carry the currently selected item index alongside
   // the event type. Route them through a dedicated handler so each
   // menu can dispatch contextually by item.
+  // Native long-press menu (SDK 0.0.14+). "End meeting" lives here now;
+  // selecting it from the system menu is the confirmation.
+  if (event.menuItemClickEvent) {
+    handleMenuItem(event.menuItemClickEvent.itemID ?? 0, store, send);
+    return;
+  }
   if (event.listEvent) {
     handleListEvent(event.listEvent, store, send);
     return;
@@ -555,22 +559,6 @@ function handleInput(eventType: number, store: Store, send: SendIntent): void {
         }
         return;
       }
-      // Stop-meeting sentinel (client-only mode at the end of the cycle).
-      // Ending a meeting is destructive, so it takes two taps: the first
-      // arms a confirmation prompt (no intent sent, meeting keeps
-      // running); the second fires `stop_meeting` and resets the mode so
-      // the next meeting opens on whatever real mode the server picks. A
-      // double-tap (mode cycle) cancels by moving off the sentinel.
-      if (state.glassesView === "active_list" && state.glassesCurrentMode === GLASSES_STOP_MODE) {
-        if (!state.glassesStopArmed) {
-          store.update({ glassesStopArmed: true });
-          return;
-        }
-        send({ type: "stop_meeting" });
-        const first = glassesModeIds(state)[0] ?? "transcript";
-        store.update({ glassesCurrentMode: first, glassesStopArmed: false });
-        return;
-      }
       // Active meeting, any real mode → single-tap marks a moment.
       if (state.glassesView === "active_list" && state.meetingState === "active") {
         send({ type: "mark_moment", t: markMomentT(state) });
@@ -582,10 +570,7 @@ function handleInput(eventType: number, store: Store, send: SendIntent): void {
     }
     case OsEventTypeList.DOUBLE_CLICK_EVENT: {
       // During an active meeting on glasses, double-tap cycles
-      // through the server-provided modes plus a trailing Stop
-      // sentinel. Real modes go via `set_mode` (server is the
-      // source of truth); the stop sentinel is a glasses-only
-      // override and never round-trips through the server.
+      // through the server-provided modes.
       if (state.glassesView === "active_list" && state.meetingState === "active") {
         const target = nextMode(state);
         // Leaving quick_asks via mode-cycle: clear the sub-state so
@@ -593,35 +578,20 @@ function handleInput(eventType: number, store: Store, send: SendIntent): void {
         // spinner / answer from a previous pick).
         const leavingQuickAsks =
           state.glassesCurrentMode === QUICK_ASKS_MODE && target !== QUICK_ASKS_MODE;
-        if (target === GLASSES_STOP_MODE) {
-          // Entering the stop sentinel starts disarmed so a stray tap
-          // can't end the meeting without the explicit arm step.
-          store.update({
-            glassesCurrentMode: GLASSES_STOP_MODE,
-            glassesStopArmed: false,
-            ...(leavingQuickAsks
-              ? { quickAskWaiting: false, quickAskAnswerText: null, quickAskDispatchAt: null }
-              : {}),
-          });
-        } else {
-          // Glasses mode is a per-surface concern — the DOM has its
-          // own `currentMode` driven by mode-tabs. Don't touch it
-          // here, and don't send set_mode (nobody listens; the
-          // server's current_mode is vestigial after the
-          // decoupling).
-          store.update({
-            glassesCurrentMode: target,
-            // Moving onto a real mode also cancels any primed stop
-            // confirmation left on the sentinel.
-            glassesStopArmed: false,
-            // Entering a (scrollable) mode starts at the tail — snap to
-            // the latest rather than inheriting a stale scroll offset.
-            glassesActiveListLineOffset: 0,
-            ...(leavingQuickAsks
-              ? { quickAskWaiting: false, quickAskAnswerText: null, quickAskDispatchAt: null }
-              : {}),
-          });
-        }
+        // Glasses mode is a per-surface concern — the DOM has its
+        // own `currentMode` driven by mode-tabs. Don't touch it
+        // here, and don't send set_mode (nobody listens; the
+        // server's current_mode is vestigial after the
+        // decoupling).
+        store.update({
+          glassesCurrentMode: target,
+          // Entering a (scrollable) mode starts at the tail — snap to
+          // the latest rather than inheriting a stale scroll offset.
+          glassesActiveListLineOffset: 0,
+          ...(leavingQuickAsks
+            ? { quickAskWaiting: false, quickAskAnswerText: null, quickAskDispatchAt: null }
+            : {}),
+        });
         return;
       }
       return;
@@ -638,4 +608,21 @@ function handleInput(eventType: number, store: Store, send: SendIntent): void {
       scrollActiveList(store, -SCROLL_STEP);
       return;
   }
+}
+
+/// Long-press menu dispatch. Only acts during a live meeting on the
+/// active-list view (the only place the menu is registered), so a
+/// stale click after the meeting ended is a no-op.
+export function handleMenuItem(itemID: number, store: Store, send: SendIntent): void {
+  const state = store.get();
+  if (itemID !== MENU_END_MEETING_ID) return;
+  if (state.glassesView !== "active_list" || state.meetingState !== "active") return;
+  send({ type: "stop_meeting" });
+  const first = glassesModeIds(state)[0] ?? "transcript";
+  store.update({
+    glassesCurrentMode: first,
+    quickAskWaiting: false,
+    quickAskAnswerText: null,
+    quickAskDispatchAt: null,
+  });
 }

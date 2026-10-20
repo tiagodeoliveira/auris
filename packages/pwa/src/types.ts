@@ -132,12 +132,6 @@ export interface AppState {
   /// whenever the viewed mode's items update, the mode changes, or the
   /// meeting ends ("always show the latest on a change").
   glassesActiveListLineOffset: number;
-  /// True once the wearer has tapped the glasses `> Stop` sentinel
-  /// once, arming the confirmation prompt. A second tap actually
-  /// fires `stop_meeting`; cycling modes (double-tap) or the meeting
-  /// ending by any other path disarms it. Client-only — the server
-  /// has no concept of this flag.
-  glassesStopArmed: boolean;
   /// Monotonic counter bumped each time a moment is marked (glasses
   /// single-tap or phone CTA). Carries no value beyond "it changed" —
   /// the glasses renderer subscribes to it to flash a transient "+1"
@@ -296,7 +290,6 @@ export function defaultAppState(): AppState {
     currentMode: "transcript",
     glassesCurrentMode: "transcript",
     glassesActiveListLineOffset: 0,
-    glassesStopArmed: false,
     momentMarkedSeq: 0,
     displayTag: null,
     metadata: {},

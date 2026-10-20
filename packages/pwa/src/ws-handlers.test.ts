@@ -75,20 +75,6 @@ describe("ws handlers", () => {
     expect(activeItems(store.get()).map((i) => i.id)).toEqual(["a", "b"]);
   });
 
-  test("meeting end clears a primed glasses stop confirmation", () => {
-    // If the wearer armed the glasses '> Stop' prompt but the meeting
-    // ended by another path (phone Stop, server timeout), the armed
-    // flag must reset so the next meeting doesn't open primed to end.
-    const store = createStore({
-      ...defaultAppState(),
-      protocolVersionMatched: true,
-      meetingState: "active",
-      glassesStopArmed: true,
-    });
-    handleServerEvent({ type: "meeting_state_changed", meeting_state: "idle" }, store);
-    expect(store.get().glassesStopArmed).toBe(false);
-  });
-
   test("error event surfaces as toast", () => {
     const store = createStore(defaultAppState());
     handleServerEvent(

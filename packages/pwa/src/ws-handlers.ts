@@ -132,9 +132,6 @@ export function handleServerEvent(event: ServerEvent, store: Store): void {
         update.quickAskWaiting = false;
         update.quickAskAnswerText = null;
         update.quickAskDispatchAt = null;
-        // Disarm any primed glasses stop confirmation so the next
-        // meeting doesn't open with the stop sentinel pre-armed.
-        update.glassesStopArmed = false;
         // Assist popup queue is per-meeting; reset the ledger so the
         // next meeting's first assist event pops cleanly.
         update.assistShown = null;

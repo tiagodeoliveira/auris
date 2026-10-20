@@ -11,6 +11,7 @@ import {
   formatActiveListWindow,
 } from "./format-active-list";
 import { formatActiveChatBody } from "./format-active-chat";
+import { meetingMenu } from "./meeting-menu";
 
 const HEADER_ID = 1;
 const BODY_ID = 2;
@@ -85,14 +86,6 @@ export function activityIndicatorRestingContent(state: AppState): string {
   return state.status.listening ? activityFrame(0) : ACTIVITY_IDLE;
 }
 
-/// Client-only sentinel slotted at the end of the mode-cycle on
-/// glasses. When `state.currentMode === GLASSES_STOP_MODE`, the
-/// active-list body shows a stop-confirmation rather than the
-/// current mode's items. Never sent to the server (the server has
-/// no concept of this mode); cleared the moment the user picks a
-/// real mode or stops the meeting.
-export const GLASSES_STOP_MODE = "__stop__";
-
 // `CHARS_PER_LINE` is used by the chat formatter (which pre-wraps
 // each turn itself). The plain active list is sized by visible-line
 // budget instead — see `ACTIVE_LIST_VISIBLE_LINES`.
@@ -132,6 +125,7 @@ export function buildActiveListLayout(state: AppState) {
   return new RebuildPageContainer({
     containerTotalNum: 4,
     textObject: [header, body, activityIndicator(state), momentIndicator()],
+    menuObject: meetingMenu(state),
   });
 }
 
@@ -224,12 +218,6 @@ export function buildHeaderUpgrade(state: AppState) {
 }
 
 function buildHeader(state: AppState): string {
-  // Stop sentinel: blank the header so the view is unobstructed.
-  // A single space (not empty string) is required to overwrite the
-  // firmware buffer — see format-active-list for the same trick.
-  if (state.glassesCurrentMode === GLASSES_STOP_MODE) {
-    return " ";
-  }
   const mode = state.availableModes.find((m) => m.id === state.glassesCurrentMode);
   const label = mode?.label ?? state.glassesCurrentMode;
   const tag = state.displayTag ? `  ${state.displayTag}` : "";
@@ -250,39 +238,7 @@ function audioWarningPrefix(state: AppState): string {
   return state.audioCaptureState.kind === "failed" ? "!! AUDIO LOST  " : "!! NO AUDIO  ";
 }
 
-/// Pads "> Stop" with leading newlines + spaces so it lands in the
-/// bottom-right corner of the 256px-tall body container. The
-/// firmware has no alignment APIs (text is always top-left), so we
-/// position with whitespace. Numbers tuned to the visible-line
-/// budget — same ~56 chars/line as ACTIVE_LIST_VISIBLE_LINES.
-const STOP_TEXT_LINE_PADDING = 7;
-const STOP_TEXT_LEFT_PADDING = 50;
-/// Column the stop affordance right-aligns to (matches the resting
-/// "> Stop" at LEFT_PADDING + label width). Reused to right-align the
-/// armed confirm prompt so both states sit in the same corner.
-const STOP_TEXT_RIGHT_COL = STOP_TEXT_LEFT_PADDING + "> Stop".length;
-
-/// Bottom-right stop affordance. Disarmed: the minimal "> Stop".
-/// Armed (after one tap): a confirm prompt — a second single-tap
-/// ends the meeting, a double-tap (mode cycle) cancels.
-function stopBody(armed: boolean): string {
-  if (!armed) {
-    return "\n".repeat(STOP_TEXT_LINE_PADDING) + " ".repeat(STOP_TEXT_LEFT_PADDING) + "> Stop";
-  }
-  const line1 = "> Tap again to end";
-  const line2 = "double-tap to cancel";
-  const rightAlign = (s: string) => " ".repeat(Math.max(0, STOP_TEXT_RIGHT_COL - s.length)) + s;
-  return "\n".repeat(STOP_TEXT_LINE_PADDING - 1) + rightAlign(line1) + "\n" + rightAlign(line2);
-}
-
 function buildBody(state: AppState): string {
-  // Glasses-only stop view — minimal "> Stop" in the bottom-right
-  // corner for an unobstructed view. First single-tap arms a confirm
-  // prompt; a second tap fires `stop_meeting` (gesture router);
-  // double-tap cycles back to a real mode (cancel).
-  if (state.glassesCurrentMode === GLASSES_STOP_MODE) {
-    return stopBody(state.glassesStopArmed);
-  }
   // Chat is a flowing thread, not a bullet list — single-line
   // truncation drops most of an assistant answer. The chat
   // formatter wraps each turn across multiple lines and pins the

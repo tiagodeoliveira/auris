@@ -8,6 +8,7 @@ import {
 import { createStore } from "../store";
 import { defaultAppState } from "../types";
 import { summaryMaxOffset } from "../glasses/layout-history-summary";
+import { MENU_END_MEETING_ID } from "../glasses/meeting-menu";
 
 describe("gesture-router", () => {
   test("ring CLICK during active meeting dispatches mark_moment", () => {
@@ -538,84 +539,65 @@ describe("gesture-router", () => {
     });
   });
 
-  test("stop sentinel first CLICK arms the confirmation without stopping", () => {
-    // The destructive "end meeting" action now needs a deliberate
-    // second tap. The first tap only arms the prompt — no intent is
-    // sent and the meeting keeps running.
+  test("long-press menu End meeting fires stop_meeting and resets the mode", () => {
     const send = vi.fn();
     const store = createStore({
       ...defaultAppState(),
       glassesView: "active_list",
       meetingState: "active",
       availableModes: [{ id: "transcript", label: "Transcript", update_strategy: "append" }],
-      glassesCurrentMode: "__stop__",
+      glassesCurrentMode: "summary",
     });
-    handleBridgeEvent({ textEvent: { eventType: OsEventTypeList.CLICK_EVENT } }, store, send);
-    expect(send).not.toHaveBeenCalled();
-    expect(store.get().glassesStopArmed).toBe(true);
-    expect(store.get().glassesCurrentMode).toBe("__stop__");
-  });
-
-  test("stop sentinel second CLICK (armed) fires stop_meeting and resets", () => {
-    // Once armed, the next tap confirms: stop the meeting, rewind the
-    // mode so the next meeting opens fresh, and disarm.
-    const send = vi.fn();
-    const store = createStore({
-      ...defaultAppState(),
-      glassesView: "active_list",
-      meetingState: "active",
-      availableModes: [{ id: "transcript", label: "Transcript", update_strategy: "append" }],
-      glassesCurrentMode: "__stop__",
-      glassesStopArmed: true,
-    });
-    handleBridgeEvent({ textEvent: { eventType: OsEventTypeList.CLICK_EVENT } }, store, send);
+    handleBridgeEvent({ menuItemClickEvent: { itemID: MENU_END_MEETING_ID } }, store, send);
     expect(send).toHaveBeenCalledWith({ type: "stop_meeting" });
     expect(store.get().glassesCurrentMode).toBe("transcript");
-    expect(store.get().glassesStopArmed).toBe(false);
   });
 
-  test("DOUBLE_CLICK while armed cancels: disarms and cycles away", () => {
-    // The mode-cycle double-tap is the cancel path off the armed
-    // stop prompt — it must clear the armed flag and move to a real
-    // mode rather than leaving a primed stop behind.
+  test("menu click outside a live meeting or with unknown id is a no-op", () => {
+    const send = vi.fn();
+    const store = createStore({ ...defaultAppState(), glassesView: "idle" });
+    handleBridgeEvent({ menuItemClickEvent: { itemID: MENU_END_MEETING_ID } }, store, send);
+    const live = createStore({
+      ...defaultAppState(),
+      glassesView: "active_list",
+      meetingState: "active",
+    });
+    handleBridgeEvent({ menuItemClickEvent: { itemID: 99 } }, live, send);
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  test("single CLICK in a live meeting never ends it (only marks a moment)", () => {
     const send = vi.fn();
     const store = createStore({
       ...defaultAppState(),
       glassesView: "active_list",
       meetingState: "active",
       availableModes: [{ id: "transcript", label: "Transcript", update_strategy: "append" }],
-      glassesCurrentMode: "__stop__",
-      glassesStopArmed: true,
+      glassesCurrentMode: "transcript",
     });
-    handleBridgeEvent(
-      { textEvent: { eventType: OsEventTypeList.DOUBLE_CLICK_EVENT } },
-      store,
-      send,
-    );
-    expect(store.get().glassesStopArmed).toBe(false);
-    expect(store.get().glassesCurrentMode).toBe("transcript");
+    handleBridgeEvent({ textEvent: { eventType: OsEventTypeList.CLICK_EVENT } }, store, send);
+    handleBridgeEvent({ textEvent: { eventType: OsEventTypeList.CLICK_EVENT } }, store, send);
     expect(send).not.toHaveBeenCalledWith({ type: "stop_meeting" });
   });
 
-  test("DOUBLE_CLICK onto the stop sentinel enters disarmed", () => {
-    // Cycling INTO the stop sentinel must start disarmed so a stray
-    // single tap can't end the meeting without the explicit arm step.
+  test("DOUBLE_CLICK cycles only real modes (no stop screen)", () => {
     const send = vi.fn();
     const store = createStore({
       ...defaultAppState(),
       glassesView: "active_list",
       meetingState: "active",
-      availableModes: [{ id: "transcript", label: "Transcript", update_strategy: "append" }],
-      // Single real mode → next double-tap lands on the stop sentinel.
-      glassesCurrentMode: "transcript",
+      availableModes: [
+        { id: "transcript", label: "Transcript", update_strategy: "append" },
+        { id: "summary", label: "Summary", update_strategy: "replace" },
+      ],
+      glassesCurrentMode: "summary",
     });
     handleBridgeEvent(
       { textEvent: { eventType: OsEventTypeList.DOUBLE_CLICK_EVENT } },
       store,
       send,
     );
-    expect(store.get().glassesCurrentMode).toBe("__stop__");
-    expect(store.get().glassesStopArmed).toBe(false);
+    expect(store.get().glassesCurrentMode).toBe("transcript");
   });
 
   test("sysEvent FOREGROUND_EXIT does NOT trigger a click in gesture-router", () => {

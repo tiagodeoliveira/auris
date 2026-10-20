@@ -3,7 +3,6 @@ import type { GlassesView } from "../types";
 import { buildEntryRebuild } from "./layout-entry";
 import {
   ACTIVITY_FRAME_INTERVAL_MS,
-  GLASSES_STOP_MODE,
   MOMENT_FLASH_MS,
   activityFrame,
   activityIndicatorRestingContent,
@@ -288,20 +287,6 @@ export function createGlassesRenderer(rawBridge: BridgeLike, store: Store): Glas
       // health on every layout (incl. Quick Asks, which has no header).
       void bridge.textContainerUpgrade(buildHeaderUpgrade(store.get()));
       refreshIndicator();
-    },
-  );
-
-  // Stop-confirmation arming. The body swaps between the resting
-  // "> Stop" and the armed confirm prompt; re-push it the instant the
-  // wearer arms (first tap) or cancels (mode-cycle) so the glasses
-  // reflect the new affordance. Body container only exists on the
-  // standard active-list layout, which is where GLASSES_STOP_MODE
-  // always renders (the stop sentinel is never a quick_asks substate).
-  store.subscribe(
-    (s) => s.glassesStopArmed,
-    () => {
-      if (lastView === "active_list" && store.get().glassesCurrentMode === GLASSES_STOP_MODE)
-        void bridge.textContainerUpgrade(buildBodyUpgrade(store.get()));
     },
   );
 

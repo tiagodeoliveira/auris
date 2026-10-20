@@ -2,10 +2,8 @@ import { describe, expect, test } from "vitest";
 import { defaultAppState } from "../types";
 import type { AppState, AudioCaptureState } from "../types";
 import {
-  GLASSES_STOP_MODE,
   activityFrame,
   activityIndicatorRestingContent,
-  buildBodyUpgrade,
   buildHeaderUpgrade,
 } from "./layout-active-list";
 
@@ -19,11 +17,6 @@ function headerContent(over: Partial<AppState>): string {
   // buildHeaderUpgrade returns an SDK TextContainerUpgrade carrying the
   // rendered header string in `.content`.
   return (buildHeaderUpgrade(state) as unknown as { content: string }).content;
-}
-
-function bodyContent(over: Partial<AppState>): string {
-  const state: AppState = { ...defaultAppState(), ...over };
-  return (buildBodyUpgrade(state) as unknown as { content: string }).content;
 }
 
 describe("glasses header audio warning", () => {
@@ -123,16 +116,16 @@ describe("activity indicator audio health", () => {
   });
 });
 
-describe("glasses stop-mode confirmation body", () => {
-  test("disarmed shows the resting '> Stop' affordance only", () => {
-    const content = bodyContent({ glassesCurrentMode: GLASSES_STOP_MODE, glassesStopArmed: false });
-    expect(content).toContain("> Stop");
-    expect(content.toLowerCase()).not.toContain("again");
-  });
-
-  test("armed shows a confirm prompt with a cancel hint", () => {
-    const content = bodyContent({ glassesCurrentMode: GLASSES_STOP_MODE, glassesStopArmed: true });
-    expect(content).toContain("Tap again to end");
-    expect(content.toLowerCase()).toContain("cancel");
+describe("native long-press meeting menu", () => {
+  test("active meeting layouts register End meeting; idle ones do not", async () => {
+    const { buildActiveListLayout } = await import("./layout-active-list");
+    const { MENU_END_MEETING_ID } = await import("./meeting-menu");
+    const active = buildActiveListLayout({ ...defaultAppState(), meetingState: "active" });
+    expect(active.menuObject?.menuItems?.[0]).toMatchObject({
+      itemName: "End meeting",
+      itemID: MENU_END_MEETING_ID,
+    });
+    const idle = buildActiveListLayout({ ...defaultAppState(), meetingState: "idle" });
+    expect(idle.menuObject).toBeUndefined();
   });
 });
