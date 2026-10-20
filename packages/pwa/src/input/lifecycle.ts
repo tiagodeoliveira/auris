@@ -33,7 +33,9 @@ export function handleLifecycleEvent(event: SysEvent, store: Store, bridge: Brid
       store.update({ appForegrounded: true });
       return;
     case OsEventTypeList.ABNORMAL_EXIT_EVENT:
-      // Surface as toast (toast machinery lands in Task 17).
+      // Even Hub guideline: stop hardware on abnormal exit too, so the
+      // glasses mic is never left running. Surface as toast later.
+      void bridge.audioControl(false);
       store.update({ bleConnected: false });
       return;
     case OsEventTypeList.SYSTEM_EXIT_EVENT:

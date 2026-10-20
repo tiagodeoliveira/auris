@@ -326,3 +326,9 @@ live-smoke:
 # `afplay /tmp/spike-audio.wav` to verify the audio path is healthy.
 audio-spike:
     cargo run -p auris-server --example screencapturekit_spike
+
+# Refresh the vendored Even Realities Claude Code skills (everything-evenhub).
+evenhub-skills-update:
+    rm -rf /tmp/everything-evenhub && git clone -q --depth 1 https://github.com/even-realities/everything-evenhub /tmp/everything-evenhub
+    cp -R /tmp/everything-evenhub/plugins/everything-evenhub/skills/* .claude/skills/
+    @echo "Synced skills at $(git -C /tmp/everything-evenhub rev-parse --short HEAD); update .claude/skills/SOURCE.md"

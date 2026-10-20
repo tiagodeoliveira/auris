@@ -6,6 +6,19 @@ import { defaultAppState } from "../types";
 import { createMockBridge } from "../__test__/mock-bridge";
 
 describe("lifecycle", () => {
+  test("ABNORMAL_EXIT_EVENT releases the glasses mic", () => {
+    // Even Hub handle-input guideline: stop hardware on abnormal exit.
+    const store = createStore(defaultAppState());
+    const bridge = createMockBridge();
+    handleLifecycleEvent(
+      { sysEvent: { eventType: OsEventTypeList.ABNORMAL_EXIT_EVENT } },
+      store,
+      bridge,
+    );
+    expect(bridge.audioControl).toHaveBeenCalledWith(false);
+    expect(bridge.shutDownPageContainer).not.toHaveBeenCalled();
+  });
+
   test("SYSTEM_EXIT_EVENT shuts down the page container and mutes audio", () => {
     // The host drives exit (long-press → "Leave app?"); confirming it
     // fires SYSTEM_EXIT_EVENT. We must release the mic AND tell the host
