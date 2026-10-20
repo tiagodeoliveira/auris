@@ -64,6 +64,7 @@ export async function boot({ bridge, store, env, isPaired }: BootOptions): Promi
   // Latch the bridge-ready signal so main.ts can decide whether to
   // advertise `audio_capture` to the server. A non-zero startup
   // result (prototype mode without glasses) keeps the flag false.
+  console.log(`[boot] createStartUpPageContainer result=${String(result)}`);
   store.update({ glassesBridgeReady: result === 0 });
   if (result !== 0) {
     const reason = STARTUP_RESULT_NAMES[result] ?? `code ${result}`;

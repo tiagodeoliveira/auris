@@ -39,6 +39,7 @@ import { mountPairScreen } from "./ui/pair-screen";
 import { SERVER_URL } from "./server-url";
 import { getOrCreateDeviceId } from "./storage";
 import { resolveDeviceLabel } from "./device-label";
+import { wireDeviceRegistration } from "./device-registration";
 
 async function start() {
   const bridge = await waitForEvenAppBridge();
@@ -258,35 +259,12 @@ function bootAuthenticated(
   // Why gate on the bridge: a plain browser tab without the EvenHub
   // WebView has no path to actually capture mic audio, so claiming
   // the capability would pollute the picker on every paired client.
-  store.subscribe(
-    (s) => s.wsStatus,
-    (next) => {
-      if (next !== "open") return;
-      // Don't claim `audio_capture` if we don't actually have a
-      // working glasses bridge — prototype mode (plain browser tab
-      // outside the EvenHub WebView) would otherwise show up as a
-      // phantom source on every paired client.
-      if (!store.get().glassesBridgeReady) return;
-      // Resolve the stable id at send-time (idempotent + memoized) so
-      // the server reuses our identity across reconnects and keeps the
-      // audio-source binding alive. Without it, a network switch
-      // (wifi→5G) re-registers as a brand-new device and silently
-      // stops recording.
-      void (async () => {
-        const [deviceId, label] = await Promise.all([ensureDeviceId(), ensureDeviceLabel()]);
-        sock.send({
-          type: "register_device",
-          // Label by the glasses' own serial ("<serial> (G2)") so the
-          // audio-source picker can tell multiple pairs apart; fall
-          // back to the generic name when no serial is available
-          // (prototype mode / glasses not connected).
-          hostname: label ?? "Browser (Glasses)",
-          capabilities: ["audio_capture"],
-          device_id: deviceId,
-        });
-      })();
-    },
-  );
+  // Fires on WS open AND on glasses-bridge-ready, deduped per
+  // connection; skips are logged with a `[register]` prefix.
+  wireDeviceRegistration(store, {
+    send: (intent) => sock.send(intent),
+    resolveIdentity: () => Promise.all([ensureDeviceId(), ensureDeviceLabel()]),
+  });
 
   // Audio-source reactor. When the server tells us we're the bound
   // source, start the /audio stream; when the binding moves away
